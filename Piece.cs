@@ -10,11 +10,20 @@ namespace Mattjes
   public enum Piece : byte
   {
     /// <summary>
-    /// Weiße Spielerfigur
+    /// keine Spielfigur = leeres Feld
+    /// </summary>
+    None = 0x00,
+    /// <summary>
+    /// geblocktes Feld (außerhalb des Schachbrettes)
+    /// </summary>
+    Blocked = White | Black,
+
+    /// <summary>
+    /// weiße Spielerfigur
     /// </summary>
     White = 0x40,
     /// <summary>
-    /// Schwarze Spielerfigur
+    /// schwarze Spielerfigur
     /// </summary>
     Black = 0x80,
 
@@ -44,52 +53,52 @@ namespace Mattjes
     Pawn = 0x20,
 
     /// <summary>
-    /// Weißer König
+    /// weißer König
     /// </summary>
     WhiteKing = White | King,
     /// <summary>
-    /// Weiße Dame
+    /// weiße Dame
     /// </summary>
     WhiteQueen = White | Queen,
     /// <summary>
-    /// Weißer Turm
+    /// weißer Turm
     /// </summary>
     WhiteRook = White | Rook,
     /// <summary>
-    /// Weißer Läufer
+    /// weißer Läufer
     /// </summary>
     WhiteBishop = White | Bishop,
     /// <summary>
-    /// Weißer Springer
+    /// weißer Springer
     /// </summary>
     WhiteKnight = White | Knight,
     /// <summary>
-    /// Weißer Bauer
+    /// weißer Bauer
     /// </summary>
     WhitePawn = White | Pawn,
 
     /// <summary>
-    /// Schwarzer König
+    /// schwarzer König
     /// </summary>
     BlackKing = Black | King,
     /// <summary>
-    /// Schwarze Dame
+    /// schwarze Dame
     /// </summary>
     BlackQueen = Black | Queen,
     /// <summary>
-    /// Schwarzer Turm
+    /// schwarzer Turm
     /// </summary>
     BlackRook = Black | Rook,
     /// <summary>
-    /// Schwarzer Läufer
+    /// schwarzer Läufer
     /// </summary>
     BlackBishop = Black | Bishop,
     /// <summary>
-    /// Schwarzer Springer
+    /// schwarzer Springer
     /// </summary>
     BlackKnight = Black | Knight,
     /// <summary>
-    /// Schwarzer Bauer
+    /// schwarzer Bauer
     /// </summary>
     BlackPawn = Black | Pawn
   }
