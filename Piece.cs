@@ -26,6 +26,10 @@ namespace Mattjes
     /// schwarze Spielerfigur
     /// </summary>
     Black = 0x80,
+    /// <summary>
+    /// gibt nur die Farbcodes zurück
+    /// </summary>
+    Colors = White | Black,
 
     /// <summary>
     /// König
@@ -51,6 +55,10 @@ namespace Mattjes
     /// Bauer
     /// </summary>
     Pawn = 0x20,
+    /// <summary>
+    /// alle Basis-Figuren kombiniert (ohne Farbe)
+    /// </summary>
+    BasicPieces = King | Queen | Rook | Bishop | Knight | Pawn,
 
     /// <summary>
     /// weißer König
