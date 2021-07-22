@@ -339,6 +339,8 @@ namespace Mattjes
       var piece = fields[pos];
       if (piece == Piece.None) return; // keine Figur auf dem Spielfeld
       var color = piece & Piece.Colors;
+      if (whiteMove != (color == Piece.White)) return; // Farbe der Figur passt nicht zum Spieler, der gerade dran ist
+
       int posX = pos % Width;
       int posY = pos / Width;
       switch (piece & Piece.BasicPieces)
@@ -359,6 +361,50 @@ namespace Mattjes
           }
           if (posY > 0 && (fields[pos - Width] & color) == Piece.None) callback(pos - Width); // oben
           if (posY < Height - 1 && (fields[pos + Width] & color) == Piece.None) callback(pos + Width); // unten
+        } break;
+
+        case Piece.Bishop:
+        {
+          // links-oben
+          for (int i = 1; i < Math.Max(Width, Height); i++)
+          {
+            if (posX - i < 0 || posY - i < 0) break;
+            int p = pos - (Width * i + i);
+            var f = fields[p];
+            if ((f & color) != Piece.None) break;
+            callback(p);
+            if (f != Piece.None) break;
+          }
+          // links-unten
+          for (int i = 1; i < Math.Max(Width, Height); i++)
+          {
+            if (posX - i < 0 || posY + i >= Height) break;
+            int p = pos + (Width * i - i);
+            var f = fields[p];
+            if ((f & color) != Piece.None) break;
+            callback(p);
+            if (f != Piece.None) break;
+          }
+          // rechts-oben
+          for (int i = 1; i < Math.Max(Width, Height); i++)
+          {
+            if (posX + i >= Width || posY - i < 0) break;
+            int p = pos - (Width * i - i);
+            var f = fields[p];
+            if ((f & color) != Piece.None) break;
+            callback(p);
+            if (f != Piece.None) break;
+          }
+          // rechts-unten
+          for (int i = 1; i < Math.Max(Width, Height); i++)
+          {
+            if (posX + i >= Width || posY + i >= Height) break;
+            int p = pos + (Width * i + i);
+            var f = fields[p];
+            if ((f & color) != Piece.None) break;
+            callback(p);
+            if (f != Piece.None) break;
+          }
         } break;
 
         case Piece.Knight:
