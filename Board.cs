@@ -360,6 +360,30 @@ namespace Mattjes
           if (posY > 0 && (fields[pos - Width] & color) == Piece.None) callback(pos - Width); // oben
           if (posY < Height - 1 && (fields[pos + Width] & color) == Piece.None) callback(pos + Width); // unten
         } break;
+
+        case Piece.Knight:
+        {
+          if (posX > 0) // 1 nach links
+          {
+            if (posY > 1 && (fields[pos - (Width * 2 + 1)] & color) == Piece.None) callback(pos - (Width * 2 + 1)); // -1, -2
+            if (posY < Height - 2 && (fields[pos + (Width * 2 - 1)] & color) == Piece.None) callback(pos + (Width * 2 - 1)); // -1, +2
+            if (posX > 1) // 2 nach links
+            {
+              if (posY > 0 && (fields[pos - (Width + 2)] & color) == Piece.None) callback(pos - (Width + 2)); // -2, -1
+              if (posY < Height - 1 && (fields[pos + (Width - 2)] & color) == Piece.None) callback(pos + (Width - 2)); // -2, +1
+            }
+          }
+          if (posX < Width - 1) // 1 nach rechts
+          {
+            if (posY > 1 && (fields[pos - (Width * 2 - 1)] & color) == Piece.None) callback(pos - (Width * 2 - 1)); // +1, -2
+            if (posY < Height - 2 && (fields[pos + (Width * 2 + 1)] & color) == Piece.None) callback(pos + (Width * 2 + 1)); // +1, +2
+            if (posX < Width - 2) // 2 nach rechts
+            {
+              if (posY > 0 && (fields[pos - (Width - 2)] & color) == Piece.None) callback(pos - (Width - 2)); // +2, +1
+              if (posY < Height - 1 && (fields[pos + (Width + 2)] & color) == Piece.None) callback(pos + (Width + 2)); // +2, -1
+            }
+          }
+        } break;
       }
     }
 

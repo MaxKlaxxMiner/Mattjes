@@ -22,7 +22,7 @@ namespace Mattjes
       {
         b.ScanMove(p, movePos =>
         {
-          Console.WriteLine("    " + Board.PosChars(p) + "-" + Board.PosChars(movePos) + " (" + b.fields[p] + ")");
+          Console.WriteLine("    " + Board.PosChars(p) + "-" + Board.PosChars(movePos) + " - " + b.fields[p]);
         });
       }
 
