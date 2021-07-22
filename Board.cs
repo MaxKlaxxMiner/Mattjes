@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Linq;
 using System.Text;
+// ReSharper disable UnusedMethodReturnValue.Global
 
 // ReSharper disable UnusedType.Global
 // ReSharper disable MemberCanBePrivate.Global
@@ -69,10 +70,13 @@ namespace Mattjes
     {
       Array.Clear(fields, 0, fields.Length);
       whiteMove = true;
+      halfmovesSinceLastAction = 0;
+      moveNumber = 1;
       whiteCanCastleKingside = false;
       whiteCanCastleQueenside = false;
       blackCanCastleKingside = false;
       blackCanCastleQueenside = false;
+      enPassantPos = 0;
     }
 
     /// <summary>
@@ -93,12 +97,13 @@ namespace Mattjes
     /// <param name="x">X-Position auf dem Schachbrett</param>
     /// <param name="y">Y-Position auf dem Schachbrett</param>
     /// <param name="piece">Spielfigur, welche gesetzt werden soll (kann Piece.None sein = leert das Feld)</param>
-    public void SetField(int x, int y, Piece piece)
+    /// <returns>true, wenn erfolgreich</returns>
+    public bool SetField(int x, int y, Piece piece)
     {
-      if ((uint)x >= Width) throw new ArgumentOutOfRangeException("x");
-      if ((uint)y >= Height) throw new ArgumentOutOfRangeException("y");
+      if ((uint)x >= Width || (uint)y >= Height) return false;
 
       fields[x + y * Width] = piece;
+      return true;
     }
 
     /// <summary>
@@ -147,6 +152,39 @@ namespace Mattjes
     }
 
     /// <summary>
+    /// wandelt ein ASCII-Zeichen zu einer Spielfigur um
+    /// </summary>
+    /// <param name="c">Zeichen, welches eingelesen werden soll</param>
+    /// <returns>fertige Spielfigur oder <see cref="Piece.Blocked"/> wenn ungültig</returns>
+    static Piece PieceFromChar(char c)
+    {
+      switch (c)
+      {
+        case '1':
+        case '2':
+        case '3':
+        case '4':
+        case '5':
+        case '6':
+        case '7':
+        case '8': return Piece.None;
+        case 'K': return Piece.WhiteKing;
+        case 'k': return Piece.BlackKing;
+        case 'Q': return Piece.WhiteQueen;
+        case 'q': return Piece.BlackQueen;
+        case 'R': return Piece.WhiteRook;
+        case 'r': return Piece.BlackRook;
+        case 'B': return Piece.WhiteBishop;
+        case 'b': return Piece.BlackBishop;
+        case 'N': return Piece.WhiteKnight;
+        case 'n': return Piece.BlackKnight;
+        case 'P': return Piece.WhitePawn;
+        case 'p': return Piece.BlackPawn;
+        default: return Piece.Blocked;
+      }
+    }
+
+    /// <summary>
     /// gibt die Position als zweistellige FEN-Schreibweise zurück (z.B. "e4")
     /// </summary>
     /// <param name="pos">Position auf dem Schachbrett</param>
@@ -164,7 +202,20 @@ namespace Mattjes
     /// <returns>Position als zweistellige FEN-Schreibweise</returns>
     static string PosChars(int x, int y)
     {
-      return "abcdefgh"[x] + (Height - y).ToString();
+      return ((char)(x + 'a')).ToString() + (Height - y);
+    }
+
+    /// <summary>
+    /// liest eine Position anhand einer zweistelligen FEN-Schreibweise ein (z.B. "e4")
+    /// </summary>
+    /// <param name="str">Zeichenfolge, welche eingelesen werden soll</param>
+    /// <returns></returns>
+    static int PosFromChars(string str)
+    {
+      if (str.Length != 2) return -1; // nur zweistellige Positionen erlaubt
+      if (str[0] < 'a' || str[0] - 'a' >= Width) return -1; // ungültige Spaltenangabe ("a"-"h" erwartet)
+      if (str[1] < '1' || str[1] - '1' >= Height) return -1; // ungültige Zeilenangabe ("1"-"8" erwartet)
+      return str[0] - 'a' + (Height + '0' - str[1]) * Width;
     }
 
     /// <summary>
@@ -185,6 +236,97 @@ namespace Mattjes
         + halfmovesSinceLastAction + " "
         + moveNumber
         ;
+    }
+
+    /// <summary>
+    /// setzt das komplette Schachbrett
+    /// </summary>
+    /// <param name="fen">FEN-Zeichenfolge</param>
+    /// <returns>true, wenn die Stellung erfolgreich gesetzt werden konnte</returns>
+    public bool SetFEN(string fen)
+    {
+      Clear();
+      var splits = fen.Trim().Split(' ');
+      if (splits.Length != 6) return false; // ungültige Anzahl der Elemente
+      var lines = splits[0].Split('/');
+      if (lines.Length != Height) return false; // Anzahl der Zeilen stimmt nicht überein
+
+      // --- Figuren einlesen (1 / 6) ---
+      for (int y = 0; y < lines.Length; y++)
+      {
+        int x = 0;
+        foreach (char c in lines[y])
+        {
+          var p = PieceFromChar(c);
+          if (p == Piece.Blocked) return false; // ungültiges Zeichen als Spielerfigur erkannt
+          if (p == Piece.None) // leere Felder?
+          {
+            x += c - '0'; // alle leeren Felder überspringen
+            continue;
+          }
+          SetField(x, y, p);
+          x++;
+        }
+        if (x != Width) return false; // Anzahl der Spalten ungültig
+      }
+
+      // --- wer ist am Zug? (2 / 6) ---
+      switch (splits[1])
+      {
+        case "w": /* whiteMove = true; */ break;
+        case "b": whiteMove = false; break;
+        default: return false; // ungültiger Wert
+      }
+
+      // --- Rochademöglichkeiten einlesen (3 / 6) ---
+      switch (splits[2])
+      {
+        case "-": break;
+        case "q": blackCanCastleQueenside = true; break;
+        case "k": blackCanCastleKingside = true; break;
+        case "kq": blackCanCastleKingside = blackCanCastleQueenside = true; break;
+        case "Q": whiteCanCastleQueenside = true; break;
+        case "Qq": whiteCanCastleQueenside = blackCanCastleQueenside = true; break;
+        case "Qk": whiteCanCastleQueenside = blackCanCastleKingside = true; break;
+        case "Qkq": whiteCanCastleQueenside = blackCanCastleKingside = blackCanCastleQueenside = true; break;
+        case "K": whiteCanCastleKingside = true; break;
+        case "Kq": whiteCanCastleKingside = blackCanCastleQueenside = true; break;
+        case "Kk": whiteCanCastleKingside = blackCanCastleKingside = true; break;
+        case "Kkq": whiteCanCastleKingside = blackCanCastleKingside = blackCanCastleQueenside = true; break;
+        case "KQ": whiteCanCastleKingside = whiteCanCastleQueenside = true; break;
+        case "KQq": whiteCanCastleKingside = whiteCanCastleQueenside = blackCanCastleQueenside = true; break;
+        case "KQk": whiteCanCastleKingside = whiteCanCastleQueenside = blackCanCastleKingside = true; break;
+        case "KQkq": whiteCanCastleKingside = whiteCanCastleQueenside = blackCanCastleKingside = blackCanCastleQueenside = true; break;
+        default: return false; // ungültige Rohraden-Angaben (todo: shredderFEN implementieren für Chess960)
+      }
+
+      // --- "en passant" einlesen (4 / 6) ---
+      enPassantPos = PosFromChars(splits[3]);
+      if (enPassantPos < 0)
+      {
+        if (splits[3] == "-")
+        {
+          enPassantPos = 0; // kein "en passant" gesetzt -> gültig
+        }
+        else
+        {
+          return false; // ungültige Angabe
+        }
+      }
+
+      // --- Anzahl der Halbzüge einlesen, seit dem letzten Bauernzug oder Schlagen einer Figur (5 / 6) ---
+      if (!int.TryParse(splits[4], out halfmovesSinceLastAction) || halfmovesSinceLastAction < 0 || halfmovesSinceLastAction > 999)
+      {
+        return false; // ungültige Zahl erkannt
+      }
+
+      // --- Zugnummer einlesen (6 / 6) ---
+      if (!int.TryParse(splits[5], out moveNumber) || moveNumber < 1 || moveNumber > 999)
+      {
+        return false; // ungültige Zahl erkannt
+      }
+
+      return true;
     }
 
     /// <summary>
