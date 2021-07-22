@@ -568,6 +568,34 @@ namespace Mattjes
           }
         } break;
         #endregion
+
+        #region # case Piece.Pawn: // Bauer
+        case Piece.Pawn:
+        {
+          if (posY < 1 || posY >= Height - 1) break; // ungültige Position
+
+          if (color == Piece.White) // weißer Bauer = nach oben laufen
+          {
+            if (fields[pos - Width] == Piece.None) // Laufweg frei?
+            {
+              callback(pos - Width);
+              if (posY == 6 && fields[pos - Width * 2] == Piece.None) callback(pos - Width * 2); // Doppelzug
+            }
+            if (posX > 0 && (enPassantPos == pos - (Width + 1) || (fields[pos - (Width + 1)] & Piece.Colors) == Piece.Black)) callback(pos - (Width + 1)); // nach links-oben schlagen
+            if (posX < Width - 1 && (enPassantPos == pos - (Width - 1) || (fields[pos - (Width - 1)] & Piece.Colors) == Piece.Black)) callback(pos - (Width - 1)); // nach rechts-oben schlagen
+          }
+          else // schwarzer Bauer = nach unten laufen
+          {
+            if (fields[pos + Width] == Piece.None) // Laufweg frei?
+            {
+              callback(pos + Width);
+              if (posY == 1 && fields[pos + Width * 2] == Piece.None) callback(pos + Width * 2); // Doppelzug
+            }
+            if (posX > 0 && (enPassantPos == pos + (Width - 1) || (fields[pos + (Width - 1)] & Piece.Colors) == Piece.White)) callback(pos + (Width - 1)); // nach links-unten schlagen
+            if (posX < Width - 1 && (enPassantPos == pos + (Width + 1) || (fields[pos + (Width + 1)] & Piece.Colors) == Piece.White)) callback(pos + (Width + 1)); // nach rechts-unten schlagen
+          }
+        } break;
+        #endregion
       }
     }
 
