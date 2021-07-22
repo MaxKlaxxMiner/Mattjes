@@ -2,11 +2,11 @@
 using System.Linq;
 using System.Text;
 // ReSharper disable UnusedMethodReturnValue.Global
-
 // ReSharper disable UnusedType.Global
 // ReSharper disable MemberCanBePrivate.Global
 // ReSharper disable NotAccessedField.Global
 // ReSharper disable UnusedMember.Global
+// ReSharper disable ArrangeRedundantParentheses
 
 namespace Mattjes
 {
@@ -136,7 +136,7 @@ namespace Mattjes
     /// </summary>
     /// <param name="piece">Spielefigur, welche abgefragt werden soll</param>
     /// <returns>passende Zeichen für die Spielerfigur</returns>
-    static char PieceChar(Piece piece)
+    public static char PieceChar(Piece piece)
     {
       bool w = (piece & Piece.White) == Piece.White;
       switch (piece & Piece.BasicPieces)
@@ -156,7 +156,7 @@ namespace Mattjes
     /// </summary>
     /// <param name="c">Zeichen, welches eingelesen werden soll</param>
     /// <returns>fertige Spielfigur oder <see cref="Piece.Blocked"/> wenn ungültig</returns>
-    static Piece PieceFromChar(char c)
+    public static Piece PieceFromChar(char c)
     {
       switch (c)
       {
@@ -189,7 +189,7 @@ namespace Mattjes
     /// </summary>
     /// <param name="pos">Position auf dem Schachbrett</param>
     /// <returns>Position als zweistellige FEN-Schreibweise</returns>
-    static string PosChars(int pos)
+    public static string PosChars(int pos)
     {
       return PosChars(pos % Width, pos / Width);
     }
@@ -200,7 +200,7 @@ namespace Mattjes
     /// <param name="x">X-Position auf dem Schachbrett</param>
     /// <param name="y">Y-Position auf dem Schachbrett</param>
     /// <returns>Position als zweistellige FEN-Schreibweise</returns>
-    static string PosChars(int x, int y)
+    public static string PosChars(int x, int y)
     {
       return ((char)(x + 'a')).ToString() + (Height - y);
     }
@@ -209,8 +209,8 @@ namespace Mattjes
     /// liest eine Position anhand einer zweistelligen FEN-Schreibweise ein (z.B. "e4")
     /// </summary>
     /// <param name="str">Zeichenfolge, welche eingelesen werden soll</param>
-    /// <returns></returns>
-    static int PosFromChars(string str)
+    /// <returns>absolute Position auf dem Spielfeld</returns>
+    public static int PosFromChars(string str)
     {
       if (str.Length != 2) return -1; // nur zweistellige Positionen erlaubt
       if (str[0] < 'a' || str[0] - 'a' >= Width) return -1; // ungültige Spaltenangabe ("a"-"h" erwartet)
@@ -327,6 +327,40 @@ namespace Mattjes
       }
 
       return true;
+    }
+
+    /// <summary>
+    /// prüft die theoretischen Bewegungsmöglichkeiten einer Spielfigur auf einem bestimmten Feld
+    /// </summary>
+    /// <param name="pos">Position auf dem Spielfeld mit der zu testenden Figur</param>
+    /// <param name="callback">Callback-Methode, welche (mit Position) bei jeden theoretisch begehbarem Feld aufgerufen wird</param>
+    public void ScanMove(int pos, Action<int> callback)
+    {
+      var piece = fields[pos];
+      if (piece == Piece.None) return; // keine Figur auf dem Spielfeld
+      var color = piece & Piece.Colors;
+      int posX = pos % Width;
+      int posY = pos / Width;
+      switch (piece & Piece.BasicPieces)
+      {
+        case Piece.King:
+        {
+          if (posX > 0) // nach links
+          {
+            if (posY > 0 && (fields[pos - (Width + 1)] & color) == Piece.None) callback(pos - (Width + 1)); // links-oben
+            if ((fields[pos - 1] & color) == Piece.None) callback(pos - 1); // links
+            if (posY < Height - 1 && (fields[pos + (Width - 1)] & color) == Piece.None) callback(pos + (Width - 1)); // links-unten
+          }
+          if (posX < Width - 1) // nach rechts
+          {
+            if (posY > 0 && (fields[pos - (Width - 1)] & color) == Piece.None) callback(pos - (Width - 1)); // rechts-oben
+            if ((fields[pos + 1] & color) == Piece.None) callback(pos + 1); // rechts
+            if (posY < Height - 1 && (fields[pos + (Width + 1)] & color) == Piece.None) callback(pos + (Width + 1)); // rechts-unten
+          }
+          if (posY > 0 && (fields[pos - Width] & color) == Piece.None) callback(pos - Width); // oben
+          if (posY < Height - 1 && (fields[pos + Width] & color) == Piece.None) callback(pos + Width); // unten
+        } break;
+      }
     }
 
     /// <summary>
