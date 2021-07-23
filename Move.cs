@@ -1,10 +1,4 @@
-﻿// ReSharper disable BuiltInTypeReferenceStyle
-// ReSharper disable UnusedMember.Global
-// ReSharper disable RedundantCast
-// ReSharper disable MemberCanBePrivate.Global
-// ReSharper disable UnusedType.Global
-// ReSharper disable NotAccessedField.Global
-using System.Diagnostics;
+﻿using System.Diagnostics;
 
 namespace Mattjes
 {
@@ -16,15 +10,15 @@ namespace Mattjes
     /// <summary>
     /// merkt sich die Startposition der Figur (0-63)
     /// </summary>
-    public byte fromPos;
+    public readonly byte fromPos;
     /// <summary>
     /// merkt sich die Endposition der Figur (0-63)
     /// </summary>
-    public byte toPos;
+    public readonly byte toPos;
     /// <summary>
     /// merkt sich die geschlagene Figur <see cref="Piece.None"/> = es wurde keine Figur geschlagen
     /// </summary>
-    public Piece capturePiece;
+    public readonly Piece capturePiece;
     /// <summary>
     /// merkt sich die zu promovierende Figur, sofern ein Bauer das Ziel erreicht und umgewandelt wird (default: <see cref="Piece.None"/>)
     /// </summary>
@@ -42,6 +36,7 @@ namespace Mattjes
       Debug.Assert(fromPos >= 0 && fromPos <= 63);
       Debug.Assert(toPos >= 0 && toPos <= 63);
       Debug.Assert((capturePiece & Piece.King) == Piece.None); // Könige dürfen nicht geschlagen werden
+      Debug.Assert(promoPiece == Piece.None || (promoPiece & Piece.Colors) != Piece.None); // Farbe des promoviernden Bauern vorhanden?
 
       this.fromPos = (byte)(uint)fromPos;
       this.toPos = (byte)(uint)toPos;
