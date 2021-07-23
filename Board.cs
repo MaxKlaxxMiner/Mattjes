@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 // ReSharper disable UnusedMethodReturnValue.Global
@@ -15,6 +16,7 @@ namespace Mattjes
   /// </summary>
   public sealed class Board
   {
+    #region # // --- consts ---
     /// <summary>
     /// Breite des Spielfeldes (default: 8)
     /// </summary>
@@ -23,7 +25,9 @@ namespace Mattjes
     /// Höhe des Spielfeldes (default: 8);
     /// </summary>
     public const int Height = 8;
+    #endregion
 
+    #region # // --- values ---
     /// <summary>
     /// merkt sich alle Spielfelder mit den jeweiligen Spielfiguren
     /// </summary>
@@ -62,23 +66,9 @@ namespace Mattjes
     /// merkt sich die Position des übersprungenen Feldes eines Bauern, welcher beim vorherigen Zug zwei Feldern vorgerückt ist (für en pasant), sonst = 0
     /// </summary>
     public int enPassantPos;
+    #endregion
 
-    /// <summary>
-    /// leert das Spielfeld
-    /// </summary>
-    public void Clear()
-    {
-      Array.Clear(fields, 0, fields.Length);
-      whiteMove = true;
-      halfmovesSinceLastAction = 0;
-      moveNumber = 1;
-      whiteCanCastleKingside = false;
-      whiteCanCastleQueenside = false;
-      blackCanCastleKingside = false;
-      blackCanCastleQueenside = false;
-      enPassantPos = 0;
-    }
-
+    #region # // --- SetField / GetField / Clear ---
     /// <summary>
     /// setzt eine Spielfigur auf das Schachbrett
     /// </summary>
@@ -131,6 +121,24 @@ namespace Mattjes
       return fields[x + y * Width];
     }
 
+    /// <summary>
+    /// leert das Spielfeld
+    /// </summary>
+    public void Clear()
+    {
+      Array.Clear(fields, 0, fields.Length);
+      whiteMove = true;
+      halfmovesSinceLastAction = 0;
+      moveNumber = 1;
+      whiteCanCastleKingside = false;
+      whiteCanCastleQueenside = false;
+      blackCanCastleKingside = false;
+      blackCanCastleQueenside = false;
+      enPassantPos = 0;
+    }
+    #endregion
+
+    #region # // --- Helper Methods ---
     /// <summary>
     /// gibt das passende ASCII-Zeichen zu einer Spielerfigur zurück
     /// </summary>
@@ -217,7 +225,9 @@ namespace Mattjes
       if (str[1] < '1' || str[1] - '1' >= Height) return -1; // ungültige Zeilenangabe ("1"-"8" erwartet)
       return str[0] - 'a' + (Height + '0' - str[1]) * Width;
     }
+    #endregion
 
+    #region # // --- FEN ---
     /// <summary>
     /// gibt das Schachbrett als FEN-Schreibweise zurück
     /// </summary>
@@ -328,6 +338,7 @@ namespace Mattjes
 
       return true;
     }
+    #endregion
 
     /// <summary>
     /// prüft die theoretischen Bewegungsmöglichkeiten einer Spielfigur auf einem bestimmten Feld
@@ -600,6 +611,153 @@ namespace Mattjes
     }
 
     /// <summary>
+    /// prüft, ob ein bestimmtes Spielfeld unter Schach steht
+    /// </summary>
+    /// <param name="pos">Position, welche geprüft werden soll</param>
+    /// <param name="checkerColor">zu prüfende Spielerfarbe, welche das Schach geben könnte (nur <see cref="Piece.White"/> oder <see cref="Piece.Black"/> erlaubt)</param>
+    /// <returns>true, wenn das Feld angegriffen wird und unter Schach steht</returns>
+    public bool IsChecked(int pos, Piece checkerColor)
+    {
+      int posX = pos % Width;
+      int posY = pos / Width;
+
+      // --- Bauern und König prüfen ---
+      if (checkerColor == Piece.White)
+      {
+        if (posX > 0) // nach links
+        {
+          if (posY > 0 && fields[pos - (Width + 1)] == Piece.WhiteKing) return true; // links-oben
+          if (fields[pos - 1] == Piece.WhiteKing) return true; // links
+          if (posY < Height - 1 && (fields[pos + (Width - 1)] == Piece.WhiteKing || fields[pos + (Width - 1)] == Piece.WhitePawn)) return true; // links-unten
+        }
+        if (posX < Width - 1) // nach rechts
+        {
+          if (posY > 0 && fields[pos - (Width - 1)] == Piece.WhiteKing) return true; // rechts-oben
+          if (fields[pos + 1] == Piece.WhiteKing) return true; // rechts
+          if (posY < Height - 1 && (fields[pos + (Width + 1)] == Piece.WhiteKing || fields[pos + (Width + 1)] == Piece.WhitePawn)) return true; // rechts-unten
+        }
+        if (posY > 0 && fields[pos - Width] == Piece.WhiteKing) return true; // oben
+        if (posY < Height - 1 && fields[pos + Width] == Piece.WhiteKing) return true; // unten
+      }
+      else
+      {
+        if (posX > 0) // nach links
+        {
+          if (posY > 0 && (fields[pos - (Width + 1)] == Piece.BlackKing || fields[pos - (Width + 1)] == Piece.BlackPawn)) return true; // links-oben
+          if (fields[pos - 1] == Piece.BlackKing) return true; // links
+          if (posY < Height - 1 && fields[pos + (Width - 1)] == Piece.BlackKing) return true; // links-unten
+        }
+        if (posX < Width - 1) // nach rechts
+        {
+          if (posY > 0 && (fields[pos - (Width - 1)] == Piece.BlackKing || fields[pos - (Width - 1)] == Piece.BlackPawn)) return true; // rechts-oben
+          if (fields[pos + 1] == Piece.BlackKing) return true; // rechts
+          if (posY < Height - 1 && fields[pos + (Width + 1)] == Piece.BlackKing) return true; // rechts-unten
+        }
+        if (posY > 0 && fields[pos - Width] == Piece.BlackKing) return true; // oben
+        if (posY < Height - 1 && fields[pos + Width] == Piece.BlackKing) return true; // unten
+      }
+
+      // --- Springer prüfen ---
+      {
+        var knight = checkerColor | Piece.Knight;
+        if (posX > 0) // 1 nach links
+        {
+          if (posY > 1 && fields[pos - (Width * 2 + 1)] == knight) return true; // -1, -2
+          if (posY < Height - 2 && fields[pos + (Width * 2 - 1)] == knight) return true; // -1, +2
+          if (posX > 1) // 2 nach links
+          {
+            if (posY > 0 && fields[pos - (Width + 2)] == knight) return true; // -2, -1
+            if (posY < Height - 1 && fields[pos + (Width - 2)] == knight) return true; // -2, +1
+          }
+        }
+        if (posX < Width - 1) // 1 nach rechts
+        {
+          if (posY > 1 && fields[pos - (Width * 2 - 1)] == knight) return true; // +1, -2
+          if (posY < Height - 2 && fields[pos + (Width * 2 + 1)] == knight) return true; // +1, +2
+          if (posX < Width - 2) // 2 nach rechts
+          {
+            if (posY > 0 && fields[pos - (Width - 2)] == knight) return true; // +2, +1
+            if (posY < Height - 1 && fields[pos + (Width + 2)] == knight) return true; // +2, -1
+          }
+        }
+      }
+
+      // --- horizontale und vertikale Wege prüfen ---
+      {
+        for (int i = 1; i < Width; i++) // links
+        {
+          if (posX - i < 0) break;
+          var f = fields[pos - i];
+          if (f == Piece.None) continue;
+          if ((f & (Piece.Rook | Piece.Queen)) != Piece.None && (f & checkerColor) != Piece.None) return true;
+          break;
+        }
+        for (int i = 1; i < Width; i++) // rechts
+        {
+          if (posX + i >= Width) break;
+          var f = fields[pos + i];
+          if (f == Piece.None) continue;
+          if ((f & (Piece.Rook | Piece.Queen)) != Piece.None && (f & checkerColor) != Piece.None) return true;
+          break;
+        }
+        for (int i = 1; i < Height; i++) // oben
+        {
+          if (posY - i < 0) break;
+          var f = fields[pos - Width * i];
+          if (f == Piece.None) continue;
+          if ((f & (Piece.Rook | Piece.Queen)) != Piece.None && (f & checkerColor) != Piece.None) return true;
+          break;
+        }
+        for (int i = 1; i < Height; i++) // unten
+        {
+          if (posY + i >= Height) break;
+          var f = fields[pos + Width * i];
+          if (f == Piece.None) continue;
+          if ((f & (Piece.Rook | Piece.Queen)) != Piece.None && (f & checkerColor) != Piece.None) return true;
+          break;
+        }
+      }
+
+      // --- diagonale Wege prüfen ---
+      {
+        for (int i = 1; i < Math.Max(Width, Height); i++) // links-oben
+        {
+          if (posX - i < 0 || posY - i < 0) break;
+          var f = fields[pos - (Width * i + i)];
+          if (f == Piece.None) continue;
+          if ((f & (Piece.Bishop | Piece.Queen)) != Piece.None && (f & checkerColor) != Piece.None) return true;
+          break;
+        }
+        for (int i = 1; i < Math.Max(Width, Height); i++) // links-unten
+        {
+          if (posX - i < 0 || posY + i >= Height) break;
+          var f = fields[pos + (Width * i - i)];
+          if (f == Piece.None) continue;
+          if ((f & (Piece.Bishop | Piece.Queen)) != Piece.None && (f & checkerColor) != Piece.None) return true;
+          break;
+        }
+        for (int i = 1; i < Math.Max(Width, Height); i++) // rechts-oben
+        {
+          if (posX + i >= Width || posY - i < 0) break;
+          var f = fields[pos - (Width * i - i)];
+          if (f == Piece.None) continue;
+          if ((f & (Piece.Bishop | Piece.Queen)) != Piece.None && (f & checkerColor) != Piece.None) return true;
+          break;
+        }
+        for (int i = 1; i < Math.Max(Width, Height); i++) // rechts-unten
+        {
+          if (posX + i >= Width || posY + i >= Height) break;
+          var f = fields[pos + (Width * i + i)];
+          if (f == Piece.None) continue;
+          if ((f & (Piece.Bishop | Piece.Queen)) != Piece.None && (f & checkerColor) != Piece.None) return true;
+          break;
+        }
+      }
+
+      return false;
+    }
+
+    /// <summary>
     /// gibt das Spielfeld als lesbare Zeichenkette zurück
     /// </summary>
     /// <returns>lesbare Zeichenkette</returns>
@@ -612,6 +770,35 @@ namespace Mattjes
         for (int x = 0; x < Width; x++)
         {
           sb.Append(PieceChar(GetField(x, y)));
+        }
+        sb.AppendLine();
+      }
+      return sb.ToString();
+    }
+
+    /// <summary>
+    /// gibt das Spielfeld als lesbare Zeichenkette zurück und markiert bestimmte Felder
+    /// </summary>
+    /// <param name="markerPosis">Position, welche markiert werden sollen</param>
+    /// <param name="markerBit">Bit, welches für die Markierung verwendet werden soll (XOR)</param>
+    /// <returns>lesbare Zeichenkette</returns>
+    public string ToString(IEnumerable<int> markerPosis, char markerBit)
+    {
+      var marker = new HashSet<int>(markerPosis);
+      var sb = new StringBuilder();
+      for (int y = 0; y < Height; y++)
+      {
+        sb.Append("    ");
+        for (int x = 0; x < Width; x++)
+        {
+          if (marker.Contains(x + y * Width))
+          {
+            sb.Append((char)(PieceChar(GetField(x, y)) ^ markerBit));
+          }
+          else
+          {
+            sb.Append(PieceChar(GetField(x, y)));
+          }
         }
         sb.AppendLine();
       }
