@@ -89,6 +89,31 @@ namespace Mattjes
       }
     }
 
+    static void LolGame(Board b)
+    {
+      for (; ; )
+      {
+        Console.WriteLine();
+        Console.WriteLine("    FEN: " + b.GetFEN());
+        var moves = b.GetMoves().ToArray();
+        Console.WriteLine("    moves: " + moves.Length);
+
+        if (moves.Length == 0)
+        {
+          Console.WriteLine("   ... end ...");
+          return;
+        }
+
+        int next = 0;
+
+        Console.WriteLine("    selected: " + moves[next]);
+        if (!b.DoMove(moves[next])) throw new Exception("invalid move?");
+        Console.WriteLine();
+        PrintMarkedBoard(b, new[] { (int)moves[next].fromPos, moves[next].toPos });
+        Console.ReadLine();
+      }
+    }
+
     static void Main(string[] args)
     {
       Console.WriteLine();
@@ -110,7 +135,8 @@ namespace Mattjes
       //b.SetFEN("8/8/4k3/3bn3/8/4Q3/8/K7 w - - 0 1"); // Dame gegen Läufer + Springer Mattsuche (Matt in 39)
       //b.SetFEN("5k2/5P1P/4P3/pP6/P6q/3P2P1/2P5/K7 w - a6 0 1"); // Bauern-Test (Matt in 6)
 
-      RandomGame(b, true, true);
+      //RandomGame(b, true, true);
+      LolGame(b);
 
       //Console.WriteLine();
       //foreach (var move in b.GetMoves())

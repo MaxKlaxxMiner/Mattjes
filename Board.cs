@@ -64,9 +64,9 @@ namespace Mattjes
     /// </summary>
     public bool blackCanCastleQueenside;
     /// <summary>
-    /// merkt sich die Position des übersprungenen Feldes eines Bauern, welcher beim vorherigen Zug zwei Feldern vorgerückt ist (für en pasant), sonst = 0
+    /// merkt sich die Position des übersprungenen Feldes eines Bauern, welcher beim vorherigen Zug zwei Feldern vorgerückt ist (für en pasant), sonst = -1
     /// </summary>
-    public int enPassantPos;
+    public int enPassantPos = -1;
     #endregion
 
     #region # // --- SetField / GetField / Clear ---
@@ -135,7 +135,7 @@ namespace Mattjes
       whiteCanCastleQueenside = false;
       blackCanCastleKingside = false;
       blackCanCastleQueenside = false;
-      enPassantPos = 0;
+      enPassantPos = -1;
     }
     #endregion
 
@@ -243,7 +243,7 @@ namespace Mattjes
         + (blackCanCastleKingside ? "k" : "")
         + (blackCanCastleQueenside ? "q" : "")
         + (!whiteCanCastleKingside && !whiteCanCastleQueenside && !blackCanCastleKingside && !blackCanCastleQueenside ? "-" : "") + " "
-        + (enPassantPos == 0 ? "-" : PosChars(enPassantPos)) + " "
+        + (enPassantPos == -1 ? "-" : PosChars(enPassantPos)) + " "
         + halfmovesSinceLastAction + " "
         + moveNumber
         ;
@@ -313,16 +313,9 @@ namespace Mattjes
 
       // --- "en passant" einlesen (4 / 6) ---
       enPassantPos = PosFromChars(splits[3]);
-      if (enPassantPos < 0)
+      if (enPassantPos == -1)
       {
-        if (splits[3] == "-")
-        {
-          enPassantPos = 0; // kein "en passant" gesetzt -> gültig
-        }
-        else
-        {
-          return false; // ungültige Angabe
-        }
+        if (splits[3] != "-") return false; // ungültige Angabe
       }
 
       // --- Anzahl der Halbzüge einlesen, seit dem letzten Bauernzug oder Schlagen einer Figur (5 / 6) ---
@@ -871,7 +864,7 @@ namespace Mattjes
         return true;
       }
 
-      enPassantPos = 0;
+      enPassantPos = -1;
       if ((piece & Piece.Pawn) != Piece.None && Math.Abs(move.toPos - move.fromPos) == Width * 2) // wurde ein Bauer zwei Felder weit gezogen -> "en passant" vormerken
       {
         enPassantPos = (move.fromPos + move.toPos) / 2;
@@ -887,7 +880,7 @@ namespace Mattjes
           if (posX > 0 && fields[enPassantPos + Width - 1] == Piece.WhitePawn) opPawn = true;
           if (posX < Width - 1 && fields[enPassantPos + Width + 1] == Piece.WhitePawn) opPawn = true;
         }
-        if (!opPawn) enPassantPos = 0; // kein "en passant" möglich, da kein gegenerischer Bauer in der Nähe ist
+        if (!opPawn) enPassantPos = -1; // kein "en passant" möglich, da kein gegenerischer Bauer in der Nähe ist
       }
 
       // prüfen, ob durch den Zug Rochaden ungültig werden
