@@ -364,7 +364,7 @@ namespace Mattjes
           {
             if (posY > 0 && (fields[pos - (Width + 1)] & color) == Piece.None) yield return pos - (Width + 1); // links-oben
             if ((fields[pos - 1] & color) == Piece.None) yield return pos - 1; // links
-            if (posY < Height - 1 && (fields[pos + (Width - 1)] & color) == Piece.None) yield return  pos + (Width - 1); // links-unten
+            if (posY < Height - 1 && (fields[pos + (Width - 1)] & color) == Piece.None) yield return pos + (Width - 1); // links-unten
           }
           if (posX < Width - 1) // nach rechts
           {
@@ -777,7 +777,15 @@ namespace Mattjes
       fields[move.toPos] = piece;
       fields[move.fromPos] = Piece.None;
 
-      // todo: en passant
+      if (move.toPos == enPassantPos && (piece & Piece.Pawn) != Piece.None) // ein Bauer schlägt "en passant"?
+      {
+        Debug.Assert(move.toPos % Width != move.fromPos % Width); // Spalte muss sich ändern
+        Debug.Assert(move.capturePiece == Piece.None); // das Zielfeld enhält keine Figur (der geschlagene Bauer ist drüber oder drunter)
+        int removePawnPos = whiteMove ? move.toPos - Width : move.toPos + Width; // Position des zu schlagenden Bauern berechnen
+        Debug.Assert(fields[removePawnPos] == (whiteMove ? Piece.BlackPawn : Piece.WhitePawn)); // es wird ein Bauer erwartet, welcher geschlagen wird
+        fields[removePawnPos] = Piece.None; // Bauer entfernen
+      }
+
       // todo: castling
 
       if (move.promoPiece != Piece.None) fields[move.toPos] = move.promoPiece;
@@ -793,6 +801,17 @@ namespace Mattjes
             // --- Zug rückgängig machen ---
             fields[move.toPos] = move.capturePiece;
             fields[move.fromPos] = piece;
+            if (move.toPos == enPassantPos && (piece & Piece.Pawn) != Piece.None) // ein Bauer hat "en passant" geschlagen?
+            {
+              if (whiteMove)
+              {
+                fields[move.toPos - Width] = Piece.BlackPawn; // schwarzen Bauer wieder zurück setzen
+              }
+              else
+              {
+                fields[move.toPos + Width] = Piece.WhitePawn; // weißen Bauer wieder zurück setzen
+              }
+            }
             return false; // Zug war nicht erlaubt, da der König sonst im Schach stehen würde
           }
           break;
@@ -804,7 +823,25 @@ namespace Mattjes
         // --- Zug rückgängig machen ---
         fields[move.toPos] = move.capturePiece;
         fields[move.fromPos] = piece;
+        if (move.toPos == enPassantPos && (piece & Piece.Pawn) != Piece.None) // ein Bauer hat "en passant" geschlagen?
+        {
+          if (whiteMove)
+          {
+            fields[move.toPos - Width] = Piece.BlackPawn; // schwarzen Bauer wieder zurück setzen
+          }
+          else
+          {
+            fields[move.toPos + Width] = Piece.WhitePawn; // weißen Bauer wieder zurück setzen
+          }
+        }
         return true;
+      }
+
+      enPassantPos = 0;
+      if ((piece & Piece.Pawn) != Piece.None && Math.Abs(move.toPos - move.fromPos) == Width * 2) // wurde ein Bauer zwei Felder weit gezogen -> "en passant" vormerken
+      {
+        enPassantPos = (move.fromPos + move.toPos) / 2;
+        // todo: enPassantPos dennoch auf 0 setzen, wenn kein gegnerischer Bauer in der Nähe ist
       }
 
       whiteMove = !whiteMove; // Farbe welchseln, damit der andere Spieler am Zug ist

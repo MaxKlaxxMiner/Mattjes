@@ -43,5 +43,14 @@ namespace Mattjes
       this.capturePiece = capturePiece;
       this.promoPiece = promoPiece;
     }
+
+    /// <summary>
+    /// gibt den Inhalt als lesbare Zeichenkette zurück
+    /// </summary>
+    /// <returns>lesbare Zeichenkette</returns>
+    public override string ToString()
+    {
+      return Board.PosChars(fromPos) + "-" + Board.PosChars(toPos) + (promoPiece != Piece.None ? Board.PieceChar(promoPiece).ToString() : "");
+    }
   }
 }

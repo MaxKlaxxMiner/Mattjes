@@ -37,6 +37,30 @@ namespace Mattjes
       }
     }
 
+    static void RandomGame(Board b)
+    {
+      var rnd = new Random(12345);
+      for (; ; )
+      {
+        Console.WriteLine();
+        Console.WriteLine(b);
+
+        var moves = b.GetMoves().ToArray();
+        Console.WriteLine("    moves: " + moves.Length);
+
+        if (moves.Length == 0)
+        {
+          Console.WriteLine("   ... end ...");
+          return;
+        }
+        int next = rnd.Next(moves.Length);
+        Console.WriteLine("    selected: " + moves[next]);
+        Console.ReadLine();
+
+        if (!b.DoMove(moves[next])) throw new Exception("invalid move?");
+      }
+    }
+
     static void Main(string[] args)
     {
       Console.WriteLine();
@@ -44,7 +68,7 @@ namespace Mattjes
 
       var b = new Board();
 
-      //b.SetFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"); // Startaufstellung
+      b.SetFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"); // Startaufstellung
       //b.SetFEN("8/8/8/4k3/8/Q7/Q7/K7 w - - 0 1"); // Dame + Dame Mattsuche (Matt in 3)
       //b.SetFEN("8/8/8/4k3/8/Q7/R7/K7 w - - 0 1"); // Dame + Turm Mattsuche (Matt in 5)
       //b.SetFEN("8/8/8/4k3/8/R7/R7/K7 w - - 0 1"); // Turm + Turm Mattsuche (Matt in 7)
@@ -53,16 +77,18 @@ namespace Mattjes
       //b.SetFEN("8/8/4k3/8/8/8/8/K2BB3 w - - 0 1"); // Läufer + Läufer Mattsuche (Matt in 17)
       //b.SetFEN("8/8/8/8/3k4/8/N7/KB6 w - - 0 1"); // Läufer + Springer Mattsuche (Matt in 31)
       //b.SetFEN("8/8/4k3/3bn3/8/4Q3/8/K7 w - - 0 1"); // Dame gegen Läufer + Springer Mattsuche (Matt in 39)
-      b.SetFEN("5k2/5P1P/4P3/pP6/P6q/3P2P1/2P5/K7 w - a6 0 1"); // Bauern-Test (Matt in 6)
+      //b.SetFEN("5k2/5P1P/4P3/pP6/P6q/3P2P1/2P5/K7 w - a6 0 1"); // Bauern-Test (Matt in 6)
 
-      Console.WriteLine();
-      foreach (var move in b.GetMoves())
-      {
-        PrintMarkedBoard(b, new[] { (int)move.fromPos, move.toPos });
-        if (move.promoPiece != Piece.None) Console.WriteLine("    promotion: " + move.promoPiece);
-        Console.WriteLine();
-        Console.WriteLine();
-      }
+      RandomGame(b);
+
+      //Console.WriteLine();
+      //foreach (var move in b.GetMoves())
+      //{
+      //  PrintMarkedBoard(b, new[] { (int)move.fromPos, move.toPos });
+      //  if (move.promoPiece != Piece.None) Console.WriteLine("    promotion: " + move.promoPiece);
+      //  Console.WriteLine();
+      //  Console.WriteLine();
+      //}
 
       Console.WriteLine();
       Console.WriteLine("    " + b.GetFEN());
