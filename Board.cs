@@ -308,7 +308,7 @@ namespace Mattjes
         case "KQq": whiteCanCastleKingside = whiteCanCastleQueenside = blackCanCastleQueenside = true; break;
         case "KQk": whiteCanCastleKingside = whiteCanCastleQueenside = blackCanCastleKingside = true; break;
         case "KQkq": whiteCanCastleKingside = whiteCanCastleQueenside = blackCanCastleKingside = blackCanCastleQueenside = true; break;
-        default: return false; // ungültige Rohraden-Angaben (todo: shredderFEN implementieren für Chess960)
+        default: return false; // ungültige Rochraden-Angabe
       }
 
       // --- "en passant" einlesen (4 / 6) ---
@@ -786,8 +786,6 @@ namespace Mattjes
         fields[removePawnPos] = Piece.None; // Bauer entfernen
       }
 
-      // todo: castling
-
       if (move.promoPiece != Piece.None) fields[move.toPos] = move.promoPiece;
 
       // --- prüfen, ob der König nach dem Zug im Schach steht ---
@@ -796,6 +794,42 @@ namespace Mattjes
       {
         if (fields[kingPos] == searchKing) // König gefunden?
         {
+          if (!onlyCheck) // wird ein echter Zug durchgeführt?
+          {
+            if (kingPos == move.toPos && Math.Abs(move.toPos - move.fromPos) == 2) // wurde der König mit einer Rochade bewegt (zwei Felder seitlich)?
+            {
+              switch (kingPos)
+              {
+                case 2: // lange Rochade mit dem schwarzen König
+                {
+                  Debug.Assert(blackCanCastleQueenside); // lange Rochade sollte noch erlaubt sein
+                  Debug.Assert(fields[0] == Piece.BlackRook && fields[1] == Piece.None && fields[2] == Piece.BlackKing && fields[3] == Piece.None && fields[4] == Piece.None); // Felder prüfen
+                  fields[0] = Piece.None; fields[3] = Piece.BlackRook; // Turm bewegen
+                } break;
+                case 6: // kurze Rochade mit dem schwarzen König
+                {
+                  Debug.Assert(blackCanCastleKingside); // kurze Rochade sollte noch erlaubt sein
+                  Debug.Assert(fields[4] == Piece.None && fields[5] == Piece.None && fields[6] == Piece.BlackKing && fields[7] == Piece.BlackRook); // Felder prüfen
+                  fields[7] = Piece.None; fields[5] = Piece.BlackRook; // Turm bewegen
+                } break;
+                case 58: // lange Rochade mit dem weißen König
+                {
+                  Debug.Assert(whiteCanCastleQueenside); // lange Rochade sollte noch erlaubt sein
+                  Debug.Assert(fields[56] == Piece.WhiteRook && fields[57] == Piece.None && fields[58] == Piece.WhiteKing && fields[59] == Piece.None && fields[60] == Piece.None); // Felder prüfen
+                  fields[56] = Piece.None; fields[59] = Piece.WhiteRook; // Turm bewegen
+                } break;
+                case 62: // kurze Rochade mit dem weißen König
+                {
+                  Debug.Assert(whiteCanCastleKingside); // kurze Rochade sollte noch erlaubt sein
+                  Debug.Assert(fields[60] == Piece.None && fields[61] == Piece.None && fields[62] == Piece.WhiteKing && fields[63] == Piece.WhiteRook); // Felder prüfen
+                  fields[63] = Piece.None; fields[61] = Piece.WhiteRook; // Turm bewegen
+                } break;
+                default: throw new Exception(); // Rochade war unmöglich
+              }
+              break; // weiterer Schach-Checks nach Rochade nicht notwendig
+            }
+          }
+
           if (IsChecked(kingPos, whiteMove ? Piece.Black : Piece.White)) // prüfen, ob der eigene König vom Gegner angegriffen wird und noch im Schach steht
           {
             // --- Zug rückgängig machen ---
@@ -841,7 +875,30 @@ namespace Mattjes
       if ((piece & Piece.Pawn) != Piece.None && Math.Abs(move.toPos - move.fromPos) == Width * 2) // wurde ein Bauer zwei Felder weit gezogen -> "en passant" vormerken
       {
         enPassantPos = (move.fromPos + move.toPos) / 2;
-        // todo: enPassantPos dennoch auf 0 setzen, wenn kein gegnerischer Bauer in der Nähe ist
+        int posX = enPassantPos % Width;
+        bool opPawn = false;
+        if (whiteMove)
+        {
+          if (posX > 0 && fields[enPassantPos - Width - 1] == Piece.BlackPawn) opPawn = true;
+          if (posX < Width - 1 && fields[enPassantPos - Width + 1] == Piece.BlackPawn) opPawn = true;
+        }
+        else
+        {
+          if (posX > 0 && fields[enPassantPos + Width - 1] == Piece.WhitePawn) opPawn = true;
+          if (posX < Width - 1 && fields[enPassantPos + Width + 1] == Piece.WhitePawn) opPawn = true;
+        }
+        if (!opPawn) enPassantPos = 0; // kein "en passant" möglich, da kein gegenerischer Bauer in der Nähe ist
+      }
+
+      // prüfen, ob durch den Zug Rochaden ungültig werden
+      switch (move.fromPos)
+      {
+        case 0: blackCanCastleQueenside = false; break; // linker schwarzer Turm wurde mindestens das erste Mal bewegt
+        case 4: blackCanCastleQueenside = blackCanCastleKingside = false; break; // schwarzer König wurde mindestens das erste Mal bewegt
+        case 7: blackCanCastleKingside = false; break; // rechter schwarzer Turm wurde mindestens das erste Mal bewegt
+        case 56: whiteCanCastleQueenside = false; break; // linker weißer Turm wurde mindestens das erste Mal bewegt
+        case 60: whiteCanCastleQueenside = whiteCanCastleKingside = false; break; // weißer König wurde mindestens das erste Mal bewegt
+        case 63: whiteCanCastleKingside = false; break; // rechter weißer Turm wurde mindestens das erste Mal bewegt
       }
 
       whiteMove = !whiteMove; // Farbe welchseln, damit der andere Spieler am Zug ist
@@ -894,9 +951,43 @@ namespace Mattjes
               yield return move;
             }
           }
-        }
 
-        // todo: castling
+          // Rochade-Züge prüfen
+          if (pos == 60 && piece == Piece.WhiteKing) // der weiße König steht noch auf der Startposition?
+          {
+            if (whiteCanCastleQueenside // lange Rochade O-O-O möglich?
+                && fields[57] == Piece.None && fields[58] == Piece.None && fields[59] == Piece.None // sind die Felder noch frei?
+                && !IsChecked(58, Piece.Black) && !IsChecked(59, Piece.Black) && !IsChecked(60, Piece.Black)) // steht der König und seine Laufwege auch nicht im Schach?
+            {
+              Debug.Assert(fields[56] == Piece.WhiteRook); // weißer Turm sollte noch in der Ecke stehen
+              yield return new Move(pos, pos - 2, Piece.None, Piece.None); // König läuft zwei Felder = Rochade
+            }
+            if (whiteCanCastleKingside // kurze Rochade O-O möglich?
+                && fields[61] == Piece.None && fields[62] == Piece.None // sind die Felder noch frei?
+                && !IsChecked(60, Piece.Black) && !IsChecked(61, Piece.Black) && !IsChecked(62, Piece.Black)) // steht der König und seine Laufwege auch nicht im Schach?
+            {
+              Debug.Assert(fields[63] == Piece.WhiteRook); // weißer Turm solle noch in der Ecke stehen
+              yield return new Move(pos, pos + 2, Piece.None, Piece.None); // König läuft zwei Felder = Rochade
+            }
+          }
+          else if (pos == 4 && piece == Piece.BlackKing) // der weiße König steht noch auf der Startposition?
+          {
+            if (blackCanCastleQueenside // lange Rochade O-O-O möglich?
+                && fields[1] == Piece.None && fields[2] == Piece.None && fields[3] == Piece.None // sind die Felder noch frei?
+                && !IsChecked(2, Piece.White) && !IsChecked(3, Piece.White) && !IsChecked(4, Piece.White)) // steht der König und seine Laufwege auch nicht im Schach?
+            {
+              Debug.Assert(fields[0] == Piece.BlackRook); // schwarzer Turm sollte noch in der Ecke stehen
+              yield return new Move(pos, pos - 2, Piece.None, Piece.None); // König läuft zwei Felder = Rochade
+            }
+            if (blackCanCastleKingside // kurze Rochade O-O möglich?
+                && fields[5] == Piece.None && fields[6] == Piece.None // sind die Felder noch frei?
+                && !IsChecked(4, Piece.White) && !IsChecked(5, Piece.White) && !IsChecked(6, Piece.White)) // steht der König und seine Laufwege auch nicht im Schach?
+            {
+              Debug.Assert(fields[7] == Piece.BlackRook); // schwarzer Turm solle noch in der Ecke stehen
+              yield return new Move(pos, pos + 2, Piece.None, Piece.None); // König läuft zwei Felder = Rochade
+            }
+          }
+        }
       }
     }
 
