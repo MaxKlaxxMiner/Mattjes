@@ -89,8 +89,67 @@ namespace Mattjes
       }
     }
 
+    static int PiecePoints(Board b)
+    {
+      int r = 0;
+      for (var pos = 0; pos < b.fields.Length; pos++)
+      {
+        var p = b.fields[pos];
+        switch (p)
+        {
+          case Piece.WhiteQueen: r += 90; break;
+          case Piece.BlackQueen: r -= 90; break;
+          case Piece.WhiteRook: r += 50; break;
+          case Piece.BlackRook: r -= 50; break;
+          case Piece.WhiteBishop: r += 30; break;
+          case Piece.BlackBishop: r -= 30; break;
+          case Piece.WhiteKnight: r += 30; break;
+          case Piece.BlackKnight: r -= 30; break;
+          case Piece.WhitePawn: r += 10; r += (6 - pos / Board.Width) * (6 - pos / Board.Width); break;
+          case Piece.BlackPawn: r -= 10; r -= (pos / Board.Width - 1) * (pos / Board.Width - 1); break;
+        }
+      }
+      return r;
+    }
+
+    static int[] ScanMovePoints(Board b, Move[] moves, int depth)
+    {
+      int[] result = new int[moves.Length];
+
+      string backupFen = b.GetFEN();
+
+      for (int i = 0; i < moves.Length; i++)
+      {
+        if (!b.DoMove(moves[i])) throw new Exception("invalid move?");
+
+        var nextMoves = b.GetMoves().ToArray();
+
+        if (nextMoves.Length == 0) // keine weitere Zugmöglichkeit?
+        {
+          if (b.whiteMove) result[i] -= 1000; else result[i] += 1000;
+        }
+        else
+        {
+          if (depth > 0)
+          {
+            if (b.whiteMove) result[i] += ScanMovePoints(b, nextMoves, depth - 1).Max(); else result[i] += ScanMovePoints(b, nextMoves, depth - 1).Min();
+          }
+          else
+          {
+            result[i] += PiecePoints(b);
+            if (b.whiteMove) result[i] += nextMoves.Length; else result[i] -= nextMoves.Length;
+          }
+        }
+
+        b.SetFEN(backupFen);
+      }
+
+      return result;
+    }
+
     static void LolGame(Board b)
     {
+      var rnd = new Random(12345);
       for (; ; )
       {
         Console.WriteLine();
@@ -104,9 +163,35 @@ namespace Mattjes
           return;
         }
 
-        int next = 0;
+        int[] points = ScanMovePoints(b, moves, 3);
 
-        Console.WriteLine("    selected: " + moves[next]);
+        var nextList = new List<int>();
+        int bestNext = b.whiteMove ? int.MinValue : int.MaxValue;
+        for (int i = 0; i < points.Length; i++)
+        {
+          if (b.whiteMove)
+          {
+            if (points[i] >= bestNext)
+            {
+              if (points[i] > bestNext) nextList.Clear();
+              bestNext = points[i];
+              nextList.Add(i);
+            }
+          }
+          else
+          {
+            if (points[i] <= bestNext)
+            {
+              if (points[i] < bestNext) nextList.Clear();
+              bestNext = points[i];
+              nextList.Add(i);
+            }
+          }
+        }
+
+        int next = nextList[rnd.Next(nextList.Count)];
+
+        Console.WriteLine("    selected: " + moves[next] + " (" + bestNext + ")");
         if (!b.DoMove(moves[next])) throw new Exception("invalid move?");
         Console.WriteLine();
         PrintMarkedBoard(b, new[] { (int)moves[next].fromPos, moves[next].toPos });
