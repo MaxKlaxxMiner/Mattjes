@@ -893,6 +893,13 @@ namespace Mattjes
         case 60: whiteCanCastleQueenside = whiteCanCastleKingside = false; break; // weißer König wurde mindestens das erste Mal bewegt
         case 63: whiteCanCastleKingside = false; break; // rechter weißer Turm wurde mindestens das erste Mal bewegt
       }
+      switch (move.toPos)
+      {
+        case 0: blackCanCastleQueenside = false; break; // linker schwarzer Turm wurde geschlagen
+        case 7: blackCanCastleKingside = false; break; // rechter schwarzer Turm wurde geschlagen
+        case 56: whiteCanCastleQueenside = false; break; // linker weißer Turm wurde geschlagen
+        case 63: whiteCanCastleKingside = false; break; // rechter weißer Turm wurde geschlagen
+      }
 
       whiteMove = !whiteMove; // Farbe welchseln, damit der andere Spieler am Zug ist
       halfmovesSinceLastAction++;
