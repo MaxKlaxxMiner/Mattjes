@@ -781,7 +781,7 @@ namespace Mattjes
       {
         Debug.Assert(move.toPos % Width != move.fromPos % Width); // Spalte muss sich ändern
         Debug.Assert(move.capturePiece == Piece.None); // das Zielfeld enhält keine Figur (der geschlagene Bauer ist drüber oder drunter)
-        int removePawnPos = whiteMove ? move.toPos - Width : move.toPos + Width; // Position des zu schlagenden Bauern berechnen
+        int removePawnPos = whiteMove ? move.toPos + Width : move.toPos - Width; // Position des zu schlagenden Bauern berechnen
         Debug.Assert(fields[removePawnPos] == (whiteMove ? Piece.BlackPawn : Piece.WhitePawn)); // es wird ein Bauer erwartet, welcher geschlagen wird
         fields[removePawnPos] = Piece.None; // Bauer entfernen
       }
@@ -805,11 +805,11 @@ namespace Mattjes
             {
               if (whiteMove)
               {
-                fields[move.toPos - Width] = Piece.BlackPawn; // schwarzen Bauer wieder zurück setzen
+                fields[move.toPos + Width] = Piece.BlackPawn; // schwarzen Bauer wieder zurück setzen
               }
               else
               {
-                fields[move.toPos + Width] = Piece.WhitePawn; // weißen Bauer wieder zurück setzen
+                fields[move.toPos - Width] = Piece.WhitePawn; // weißen Bauer wieder zurück setzen
               }
             }
             return false; // Zug war nicht erlaubt, da der König sonst im Schach stehen würde
@@ -827,11 +827,11 @@ namespace Mattjes
         {
           if (whiteMove)
           {
-            fields[move.toPos - Width] = Piece.BlackPawn; // schwarzen Bauer wieder zurück setzen
+            fields[move.toPos + Width] = Piece.BlackPawn; // schwarzen Bauer wieder zurück setzen
           }
           else
           {
-            fields[move.toPos + Width] = Piece.WhitePawn; // weißen Bauer wieder zurück setzen
+            fields[move.toPos - Width] = Piece.WhitePawn; // weißen Bauer wieder zurück setzen
           }
         }
         return true;
