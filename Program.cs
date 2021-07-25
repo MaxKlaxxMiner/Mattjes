@@ -1,14 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+// ReSharper disable UnusedMember.Local
 
 namespace Mattjes
 {
   class Program
   {
-    static void PrintMarkedBoard(Board b, IEnumerable<int> marker)
+    static void PrintMarkedBoard(IBoard b, IEnumerable<int> marker)
     {
       var tmp = b.ToString(marker, (char)0x1000);
       bool last = false;
@@ -37,84 +36,34 @@ namespace Mattjes
       }
     }
 
-    static void RandomGame(Board b, bool prioCatch = false, bool prioCastling = false)
-    {
-      var rnd = new Random(12345);
-      for (; ; )
-      {
-        Console.WriteLine();
-        Console.WriteLine("    FEN: " + b.GetFEN());
-        var moves = b.GetMoves().ToArray();
-        Console.WriteLine("    moves: " + moves.Length);
-
-        if (moves.Length == 0)
-        {
-          Console.WriteLine("   ... end ...");
-          return;
-        }
-        if (prioCatch) // 2x Wahrscheinlichkeit bei Zügen, welche eine Figur schlagen
-        {
-          moves = moves.Where(x => x.capturePiece != Piece.None)
-            .Concat(moves.Where(x => x.capturePiece != Piece.None))
-            .Concat(moves.Where(x => x.capturePiece == Piece.None)).ToArray();
-        }
-        if (prioCastling && (b.blackCanCastleKingside || b.blackCanCastleQueenside || b.whiteCanCastleKingside || b.whiteCanCastleQueenside)) // 2x Wahrscheinlichkeit bei Zügen, welche eine Rochade begünstigen
-        {
-          var tmpGood = moves
-            .Where(x => x.fromPos != 0 && x.fromPos != 7 && x.fromPos != 56 && x.fromPos != 63)
-            .Where(x => x.fromPos == 1 || x.fromPos == 2 || x.fromPos == 3 || x.fromPos == 4 && (x.toPos == 2 || x.toPos == 6) || x.fromPos == 5 || x.fromPos == 6 || x.fromPos == 7
-                          || x.fromPos == 57 || x.fromPos == 58 || x.fromPos == 59 || x.fromPos == 60 && (x.toPos == 58 || x.toPos == 62) || x.fromPos == 61 || x.fromPos == 62).ToArray();
-          if (tmpGood.Length > 0)
-          {
-            moves = tmpGood;
-          }
-          else
-          {
-            tmpGood = moves.Where(x => x.fromPos != 0 && x.fromPos != 4 && x.fromPos != 7 && x.fromPos != 56 && x.fromPos != 60 && x.fromPos != 63).ToArray();
-            if (tmpGood.Length > 0) moves = tmpGood;
-          }
-        }
-        else if (prioCastling && prioCatch) // Figuren schlagen nochmals verdoppeln...
-        {
-          moves = moves.Where(x => x.capturePiece != Piece.None)
-            .Concat(moves.Where(x => x.capturePiece != Piece.None))
-            .Concat(moves.Where(x => x.capturePiece == Piece.None)).ToArray();
-        }
-        int next = rnd.Next(moves.Length);
-        Console.WriteLine("    selected: " + moves[next]);
-        if (!b.DoMove(moves[next])) throw new Exception("invalid move?");
-        Console.WriteLine();
-        PrintMarkedBoard(b, new[] { (int)moves[next].fromPos, moves[next].toPos });
-        Console.ReadLine();
-      }
-    }
-
-    static int PiecePoints(Board b)
+    static int PiecePoints(IBoard b)
     {
       int r = 0;
-      for (var pos = 0; pos < b.fields.Length; pos++)
+      for (var pos = 0; pos < IBoard.Width * IBoard.Height; pos++)
       {
-        var p = b.fields[pos];
+        var p = b.GetField(pos);
         switch (p)
         {
-          case Piece.WhiteQueen: r += 90; break;
-          case Piece.BlackQueen: r -= 90; break;
-          case Piece.WhiteRook: r += 50; break;
-          case Piece.BlackRook: r -= 50; break;
-          case Piece.WhiteBishop: r += 30; break;
-          case Piece.BlackBishop: r -= 30; break;
-          case Piece.WhiteKnight: r += 30; break;
-          case Piece.BlackKnight: r -= 30; break;
-          case Piece.WhitePawn: r += 10; r += (6 - pos / Board.Width) * (6 - pos / Board.Width); break;
-          case Piece.BlackPawn: r -= 10; r -= (pos / Board.Width - 1) * (pos / Board.Width - 1); break;
+          case Piece.WhiteQueen: r += 900; break;
+          case Piece.BlackQueen: r -= 900; break;
+          case Piece.WhiteRook: r += 500; break;
+          case Piece.BlackRook: r -= 500; break;
+          case Piece.WhiteBishop: r += 300; break;
+          case Piece.BlackBishop: r -= 300; break;
+          case Piece.WhiteKnight: r += 300; break;
+          case Piece.BlackKnight: r -= 300; break;
+          case Piece.WhitePawn: r += 100; r += (6 - pos / IBoard.Width) * (6 - pos / IBoard.Width); break;
+          case Piece.BlackPawn: r -= 100; r -= (pos / IBoard.Width - 1) * (pos / IBoard.Width - 1); break;
         }
       }
       return r;
     }
 
-    static int[] ScanMovePoints(Board b, Move[] moves, int depth)
+    static long nodeCounter;
+
+    static int[] ScanMovePoints(IBoard b, Move[] moves, int depth)
     {
-      int[] result = new int[moves.Length];
+      var result = new int[moves.Length];
 
       string backupFen = b.GetFEN();
 
@@ -122,22 +71,56 @@ namespace Mattjes
       {
         if (!b.DoMove(moves[i])) throw new Exception("invalid move?");
 
+        nodeCounter++;
+
         var nextMoves = b.GetMoves().ToArray();
 
-        if (nextMoves.Length == 0) // keine weitere Zugmöglichkeit?
+        if (nextMoves.Length == 0) // keine weiteren Zugmöglichkeit?
         {
-          if (b.whiteMove) result[i] -= 1000; else result[i] += 1000;
+          for (int kingPos = 0; kingPos < IBoard.Width * IBoard.Height; kingPos++)
+          {
+            if (b.WhiteMove)
+            {
+              if (b.GetField(kingPos) == Piece.WhiteKing)
+              {
+                if (((Board)b).IsChecked(kingPos, Piece.Black))
+                {
+                  result[i] -= 25000 + depth * 100; // Matt
+                }
+                else
+                {
+                  result[i] += 1000; // Patt
+                }
+                break;
+              }
+            }
+            else
+            {
+              if (b.GetField(kingPos) == Piece.BlackKing)
+              {
+                if (((Board)b).IsChecked(kingPos, Piece.White))
+                {
+                  result[i] += 25000 + depth * 100; // Matt
+                }
+                else
+                {
+                  result[i] -= 1000; // Patt
+                }
+                break;
+              }
+            }
+          }
         }
         else
         {
           if (depth > 0)
           {
-            if (b.whiteMove) result[i] += ScanMovePoints(b, nextMoves, depth - 1).Max(); else result[i] += ScanMovePoints(b, nextMoves, depth - 1).Min();
+            if (b.WhiteMove) result[i] += ScanMovePoints(b, nextMoves, depth - 1).Max(); else result[i] += ScanMovePoints(b, nextMoves, depth - 1).Min();
           }
           else
           {
             result[i] += PiecePoints(b);
-            if (b.whiteMove) result[i] += nextMoves.Length; else result[i] -= nextMoves.Length;
+            if (b.WhiteMove) result[i] += nextMoves.Length; else result[i] -= nextMoves.Length;
           }
         }
 
@@ -147,7 +130,7 @@ namespace Mattjes
       return result;
     }
 
-    static void LolGame(Board b)
+    static void LolGame(IBoard b)
     {
       var rnd = new Random(12345);
       for (; ; )
@@ -163,13 +146,23 @@ namespace Mattjes
           return;
         }
 
-        int[] points = ScanMovePoints(b, moves, 3);
+        int[] points = null;
+        int time = Environment.TickCount;
+        int maxDepth;
+        nodeCounter = 0;
+        for (maxDepth = 0; maxDepth < 100; maxDepth++)
+        {
+          points = ScanMovePoints(b, moves, maxDepth);
+          int duration = Environment.TickCount - time;
+          if (duration > 2000) break;
+        }
+        time = Environment.TickCount - time;
 
         var nextList = new List<int>();
-        int bestNext = b.whiteMove ? int.MinValue : int.MaxValue;
+        int bestNext = b.WhiteMove ? int.MinValue : int.MaxValue;
         for (int i = 0; i < points.Length; i++)
         {
-          if (b.whiteMove)
+          if (b.WhiteMove)
           {
             if (points[i] >= bestNext)
             {
@@ -191,11 +184,25 @@ namespace Mattjes
 
         int next = nextList[rnd.Next(nextList.Count)];
 
-        Console.WriteLine("    selected: " + moves[next] + " (" + bestNext + ")");
+        Console.WriteLine("    selected: " + moves[next] + " (" + (bestNext / 100.0).ToString("N2") + ")");
+        Console.WriteLine("    nodes: " + nodeCounter.ToString("N0") + " (" + (nodeCounter * 1000 / time).ToString("N0") + " / s), depth: " + maxDepth);
         if (!b.DoMove(moves[next])) throw new Exception("invalid move?");
+      loop:
         Console.WriteLine();
         PrintMarkedBoard(b, new[] { (int)moves[next].fromPos, moves[next].toPos });
-        Console.ReadLine();
+        string fixMove = Console.ReadLine();
+        if (fixMove.Length == 4)
+        {
+          int fromPos = IBoard.PosFromChars(fixMove.Substring(0, 2));
+          int toPos = IBoard.PosFromChars(fixMove.Substring(2, 2));
+          var m = b.GetMoves().FirstOrDefault(x => x.fromPos == fromPos && x.toPos == toPos);
+          if (m.fromPos == fromPos && m.toPos == toPos)
+          {
+            b.DoMove(m);
+            moves[next] = m;
+            goto loop;
+          }
+        }
       }
     }
 
@@ -204,7 +211,7 @@ namespace Mattjes
       Console.WriteLine();
       Console.WriteLine();
 
-      var b = new Board();
+      IBoard b = new Board();
 
       b.SetFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"); // Startaufstellung
       //b.SetFEN("r3k2r/p2ppp1p/8/4Q3/8/2BB4/PPPPPPPP/R3K2R w KQkq - 0 1"); // Rochaden-Test: alle erlaubt
@@ -220,7 +227,6 @@ namespace Mattjes
       //b.SetFEN("8/8/4k3/3bn3/8/4Q3/8/K7 w - - 0 1"); // Dame gegen Läufer + Springer Mattsuche (Matt in 39)
       //b.SetFEN("5k2/5P1P/4P3/pP6/P6q/3P2P1/2P5/K7 w - a6 0 1"); // Bauern-Test (Matt in 6)
 
-      //RandomGame(b, true, true);
       LolGame(b);
 
       //Console.WriteLine();
