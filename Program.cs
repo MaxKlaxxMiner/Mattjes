@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 // ReSharper disable UnusedMember.Local
 
@@ -206,6 +207,32 @@ namespace Mattjes
       }
     }
 
+    // --- Reference ---
+    // [0]      0,1 ms   -19, -16, -19, -16, -19, -16, -19, -16, -19, -16, -19, -16, -19, -16, -19, -16, -20, -20, -20, -20
+    // [1]      2,2 ms    16,  20,  18,  20,  18,  21,  23,  27,  26,  29,  16,  19,  18,  20,  16,  20,  16,  18,  18,  16
+    // [2]     41,0 ms   -28, -24, -28, -24, -28, -22, -28, -22, -28, -24, -28, -22, -28, -23, -28, -24, -29, -29, -27, -29
+    // [3]  1.142,4 ms    15,  27,  24,  20,  24,  26,  21,  28,  29,  33,  13,  20,  24,  20,  15,  21,  15,  25,  20,  15
+    // [4] 23.996,5 ms   -28, -29,  54, -30,  66,  69, -32, -25,  71,  78, -35, -25,  57, -23, -32, -27,  -9,  -9, -22, -33
+
+    static void SpeedCheck(IBoard b)
+    {
+      var moves = b.GetMoves().ToArray();
+      Console.WriteLine("    moves: " + moves.Length);
+
+      for (int maxDepth = 0; maxDepth < 100; maxDepth++)
+      {
+        for (int r = 0; r < 5; r++)
+        {
+          var time = Stopwatch.StartNew();
+          nodeCounter = 0;
+          var points = ScanMovePoints(b, moves, maxDepth);
+          time.Stop();
+          Console.WriteLine("    [{0}]{1,9:N1} ms  {2}", maxDepth, time.ElapsedTicks * 1000.0 / Stopwatch.Frequency, string.Join(",", points.OrderBy(x => x).Select(x => x.ToString("N0").PadLeft(4))));
+        }
+      }
+
+    }
+
     static void Main(string[] args)
     {
       Console.WriteLine();
@@ -227,7 +254,8 @@ namespace Mattjes
       //b.SetFEN("8/8/4k3/3bn3/8/4Q3/8/K7 w - - 0 1"); // Dame gegen Läufer + Springer Mattsuche (Matt in 39)
       //b.SetFEN("5k2/5P1P/4P3/pP6/P6q/3P2P1/2P5/K7 w - a6 0 1"); // Bauern-Test (Matt in 6)
 
-      LolGame(b);
+      //LolGame(b);
+      SpeedCheck(b);
 
       //Console.WriteLine();
       //foreach (var move in b.GetMoves())
