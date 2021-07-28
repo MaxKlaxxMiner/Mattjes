@@ -1,12 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-// ReSharper disable UnusedMethodReturnValue.Global
-// ReSharper disable UnusedType.Global
-// ReSharper disable MemberCanBePrivate.Global
-// ReSharper disable NotAccessedField.Global
-// ReSharper disable UnusedMember.Global
-// ReSharper disable ArrangeRedundantParentheses
 
 namespace Mattjes
 {
@@ -19,7 +13,7 @@ namespace Mattjes
     /// <summary>
     /// merkt sich alle Spielfelder mit den jeweiligen Spielfiguren
     /// </summary>
-    public readonly Piece[] fields = new Piece[Width * Height];
+    readonly Piece[] fields = new Piece[Width * Height];
     #endregion
 
     #region # // --- SetField / GetField / Clear ---
@@ -111,7 +105,7 @@ namespace Mattjes
     /// </summary>
     /// <param name="pos">Position auf dem Spielfeld mit der zu testenden Figur</param>
     /// <returns>Aufzählung der theretisch begehbaren Felder</returns>
-    public IEnumerable<int> ScanMove(int pos)
+    IEnumerable<int> ScanMove(int pos)
     {
       var piece = fields[pos];
       if (piece == Piece.None) yield break; // keine Figur auf dem Spielfeld?
