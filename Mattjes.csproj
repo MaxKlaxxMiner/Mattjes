@@ -46,6 +46,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="BoardReference.cs" />
+    <Compile Include="Crc64.cs" />
     <Compile Include="IBoard.cs" />
     <Compile Include="Move.cs" />
     <Compile Include="Piece.cs" />

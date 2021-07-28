@@ -112,6 +112,12 @@ namespace Mattjes
     /// <param name="ofs">Startposition im Array</param>
     /// <returns>Anzahl der gelesenen Bytes</returns>
     public abstract int SetFastFen(byte[] array, int ofs);
+
+    /// <summary>
+    /// generiert eine eindeutige Prüfsumme des Spielfeldes inkl. Zugnummern
+    /// </summary>
+    /// <returns>64-Bit Prüfsumme</returns>
+    public abstract ulong GetFullChecksum();
     #endregion
 
     #region # // --- Helper Methods ---

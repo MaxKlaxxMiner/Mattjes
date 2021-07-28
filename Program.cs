@@ -208,6 +208,65 @@ namespace Mattjes
       return result;
     }
 
+    static readonly Dictionary<ulong, int[]> HashTable = new Dictionary<ulong, int[]>();
+
+    static int[] ScanMovePointsHashed(IBoard b, Move[] moves, int depth)
+    {
+      var result = new int[moves.Length];
+
+      byte[] backupFen = new byte[64];
+      b.GetFastFen(backupFen, 0);
+
+      if (depth == 0)
+      {
+        for (int i = 0; i < moves.Length; i++)
+        {
+          if (!b.DoMove(moves[i])) throw new Exception("invalid move?");
+
+          nodeCounter++;
+
+          int moveCount = b.GetMoves().Count();
+          if (moveCount == 0)
+          {
+            result[i] += EndCheck(b, depth);
+          }
+          else
+          {
+            result[i] += PiecePoints(b);
+            if (b.WhiteMove) result[i] += moveCount; else result[i] -= moveCount;
+          }
+
+          b.SetFastFen(backupFen, 0);
+        }
+
+        return result;
+      }
+
+      for (int i = 0; i < moves.Length; i++)
+      {
+        if (!b.DoMove(moves[i])) throw new Exception("invalid move?");
+
+        nodeCounter++;
+
+        ulong checkSum = b.GetFullChecksum();
+
+        var nextMoves = b.GetMoves().ToArray();
+
+        if (nextMoves.Length == 0) // keine weiteren Zugmöglichkeit?
+        {
+          result[i] += EndCheck(b, depth);
+        }
+        else
+        {
+          if (b.WhiteMove) result[i] += ScanMovePointsFastFen(b, nextMoves, depth - 1).Max(); else result[i] += ScanMovePointsFastFen(b, nextMoves, depth - 1).Min();
+        }
+
+        b.SetFastFen(backupFen, 0);
+      }
+
+      return result;
+    }
+
     static void LolGame(IBoard b)
     {
       var rnd = new Random(12345);
