@@ -62,7 +62,7 @@ namespace Mattjes
 
     static long nodeCounter;
 
-    static int[] ScanMovePoints(IBoard b, Move[] moves, int depth)
+    static int[] ScanMovePointsSlowFen(IBoard b, Move[] moves, int depth)
     {
       var result = new int[moves.Length];
 
@@ -84,7 +84,7 @@ namespace Mattjes
             {
               if (b.GetField(kingPos) == Piece.WhiteKing)
               {
-                if (((Board)b).IsChecked(kingPos, Piece.Black))
+                if (b.IsChecked(kingPos, Piece.Black))
                 {
                   result[i] -= 25000 + depth * 100; // Matt
                 }
@@ -99,7 +99,7 @@ namespace Mattjes
             {
               if (b.GetField(kingPos) == Piece.BlackKing)
               {
-                if (((Board)b).IsChecked(kingPos, Piece.White))
+                if (b.IsChecked(kingPos, Piece.White))
                 {
                   result[i] += 25000 + depth * 100; // Matt
                 }
@@ -116,7 +116,7 @@ namespace Mattjes
         {
           if (depth > 0)
           {
-            if (b.WhiteMove) result[i] += ScanMovePoints(b, nextMoves, depth - 1).Max(); else result[i] += ScanMovePoints(b, nextMoves, depth - 1).Min();
+            if (b.WhiteMove) result[i] += ScanMovePointsSlowFen(b, nextMoves, depth - 1).Max(); else result[i] += ScanMovePointsSlowFen(b, nextMoves, depth - 1).Min();
           }
           else
           {
@@ -126,6 +126,83 @@ namespace Mattjes
         }
 
         b.SetFEN(backupFen);
+      }
+
+      return result;
+    }
+
+    static int EndCheck(IBoard b, int depth)
+    {
+      for (int kingPos = 0; kingPos < IBoard.Width * IBoard.Height; kingPos++)
+      {
+        if (b.WhiteMove)
+        {
+          if (b.GetField(kingPos) == Piece.WhiteKing)
+          {
+            return b.IsChecked(kingPos, Piece.Black) ? -25000 - depth * 100 : 1000;
+          }
+        }
+        else
+        {
+          if (b.GetField(kingPos) == Piece.BlackKing)
+          {
+            return b.IsChecked(kingPos, Piece.White) ? 25000 + depth * 100 : -1000;
+          }
+        }
+      }
+      throw new IndexOutOfRangeException();
+    }
+
+    static int[] ScanMovePointsFastFen(IBoard b, Move[] moves, int depth)
+    {
+      var result = new int[moves.Length];
+
+      byte[] backupFen = new byte[64];
+      b.GetFastFen(backupFen, 0);
+
+      if (depth == 0)
+      {
+        for (int i = 0; i < moves.Length; i++)
+        {
+          if (!b.DoMove(moves[i])) throw new Exception("invalid move?");
+
+          nodeCounter++;
+
+          int moveCount = b.GetMoves().Count();
+          if (moveCount == 0)
+          {
+            result[i] += EndCheck(b, depth);
+          }
+          else
+          {
+            result[i] += PiecePoints(b);
+            if (b.WhiteMove) result[i] += moveCount; else result[i] -= moveCount;
+          }
+
+          b.SetFastFen(backupFen, 0);
+        }
+
+        return result;
+      }
+
+      for (int i = 0; i < moves.Length; i++)
+      {
+        if (!b.DoMove(moves[i])) throw new Exception("invalid move?");
+
+        nodeCounter++;
+
+        var nextMoves = b.GetMoves().ToArray();
+
+        if (nextMoves.Length == 0) // keine weiteren Zugmöglichkeit?
+        {
+          result[i] += EndCheck(b, depth);
+        }
+        else
+        {
+          if (b.WhiteMove) result[i] += ScanMovePointsFastFen(b, nextMoves, depth - 1).Max(); else result[i] += ScanMovePointsFastFen(b, nextMoves, depth - 1).Min();
+        }
+
+        b.SetFastFen(backupFen, 0);
       }
 
       return result;
@@ -153,7 +230,7 @@ namespace Mattjes
         nodeCounter = 0;
         for (maxDepth = 0; maxDepth < 100; maxDepth++)
         {
-          points = ScanMovePoints(b, moves, maxDepth);
+          points = ScanMovePointsFastFen(b, moves, maxDepth);
           int duration = Environment.TickCount - time;
           if (duration > 2000) break;
         }
@@ -208,11 +285,19 @@ namespace Mattjes
     }
 
     // --- Reference ---
-    // [0]      0,1 ms   -19, -16, -19, -16, -19, -16, -19, -16, -19, -16, -19, -16, -19, -16, -19, -16, -20, -20, -20, -20
-    // [1]      2,2 ms    16,  20,  18,  20,  18,  21,  23,  27,  26,  29,  16,  19,  18,  20,  16,  20,  16,  18,  18,  16
-    // [2]     41,0 ms   -28, -24, -28, -24, -28, -22, -28, -22, -28, -24, -28, -22, -28, -23, -28, -24, -29, -29, -27, -29
-    // [3]  1.142,4 ms    15,  27,  24,  20,  24,  26,  21,  28,  29,  33,  13,  20,  24,  20,  15,  21,  15,  25,  20,  15
-    // [4] 23.996,5 ms   -28, -29,  54, -30,  66,  69, -32, -25,  71,  78, -35, -25,  57, -23, -32, -27,  -9,  -9, -22, -33
+    // [0]      0,2 ms   -20, -20, -20, -20, -19, -19, -19, -19, -19, -19, -19, -19, -16, -16, -16, -16, -16, -16, -16, -16 (119.109 nps)
+    // [1]      2,1 ms    16,  16,  16,  16,  16,  18,  18,  18,  18,  18,  19,  20,  20,  20,  20,  21,  23,  26,  27,  29 (195.570 nps)
+    // [2]     40,9 ms   -29, -29, -29, -28, -28, -28, -28, -28, -28, -28, -28, -27, -24, -24, -24, -24, -23, -22, -22, -22 (227.922 nps)
+    // [3]  1.114,5 ms    13,  15,  15,  15,  15,  20,  20,  20,  20,  21,  21,  24,  24,  24,  25,  26,  27,  28,  29,  33 (185.381 nps)
+    // [4] 22.711,4 ms   -35, -33, -32, -32, -30, -29, -28, -27, -25, -25, -23, -22,  -9,  -9,  54,  57,  66,  69,  71,  78 (223.333 nps)
+
+    // --- Reference + FastFen ---
+    // [0]      0,1 ms   -20, -20, -20, -20, -19, -19, -19, -19, -19, -19, -19, -19, -16, -16, -16, -16, -16, -16, -16, -16 (223.466 nps)
+    // [1]      1,7 ms    16,  16,  16,  16,  16,  18,  18,  18,  18,  18,  19,  20,  20,  20,  20,  21,  23,  26,  27,  29 (254.105 nps)
+    // [2]     28,7 ms   -29, -29, -29, -28, -28, -28, -28, -28, -28, -28, -28, -27, -24, -24, -24, -24, -23, -22, -22, -22 (324.682 nps)
+    // [3]    836,6 ms    13,  15,  15,  15,  15,  20,  20,  20,  20,  21,  21,  24,  24,  24,  25,  26,  27,  28,  29,  33 (246.967 nps)
+    // [4] 15.967,3 ms   -35, -33, -32, -32, -30, -29, -28, -27, -25, -25, -23, -22,  -9,  -9,  54,  57,  66,  69,  71,  78 (317.663 nps)
+
 
     static void SpeedCheck(IBoard b)
     {
@@ -225,9 +310,10 @@ namespace Mattjes
         {
           var time = Stopwatch.StartNew();
           nodeCounter = 0;
-          var points = ScanMovePoints(b, moves, maxDepth);
+          var points = ScanMovePointsFastFen(b, moves, maxDepth);
           time.Stop();
-          Console.WriteLine("    [{0}]{1,9:N1} ms  {2}", maxDepth, time.ElapsedTicks * 1000.0 / Stopwatch.Frequency, string.Join(",", points.OrderBy(x => x).Select(x => x.ToString("N0").PadLeft(4))));
+          double durationMs = time.ElapsedTicks * 1000.0 / Stopwatch.Frequency;
+          Console.WriteLine("    [{0}]{1,9:N1} ms  {2} ({3:N0} nps)", maxDepth, durationMs, string.Join(",", points.OrderBy(x => x).Select(x => x.ToString("N0").PadLeft(4))), nodeCounter / durationMs * 1000.0);
         }
       }
 
@@ -238,7 +324,7 @@ namespace Mattjes
       Console.WriteLine();
       Console.WriteLine();
 
-      IBoard b = new Board();
+      IBoard b = new BoardReference();
 
       b.SetFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"); // Startaufstellung
       //b.SetFEN("r3k2r/p2ppp1p/8/4Q3/8/2BB4/PPPPPPPP/R3K2R w KQkq - 0 1"); // Rochaden-Test: alle erlaubt

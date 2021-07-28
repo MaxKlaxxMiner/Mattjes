@@ -13,7 +13,7 @@ namespace Mattjes
   /// <summary>
   /// Merkt sich ein Schachbrett
   /// </summary>
-  public sealed class Board : IBoard
+  public sealed class BoardReference : IBoard
   {
     #region # // --- values ---
     /// <summary>
@@ -382,7 +382,7 @@ namespace Mattjes
     /// <param name="pos">Position, welche geprüft werden soll</param>
     /// <param name="checkerColor">zu prüfende Spielerfarbe, welche das Schach geben könnte (nur <see cref="Piece.White"/> oder <see cref="Piece.Black"/> erlaubt)</param>
     /// <returns>true, wenn das Feld angegriffen wird und unter Schach steht</returns>
-    public bool IsChecked(int pos, Piece checkerColor)
+    public override bool IsChecked(int pos, Piece checkerColor)
     {
       int posX = pos % Width;
       int posY = pos / Width;
@@ -521,6 +521,75 @@ namespace Mattjes
       }
 
       return false;
+    }
+
+    /// <summary>
+    /// fragt das gesamte Spielbrett ab
+    /// </summary>
+    /// <param name="array">Array, wohin die Daten des Spielbrettes gespeichert werden sollen</param>
+    /// <param name="ofs">Startposition im Array</param>
+    /// <returns>Anzahl der geschriebenen Bytes</returns>
+    public override int GetFastFen(byte[] array, int ofs)
+    {
+      int p = 0;
+      int gap = 0;
+      foreach (var field in fields)
+      {
+        if (field == Piece.None)
+        {
+          gap++;
+          continue;
+        }
+        if (gap > 0)
+        {
+          array[ofs + p++] = (byte)(uint)gap;
+          gap = 0;
+        }
+        array[ofs + p++] = (byte)field;
+      }
+      if (gap > 0) array[ofs + p++] = (byte)(uint)gap;
+      array[ofs + p++] = (byte)((WhiteMove ? 1u : 0) | (WhiteCanCastleKingside ? 2u : 0) | (WhiteCanCastleQueenside ? 4u : 0) | (BlackCanCastleKingside ? 8u : 0) | (BlackCanCastleQueenside ? 16u : 0));
+      array[ofs + p++] = (byte)(sbyte)EnPassantPos;
+      array[ofs + p++] = (byte)(uint)HalfmoveClock;
+      array[ofs + p++] = (byte)(uint)(HalfmoveClock >> 8);
+      array[ofs + p++] = (byte)(uint)MoveNumber;
+      array[ofs + p++] = (byte)(uint)(MoveNumber >> 8);
+
+      return p;
+    }
+
+    /// <summary>
+    /// setzt das gesamte Spielbrett
+    /// </summary>
+    /// <param name="array">Array, worraus die Daten des Spielbrettes gelesen werden sollen</param>
+    /// <param name="ofs">Startposition im Array</param>
+    /// <returns>Anzahl der gelesenen Bytes</returns>
+    public override int SetFastFen(byte[] array, int ofs)
+    {
+      int p = 0;
+      byte b;
+      for (int i = 0; i < fields.Length; i++)
+      {
+        b = array[ofs + p++];
+        if (b < 64) // gap found?
+        {
+          fields[i] = Piece.None;
+          while (--b != 0) fields[++i] = Piece.None;
+          continue;
+        }
+        fields[i] = (Piece)b;
+      }
+      b = array[ofs + p++];
+      WhiteMove = (b & 1) != 0;
+      WhiteCanCastleKingside = (b & 2) != 0;
+      WhiteCanCastleQueenside = (b & 4) != 0;
+      BlackCanCastleKingside = (b & 8) != 0;
+      BlackCanCastleQueenside = (b & 16) != 0;
+      EnPassantPos = (sbyte)array[ofs + p++];
+      HalfmoveClock = array[ofs + p] | array[ofs + p + 1] << 8; p += sizeof(short);
+      MoveNumber = array[ofs + p] | array[ofs + p + 1] << 8; p += sizeof(short);
+
+      return p;
     }
 
     /// <summary>

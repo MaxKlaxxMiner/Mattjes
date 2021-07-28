@@ -89,6 +89,29 @@ namespace Mattjes
     /// </summary>
     /// <returns>Aufzählung der Zugmöglichkeiten</returns>
     public abstract IEnumerable<Move> GetMoves();
+
+    /// <summary>
+    /// prüft, ob ein bestimmtes Spielfeld unter Schach steht
+    /// </summary>
+    /// <param name="pos">Position, welche geprüft werden soll</param>
+    /// <param name="checkerColor">zu prüfende Spielerfarbe, welche das Schach geben könnte (nur <see cref="Piece.White"/> oder <see cref="Piece.Black"/> erlaubt)</param>
+    /// <returns>true, wenn das Feld angegriffen wird und unter Schach steht</returns>
+    public abstract bool IsChecked(int pos, Piece checkerColor);
+
+    /// <summary>
+    /// fragt das gesamte Spielbrett ab
+    /// </summary>
+    /// <param name="array">Array, wohin die Daten des Spielbrettes gespeichert werden sollen</param>
+    /// <param name="ofs">Startposition im Array</param>
+    /// <returns>Anzahl der geschriebenen Bytes</returns>
+    public abstract int GetFastFen(byte[] array, int ofs);
+    /// <summary>
+    /// setzt das gesamte Spielbrett
+    /// </summary>
+    /// <param name="array">Array, worraus die Daten des Spielbrettes gelesen werden sollen</param>
+    /// <param name="ofs">Startposition im Array</param>
+    /// <returns>Anzahl der gelesenen Bytes</returns>
+    public abstract int SetFastFen(byte[] array, int ofs);
     #endregion
 
     #region # // --- Helper Methods ---
