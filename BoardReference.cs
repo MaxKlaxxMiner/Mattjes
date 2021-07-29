@@ -596,8 +596,21 @@ namespace Mattjes
         .Crc64Update(WhiteMove)              // Spielerfarbe, welche am Zug ist
         .Crc64Update(WhiteCanCastleKingside).Crc64Update(WhiteCanCastleQueenside) // weiße Rochademöglichkeiten
         .Crc64Update(BlackCanCastleKingside).Crc64Update(BlackCanCastleQueenside) // schwarze Rochademöglichkeiten
-        .Crc64Update(EnPassantPos)
-        .Crc64Update(HalfmoveClock).Crc64Update(MoveNumber);
+        .Crc64Update(EnPassantPos)           // letzter doppelter Bauernzug für "en passant"
+        .Crc64Update(HalfmoveClock).Crc64Update(MoveNumber); // Zugnummern
+    }
+
+    /// <summary>
+    /// generiert eine eindeutige Prüfsumme des Spielfeldes ohne Zugnummern
+    /// </summary>
+    /// <returns>64-Bit Prüfsumme</returns>
+    public override ulong GetChecksum()
+    {
+      return Crc64.Start.Crc64Update(fields) // Figure auf dem Spielfeld
+        .Crc64Update(WhiteMove)              // Spielerfarbe, welche am Zug ist
+        .Crc64Update(WhiteCanCastleKingside).Crc64Update(WhiteCanCastleQueenside) // weiße Rochademöglichkeiten
+        .Crc64Update(BlackCanCastleKingside).Crc64Update(BlackCanCastleQueenside) // schwarze Rochademöglichkeiten
+        .Crc64Update(EnPassantPos);          // letzter doppelter Bauernzug für "en passant"
     }
 
     /// <summary>

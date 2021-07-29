@@ -3,6 +3,7 @@ using System.Linq;
 using System.Text;
 // ReSharper disable MemberCanBePrivate.Global
 // ReSharper disable UnusedMethodReturnValue.Global
+// ReSharper disable UnusedMember.Global
 
 namespace Mattjes
 {
@@ -118,6 +119,12 @@ namespace Mattjes
     /// </summary>
     /// <returns>64-Bit Prüfsumme</returns>
     public abstract ulong GetFullChecksum();
+
+    /// <summary>
+    /// generiert eine eindeutige Prüfsumme des Spielfeldes ohne Zugnummern
+    /// </summary>
+    /// <returns>64-Bit Prüfsumme</returns>
+    public abstract ulong GetChecksum();
     #endregion
 
     #region # // --- Helper Methods ---

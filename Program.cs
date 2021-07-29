@@ -208,7 +208,7 @@ namespace Mattjes
       return result;
     }
 
-    static readonly Dictionary<ulong, int[]> HashTable = new Dictionary<ulong, int[]>();
+    static readonly Dictionary<ulong, int> HashTable = new Dictionary<ulong, int>();
 
     static int[] ScanMovePointsHashed(IBoard b, Move[] moves, int depth)
     {
@@ -225,16 +225,23 @@ namespace Mattjes
 
           nodeCounter++;
 
-          int moveCount = b.GetMoves().Count();
-          if (moveCount == 0)
+          ulong checkSum = b.GetFullChecksum();
+          int points;
+          if (!HashTable.TryGetValue(checkSum, out points))
           {
-            result[i] += EndCheck(b, depth);
+            int moveCount = b.GetMoves().Count();
+            if (moveCount == 0)
+            {
+              points = EndCheck(b, depth);
+            }
+            else
+            {
+              points = PiecePoints(b);
+              if (b.WhiteMove) points += moveCount; else points -= moveCount;
+            }
+            HashTable.Add(checkSum, points);
           }
-          else
-          {
-            result[i] += PiecePoints(b);
-            if (b.WhiteMove) result[i] += moveCount; else result[i] -= moveCount;
-          }
+          result[i] += points;
 
           b.SetFastFen(backupFen, 0);
         }
@@ -249,17 +256,29 @@ namespace Mattjes
         nodeCounter++;
 
         ulong checkSum = b.GetFullChecksum();
-
-        var nextMoves = b.GetMoves().ToArray();
-
-        if (nextMoves.Length == 0) // keine weiteren Zugmöglichkeit?
+        int points;
+        if (!HashTable.TryGetValue(checkSum, out points))
         {
-          result[i] += EndCheck(b, depth);
+          var nextMoves = b.GetMoves().ToArray();
+
+          if (nextMoves.Length == 0) // keine weiteren Zugmöglichkeit?
+          {
+            points = EndCheck(b, depth);
+          }
+          else
+          {
+            if (b.WhiteMove)
+            {
+              points = ScanMovePointsHashed(b, nextMoves, depth - 1).Max();
+            }
+            else
+            {
+              points = ScanMovePointsHashed(b, nextMoves, depth - 1).Min();
+            }
+          }
+          HashTable.Add(checkSum, points);
         }
-        else
-        {
-          if (b.WhiteMove) result[i] += ScanMovePointsFastFen(b, nextMoves, depth - 1).Max(); else result[i] += ScanMovePointsFastFen(b, nextMoves, depth - 1).Min();
-        }
+        result[i] += points;
 
         b.SetFastFen(backupFen, 0);
       }
@@ -357,6 +376,12 @@ namespace Mattjes
     // [3]    836,6 ms    13,  15,  15,  15,  15,  20,  20,  20,  20,  21,  21,  24,  24,  24,  25,  26,  27,  28,  29,  33 (246.967 nps)
     // [4] 15.967,3 ms   -35, -33, -32, -32, -30, -29, -28, -27, -25, -25, -23, -22,  -9,  -9,  54,  57,  66,  69,  71,  78 (317.663 nps)
 
+    // --- Reference + FastFen + Hashtable ---
+    // [0]      0,1 ms   -20, -20, -20, -20, -19, -19, -19, -19, -19, -19, -19, -19, -16, -16, -16, -16, -16, -16, -16, -16 (242.366 nps)
+    // [1]      1,8 ms    16,  16,  16,  16,  16,  18,  18,  18,  18,  18,  19,  20,  20,  20,  20,  21,  23,  26,  27,  29 (227.288 nps)
+    // [2]     19,4 ms   -29, -29, -29, -28, -28, -28, -28, -28, -28, -28, -28, -27, -24, -24, -24, -24, -23, -22, -22, -22 (481.474 nps)
+    // [3]    355,0 ms    13,  15,  15,  15,  15,  20,  20,  20,  20,  21,  21,  24,  24,  24,  25,  26,  27,  28,  29,  33 (360.133 nps)
+    // [4]  3.625,9 ms   -35, -33, -32, -32, -30, -29, -28, -27, -25, -25, -23, -22,  -9,  -9,  54,  57,  66,  69,  71,  78 (530.969 nps)
 
     static void SpeedCheck(IBoard b)
     {
@@ -365,11 +390,14 @@ namespace Mattjes
 
       for (int maxDepth = 0; maxDepth < 100; maxDepth++)
       {
+        Console.WriteLine();
         for (int r = 0; r < 5; r++)
         {
           var time = Stopwatch.StartNew();
           nodeCounter = 0;
-          var points = ScanMovePointsFastFen(b, moves, maxDepth);
+          //var points = ScanMovePointsFastFen(b, moves, maxDepth);
+          HashTable.Clear();
+          var points = ScanMovePointsHashed(b, moves, maxDepth);
           time.Stop();
           double durationMs = time.ElapsedTicks * 1000.0 / Stopwatch.Frequency;
           Console.WriteLine("    [{0}]{1,9:N1} ms  {2} ({3:N0} nps)", maxDepth, durationMs, string.Join(",", points.OrderBy(x => x).Select(x => x.ToString("N0").PadLeft(4))), nodeCounter / durationMs * 1000.0);
