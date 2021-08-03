@@ -57,19 +57,19 @@ namespace Mattjes
     public abstract int MoveNumber { get; set; }
 
     /// <summary>
-    /// gibt an, ob Weiß die kurze Rochrade "O-O" auf der Königsseite noch machen kann
+    /// gibt an, ob Weiß die kurze Rochade "O-O" auf der Königsseite noch machen kann
     /// </summary>
     public abstract bool WhiteCanCastleKingside { get; set; }
     /// <summary>
-    /// gibt an, ob Weiß die lange Rochrade "O-O-O" auf der Damenseite noch machen kann
+    /// gibt an, ob Weiß die lange Rochade "O-O-O" auf der Damenseite noch machen kann
     /// </summary>
     public abstract bool WhiteCanCastleQueenside { get; set; }
     /// <summary>
-    /// gibt an, ob Schwarz die kurze Rochrade "O-O" auf der Königsseite noch machen kann
+    /// gibt an, ob Schwarz die kurze Rochade "O-O" auf der Königsseite noch machen kann
     /// </summary>
     public abstract bool BlackCanCastleKingside { get; set; }
     /// <summary>
-    /// gibt an, ob Schwarz die lange Rochrade "O-O-O" auf der Damenseite noch machen kann
+    /// gibt an, ob Schwarz die lange Rochade "O-O-O" auf der Damenseite noch machen kann
     /// </summary>
     public abstract bool BlackCanCastleQueenside { get; set; }
     /// <summary>
@@ -78,12 +78,24 @@ namespace Mattjes
     public abstract int EnPassantPos { get; set; }
 
     /// <summary>
+    /// fragt zusätzliche Spielbrettinformationen ab oder setzt diese ("en passant", Rochade-Möglichkeiten und Halfmove-Counter für 50-Züge Regel)
+    /// </summary>
+    public abstract BoardInfo BoardInfos { get; set; }
+
+    /// <summary>
     /// führt einen Zug durch und gibt true zurück, wenn dieser erfolgreich war
     /// </summary>
     /// <param name="move">Zug, welcher ausgeführt werden soll</param>
     /// <param name="onlyCheck">optional: gibt an, dass der Zug nur geprüft aber nicht durchgeführt werden soll (default: false)</param>
     /// <returns>true, wenn erfolgreich, sonst false</returns>
     public abstract bool DoMove(Move move, bool onlyCheck = false);
+
+    /// <summary>
+    /// macht einen bestimmten Zug wieder Rückgängig
+    /// </summary>
+    /// <param name="move">Zug, welcher rückgängig gemacht werden soll</param>
+    /// <param name="lastBoardInfos">Spielbrettinformationen der vorherigen Stellung</param>
+    public abstract void DoMoveBackward(Move move, BoardInfo lastBoardInfos);
 
     /// <summary>
     /// berechnet alle erlaubten Zugmöglichkeiten und gibt diese zurück
@@ -310,7 +322,7 @@ namespace Mattjes
         case "KQq": WhiteCanCastleKingside = true; WhiteCanCastleQueenside = true; BlackCanCastleQueenside = true; break;
         case "KQk": WhiteCanCastleKingside = true; WhiteCanCastleQueenside = true; BlackCanCastleKingside = true; break;
         case "KQkq": WhiteCanCastleKingside = true; WhiteCanCastleQueenside = true; BlackCanCastleKingside = true; BlackCanCastleQueenside = true; break;
-        default: return false; // ungültige Rochraden-Angabe
+        default: return false; // ungültige Rochaden-Angabe
       }
 
       // --- "en passant" einlesen (4 / 6) ---

@@ -4,6 +4,9 @@
 // ReSharper disable MemberCanBePrivate.Global
 // ReSharper disable UnusedType.Global
 
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
+
 namespace Mattjes
 {
   /// <summary>
@@ -48,13 +51,23 @@ namespace Mattjes
     /// <param name="crc64">ursprünglicher Crc64-Wert</param>
     /// <param name="values">Datenwert, welcher einberechnet werden soll</param>
     /// <returns>neuer Crc64-Wert</returns>
-    public static ulong Crc64Update(this ulong crc64, Piece[] values)
+    public static unsafe ulong Crc64Update(this ulong crc64, Piece[] values)
     {
-      for (int i = 0; i < values.Length; i++)
+      //for (int i = 0; i < values.Length; i++)
+      //{
+      //  crc64 = (crc64 ^ (byte)values[i]) * Mul;
+      //}
+      //return crc64;
+
+      Debug.Assert(values.Length == 16 * sizeof(uint));
+      fixed (Piece* ptr = values)
       {
-        crc64 = (crc64 ^ (byte)values[i]) * Mul;
+        for (int i = 0; i < 16; i++)
+        {
+          crc64 = (crc64 ^ ((uint*)ptr)[i]) * Mul;
+        }
+        return crc64;
       }
-      return crc64;
     }
   }
 }
