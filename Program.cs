@@ -270,6 +270,163 @@ namespace Mattjes
     }
     #endregion
 
+    #region # // --- Alpha/Beta Search + Move-Cache ---
+    static readonly byte[] moveCache = new byte[1024 * 1048576];
+    static uint moveCacheLen;
+    static IntPtr moveCacheFix = IntPtr.Zero;
+    static readonly Dictionary<ulong, uint> moveCacheDict = new Dictionary<ulong, uint>();
+
+    static unsafe IList<Move> GetMoveCacheMoves(IBoard b, ulong checksum)
+    {
+      uint moveOfs;
+      if (moveCacheDict.TryGetValue(checksum, out moveOfs))
+      {
+        return new MoveList((byte*)moveCacheFix + moveOfs);
+      }
+
+      if (moveCacheLen == moveCache.Length)
+      {
+        return b.GetMoves().ToArray();
+      }
+
+      if (moveCache.Length - moveCacheLen < 512)
+      {
+        moveCacheLen = (uint)moveCache.Length;
+        return b.GetMoves().ToArray();
+      }
+
+      moveOfs = moveCacheLen;
+      moveCacheDict.Add(checksum, moveOfs);
+      var moveList = new MoveList((byte*)moveCacheFix + moveOfs, b.GetMoves());
+      moveCacheLen += moveList.ByteLength;
+      Debug.Assert(moveCacheLen < moveCache.Length);
+
+      return moveList;
+    }
+
+    static int ScanMovePointsMaxInternalMoveCache(IBoard b, int depth, int alpha, int beta)
+    {
+      if (depth == 0)
+      {
+        int moveCount = GetMoveCacheMoves(b, b.GetChecksum()).Count;
+        return moveCount == 0 ? EndCheck(b, depth) : PiecePoints(b) + moveCount;
+      }
+
+      depth--;
+      var nextMoves = GetMoveCacheMoves(b, b.GetChecksum());
+      if (nextMoves.Count == 0) // keine weiteren Zugmöglichkeit?
+      {
+        return EndCheck(b, depth);
+      }
+
+      var lastBoardInfos = b.BoardInfos;
+      int points = alpha;
+
+      for (var i = 0; i < nextMoves.Count; i++)
+      {
+        var move = nextMoves[i];
+        if (!b.DoMove(move)) throw new Exception("invalid move?");
+        nodeCounter++;
+
+        int point = ScanMovePointsMinInternalMoveCache(b, depth, points, beta);
+        if (point > points)
+        {
+          if (i > 0 && nextMoves is MoveList) // Zug nach vorne sortieren?
+          {
+            for (int sort = i; sort > 0; sort--)
+            {
+              nextMoves[sort] = nextMoves[sort - 1];
+            }
+            nextMoves[0] = move;
+          }
+          points = point;
+        }
+
+        b.DoMoveBackward(move, lastBoardInfos);
+
+        if (points >= beta) break;
+      }
+
+      return points;
+    }
+
+    static int ScanMovePointsMinInternalMoveCache(IBoard b, int depth, int alpha, int beta)
+    {
+      if (depth == 0)
+      {
+        int moveCount = GetMoveCacheMoves(b, b.GetChecksum()).Count;
+        return moveCount == 0 ? EndCheck(b, depth) : PiecePoints(b) - moveCount;
+      }
+
+      depth--;
+      var nextMoves = GetMoveCacheMoves(b, b.GetChecksum());
+      if (nextMoves.Count == 0) // keine weiteren Zugmöglichkeit?
+      {
+        return EndCheck(b, depth);
+      }
+
+      var lastBoardInfos = b.BoardInfos;
+      int points = beta;
+
+      for (var i = 0; i < nextMoves.Count; i++)
+      {
+        var move = nextMoves[i];
+        if (!b.DoMove(move)) throw new Exception("invalid move?");
+        nodeCounter++;
+
+        int point = ScanMovePointsMaxInternalMoveCache(b, depth, alpha, points);
+        if (point < points)
+        {
+          points = point;
+          if (i > 0 && nextMoves is MoveList) // Zug nach vorne sortieren?
+          {
+            for (int sort = i; sort > 0; sort--)
+            {
+              nextMoves[sort] = nextMoves[sort - 1];
+            }
+            nextMoves[0] = move;
+          }
+        }
+
+        b.DoMoveBackward(move, lastBoardInfos);
+
+        if (points <= alpha) break;
+      }
+
+      return points;
+    }
+
+    static unsafe int[] ScanMovePointsAlphaBetaMoveCache(IBoard b, Move[] moves, int depth)
+    {
+      fixed (byte* ptr = moveCache)
+      {
+        moveCacheFix = (IntPtr)ptr;
+
+        var result = new int[moves.Length];
+
+        var lastBoardInfos = b.BoardInfos;
+
+        for (int i = 0; i < moves.Length; i++)
+        {
+          if (!b.DoMove(moves[i])) throw new Exception("invalid move?");
+          nodeCounter++;
+
+          if (b.WhiteMove)
+          {
+            result[i] = ScanMovePointsMaxInternalMoveCache(b, depth, int.MinValue, int.MaxValue);
+          }
+          else
+          {
+            result[i] = ScanMovePointsMinInternalMoveCache(b, depth, int.MinValue, int.MaxValue);
+          }
+
+          b.DoMoveBackward(moves[i], lastBoardInfos);
+        }
+        return result;
+      }
+    }
+    #endregion
+
     static void SpeedCheck(IBoard b)
     {
       var moves = b.GetMoves().ToArray();
@@ -282,7 +439,8 @@ namespace Mattjes
         {
           var time = Stopwatch.StartNew();
           nodeCounter = 0;
-          var points = ScanMovePointsAlphaBeta(b, moves, maxDepth);
+          //var points = ScanMovePointsAlphaBeta(b, moves, maxDepth);
+          var points = ScanMovePointsAlphaBetaMoveCache(b, moves, maxDepth);
           //HashTable.Clear();
           //var points = ScanMovePointsHashed(b, moves, maxDepth);
           time.Stop();
@@ -489,6 +647,13 @@ namespace Mattjes
     // [2]     11,7 ms   -29, -29, -29, -28, -28, -28, -28, -28, -28, -28, -28, -27, -24, -24, -24, -24, -23, -22, -22, -22 (330.311 nps)
     // [3]    195,6 ms    13,  15,  15,  15,  15,  20,  20,  20,  20,  21,  21,  24,  24,  24,  25,  26,  27,  28,  29,  33 (258.927 nps)
     // [4]  1.909,2 ms   -35, -33, -32, -32, -30, -29, -28, -27, -25, -25, -23, -22,  -9,  -9,  54,  57,  66,  69,  71,  78 (314.437 nps)
+
+    // --- Alpha/Beta Search + (sorted) Move-Cache ---
+    // [0]      7,5 ms   -20, -20, -20, -20, -19, -19, -19, -19, -19, -19, -19, -19, -16, -16, -16, -16, -16, -16, -16, -16 (2.655 nps)
+    // [1]      3,1 ms    16,  16,  16,  16,  16,  18,  18,  18,  18,  18,  19,  20,  20,  20,  20,  21,  23,  26,  27,  29 (136.240 nps)
+    // [2]      8,6 ms   -29, -29, -29, -28, -28, -28, -28, -28, -28, -28, -28, -27, -24, -24, -24, -24, -23, -22, -22, -22 (336.843 nps)
+    // [3]    106,2 ms    13,  15,  15,  15,  15,  20,  20,  20,  20,  21,  21,  24,  24,  24,  25,  26,  27,  28,  29,  33 (296.316 nps)
+    // [4]    756,2 ms   -35, -33, -32, -32, -30, -29, -28, -27, -25, -25, -23, -22,  -9,  -9,  54,  57,  66,  69,  71,  78 (375.492 nps)
 
     static void Main(string[] args)
     {
