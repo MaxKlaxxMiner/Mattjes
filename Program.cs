@@ -294,7 +294,7 @@ namespace Mattjes
     #endregion
 
     #region # // --- Alpha/Beta Search + Move-Cache ---
-    static readonly byte[] moveCache = new byte[1024 * 1048576];
+    static readonly byte[] moveCache = new byte[2000 * 1048576];
     static uint moveCacheLen;
     static IntPtr moveCacheFix = IntPtr.Zero;
     static readonly Dictionary<ulong, uint> moveCacheDict = new Dictionary<ulong, uint>();
@@ -448,6 +448,121 @@ namespace Mattjes
       }
     }
 
+    static unsafe int[] ScanMovePointsAlphaBetaMoveCacheShort(IBoard b, Move[] moves, int depth)
+    {
+      if (depth < 3) return ScanMovePointsAlphaBetaMoveCache(b, moves, depth);
+      if (depth == 3)
+      {
+        var movesCopy = moves.ToArray();
+        var result = ScanMovePointsAlphaBetaMoveCache(b, moves, depth);
+        var resultCopy = result.ToArray();
+        for (int y = 0; y < movesCopy.Length; y++)
+        {
+          for (int x = 1; x < movesCopy.Length; x++)
+          {
+            if (b.WhiteMove)
+            {
+              if (resultCopy[x] > resultCopy[x - 1])
+              {
+                int t = resultCopy[x]; resultCopy[x] = resultCopy[x - 1]; resultCopy[x - 1] = t;
+                var m = movesCopy[x]; movesCopy[x] = movesCopy[x - 1]; movesCopy[x - 1] = m;
+              }
+            }
+            else
+            {
+              if (resultCopy[x] < resultCopy[x - 1])
+              {
+                int t = resultCopy[x]; resultCopy[x] = resultCopy[x - 1]; resultCopy[x - 1] = t;
+                var m = movesCopy[x]; movesCopy[x] = movesCopy[x - 1]; movesCopy[x - 1] = m;
+              }
+            }
+          }
+        }
+        var nextMoves = GetMoveCacheMoves(b, b.GetChecksum());
+        Debug.Assert(movesCopy.Length == nextMoves.Count);
+        for (int i = 0; i < movesCopy.Length; i++)
+        {
+          nextMoves[i] = movesCopy[i];
+        }
+
+        return result;
+      }
+
+      fixed (byte* ptr = moveCache)
+      {
+        moveCacheFix = (IntPtr)ptr;
+
+        var result = new int[moves.Length];
+        for (int i = 0; i < result.Length; i++) result[i] = b.WhiteMove ? int.MinValue : int.MaxValue;
+
+        var lastBoardInfos = b.BoardInfos;
+
+        var nextMoves = GetMoveCacheMoves(b, b.GetChecksum());
+        int points;
+        if (b.WhiteMove)
+        {
+          points = int.MinValue;
+          for (var i = 0; i < nextMoves.Count; i++)
+          {
+            var move = nextMoves[i];
+            if (!b.DoMove(move)) throw new Exception("invalid move?");
+            nodeCounter++;
+
+            int point = ScanMovePointsMinInternalMoveCache(b, depth, points, int.MaxValue);
+            if (point > points)
+            {
+              if (i > 0 && nextMoves is MoveList) // Zug nach vorne sortieren?
+              {
+                for (int sort = i; sort > 0; sort--)
+                {
+                  nextMoves[sort] = nextMoves[sort - 1];
+                }
+                nextMoves[0] = move;
+              }
+              points = point;
+            }
+
+            b.DoMoveBackward(move, lastBoardInfos);
+          }
+        }
+        else
+        {
+          points = int.MaxValue;
+          for (var i = 0; i < nextMoves.Count; i++)
+          {
+            var move = nextMoves[i];
+            if (!b.DoMove(move)) throw new Exception("invalid move?");
+            nodeCounter++;
+
+            int point = ScanMovePointsMaxInternalMoveCache(b, depth, int.MinValue, points);
+            if (point < points)
+            {
+              if (i > 0 && nextMoves is MoveList) // Zug nach vorne sortieren?
+              {
+                for (int sort = i; sort > 0; sort--)
+                {
+                  nextMoves[sort] = nextMoves[sort - 1];
+                }
+                nextMoves[0] = move;
+              }
+              points = point;
+            }
+
+            b.DoMoveBackward(move, lastBoardInfos);
+          }
+        }
+
+        for (int i = 0; i < moves.Length; i++)
+        {
+          if (moves[i].ToString() == nextMoves[0].ToString())
+          {
+            result[i] = points;
+          }
+        }
+        return result;
+      }
+    }
+
     static int ScanMovePointsMaxInternalMoveCacheSimple(IBoard b, int depth, int alpha, int beta)
     {
       if (depth == 0)
@@ -582,13 +697,20 @@ namespace Mattjes
           var time = Stopwatch.StartNew();
           nodeCounter = 0;
           //var points = ScanMovePointsAlphaBeta(b, moves, maxDepth);
-          var points = ScanMovePointsAlphaBetaMoveCache(b, moves, maxDepth);
+          //var points = ScanMovePointsAlphaBetaMoveCache(b, moves, maxDepth);
+          var points = ScanMovePointsAlphaBetaMoveCacheShort(b, moves, maxDepth);
           //var points = ScanMovePointsAlphaBetaMoveCacheSimple(b, moves, maxDepth);
           //HashTable.Clear();
           //var points = ScanMovePointsHashed(b, moves, maxDepth);
           time.Stop();
           double durationMs = time.ElapsedTicks * 1000.0 / Stopwatch.Frequency;
-          Console.WriteLine("    [{0}]{1,9:N1} ms  {2} ({3:N0} nps)", maxDepth, durationMs, string.Join(",", points.OrderBy(x => x).Select(x => x.ToString("N0").PadLeft(4))), nodeCounter / durationMs * 1000.0);
+          Console.WriteLine("    [{0}]{1,9:N1} ms  {2} ({3:N0} nps)", maxDepth, durationMs, string.Join(",", points.OrderBy(x => x).Select(x =>
+            {
+              if (x == int.MinValue) return "-".PadLeft(4);
+              if (x == int.MaxValue) return "+".PadLeft(4);
+              return x.ToString("N0").PadLeft(4);
+            }
+          )), nodeCounter / durationMs * 1000.0);
         }
       }
 
@@ -637,7 +759,7 @@ namespace Mattjes
         {
           var nextMoves = b.GetMoves().ToArray();
 
-          if (nextMoves.Length == 0) // keine weiteren Zugmöglichkeit?
+          if (nextMoves.Length == 0) // keine weitere Zugmöglichkeit?
           {
             points = EndCheck(b, depth);
           }
@@ -668,7 +790,6 @@ namespace Mattjes
     static void LolGame(IBoard b)
     {
       var rnd = new Random(12345);
-      int lastDepth = 0;
       for (; ; )
       {
         Console.WriteLine();
@@ -692,16 +813,16 @@ namespace Mattjes
           moveCacheDict.Clear();
           Console.WriteLine("    cleared move-cache");
         }
-        for (maxDepth = Math.Max(0, lastDepth - 2); maxDepth < 100; maxDepth++)
+        for (maxDepth = 0; maxDepth < 100; maxDepth++)
         {
           Console.Write("    scan depth " + maxDepth + " ...");
           //pointsList.Add(ScanMovePointsAlphaBetaMoveCacheSimple(b, moves, maxDepth));
-          pointsList.Add(ScanMovePointsAlphaBetaMoveCache(b, moves, maxDepth));
+          //pointsList.Add(ScanMovePointsAlphaBetaMoveCache(b, moves, maxDepth));
+          pointsList.Add(ScanMovePointsAlphaBetaMoveCacheShort(b, moves, maxDepth));
           int duration = Environment.TickCount - time;
           Console.WriteLine(" " + duration.ToString("N0") + " ms");
           if (duration > 5000) break;
         }
-        lastDepth = maxDepth;
         time = Environment.TickCount - time;
 
         int bestNext = b.WhiteMove ? int.MinValue : int.MaxValue;
@@ -710,7 +831,7 @@ namespace Mattjes
         for (int i = 0; i < moves.Length; i++)
         {
           int points = pointsList[pointsList.Count - 1][i];
-          if (pointsList.Count>1) points = (points + pointsList[pointsList.Count - 2][i]) / 2;
+          //if (pointsList.Count > 1) points = (points + pointsList[pointsList.Count - 2][i]) / 2;
           if (b.WhiteMove)
           {
             if (points >= bestNext)
