@@ -695,7 +695,8 @@ namespace Mattjes
         for (maxDepth = Math.Max(0, lastDepth - 2); maxDepth < 100; maxDepth++)
         {
           Console.Write("    scan depth " + maxDepth + " ...");
-          pointsList.Add(ScanMovePointsAlphaBetaMoveCacheSimple(b, moves, maxDepth));
+          //pointsList.Add(ScanMovePointsAlphaBetaMoveCacheSimple(b, moves, maxDepth));
+          pointsList.Add(ScanMovePointsAlphaBetaMoveCache(b, moves, maxDepth));
           int duration = Environment.TickCount - time;
           Console.WriteLine(" " + duration.ToString("N0") + " ms");
           if (duration > 5000) break;
