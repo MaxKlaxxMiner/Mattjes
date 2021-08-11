@@ -687,7 +687,10 @@ namespace Mattjes
     {
       if (depth == 0)
       {
-        return b.GetMoves().Any() ? PiecePoints(b) : EndCheck(b, depth);
+        //return b.GetMoves().Any() ? PiecePoints(b) : EndCheck(b, depth);
+        //int moveCount = b.GetMoves().Count();
+        int moveCount = GetMoveCacheMoves(b, b.GetChecksum()).Count;
+        return moveCount == 0 ? EndCheck(b, depth) : PiecePoints(b) + moveCount;
       }
 
       depth--;
@@ -732,7 +735,10 @@ namespace Mattjes
     {
       if (depth == 0)
       {
-        return b.GetMoves().Any() ? PiecePoints(b) : EndCheck(b, depth);
+        //return b.GetMoves().Any() ? PiecePoints(b) : EndCheck(b, depth);
+        //int moveCount = b.GetMoves().Count();
+        int moveCount = GetMoveCacheMoves(b, b.GetChecksum()).Count;
+        return moveCount == 0 ? EndCheck(b, depth) : PiecePoints(b) - moveCount;
       }
 
       depth--;
@@ -775,8 +781,8 @@ namespace Mattjes
 
     static unsafe int[] ScanMovePointsAlphaBetaMoveCacheDynamic(IBoard b, Move[] moves, int depth)
     {
-      if (depth < 3) return ScanMovePointsAlphaBetaMoveCache(b, moves, depth);
-      if (depth == 3)
+      if (depth < 2) return ScanMovePointsAlphaBetaMoveCache(b, moves, depth);
+      if (depth == 2)
       {
         var movesCopy = moves.ToArray();
         var result = ScanMovePointsAlphaBetaMoveCache(b, moves, depth);
@@ -996,6 +1002,7 @@ namespace Mattjes
     static void LolGame(IBoard b)
     {
       var rnd = new Random(12345);
+      bool first = true;
       for (; ; )
       {
         Console.WriteLine();
@@ -1009,11 +1016,19 @@ namespace Mattjes
           return;
         }
 
+        int next = 0;
+
+        if (first)
+        {
+          first = false;
+          goto loop;
+        }
+
         var pointsList = new List<int[]>();
         int time = Environment.TickCount;
         int maxDepth;
         nodeCounter = 0;
-        if (moveCacheLen == moveCache.Length)
+        if (moveCacheLen > moveCache.Length / 2)
         {
           moveCacheLen = 0;
           moveCacheDict.Clear();
@@ -1029,11 +1044,11 @@ namespace Mattjes
           int duration = Environment.TickCount - time;
           Console.WriteLine(" " + duration.ToString("N0") + " ms");
           if (duration > 5000) break;
+          if(maxDepth==4)break;
         }
         time = Environment.TickCount - time;
 
         int bestNext = b.WhiteMove ? int.MinValue : int.MaxValue;
-        int next = 0;
 
         for (int i = 0; i < moves.Length; i++)
         {
@@ -1070,17 +1085,22 @@ namespace Mattjes
         Console.WriteLine();
         PrintMarkedBoard(b, new[] { (int)moves[next].fromPos, moves[next].toPos });
         string fixMove = Console.ReadLine();
-        if (fixMove.Length == 4)
+        if (fixMove.Length > 0)
         {
-          int fromPos = IBoard.PosFromChars(fixMove.Substring(0, 2));
-          int toPos = IBoard.PosFromChars(fixMove.Substring(2, 2));
-          var m = b.GetMoves().FirstOrDefault(x => x.fromPos == fromPos && x.toPos == toPos);
-          if (m.fromPos == fromPos && m.toPos == toPos)
+          if (fixMove.Length == 4)
           {
-            b.DoMove(m);
-            moves[next] = m;
-            goto loop;
+            int fromPos = IBoard.PosFromChars(fixMove.Substring(0, 2));
+            int toPos = IBoard.PosFromChars(fixMove.Substring(2, 2));
+            var m = b.GetMoves().FirstOrDefault(x => x.fromPos == fromPos && x.toPos == toPos);
+            if (m.fromPos == fromPos && m.toPos == toPos)
+            {
+              b.DoMove(m);
+              moves[next] = m;
+              goto loop;
+            }
           }
+          Console.WriteLine("    invalid move: " + fixMove);
+          goto loop;
         }
       }
     }
@@ -1148,7 +1168,9 @@ namespace Mattjes
 
       IBoard b = new BoardReference();
 
-      b.SetFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"); // Startaufstellung
+      b.SetFEN("r1b1kb1r/p4ppp/2pq1n2/Q7/PP2p3/2Pp4/3P1PPP/RNB1K1NR w KQkq - 8 14");
+
+      //b.SetFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"); // Startaufstellung
       //b.SetFEN("r3k2r/p2ppp1p/8/4Q3/8/2BB4/PPPPPPPP/R3K2R w KQkq - 0 1"); // Rochaden-Test: alle erlaubt
       //b.SetFEN("r3k1r1/p2ppp1p/8/B7/8/4P3/PPPP1P1P/RN2K2R b KQq - 0 1"); // Rochaden-Test: keine erlaubt
 
