@@ -683,8 +683,11 @@ namespace Mattjes
       }
     }
 
-    static int ScanMovePointsMaxInternalMoveCacheDynamic(IBoard b, int depth, int alpha, int beta)
+    static int ScanMovePointsMaxInternalMoveCacheDynamic(IBoard b, int depth, int alpha, int beta, List<ulong> oldMoves)
     {
+      ulong checksum = b.GetChecksum();
+      for (int i = oldMoves.Count - 2; i >= 0; i -= 2) if (oldMoves[i] == checksum) return 0; // Stellungswiederholung = Remis
+
       if (depth == 0)
       {
         //return b.GetMoves().Any() ? PiecePoints(b) : EndCheck(b, depth);
@@ -703,13 +706,15 @@ namespace Mattjes
       var lastBoardInfos = b.BoardInfos;
       int points = alpha;
 
+      oldMoves.Add(checksum);
+
       for (var i = 0; i < nextMoves.Count; i++)
       {
         var move = nextMoves[i];
         if (!b.DoMove(move)) throw new Exception("invalid move?");
         nodeCounter++;
 
-        int point = ScanMovePointsMinInternalMoveCacheDynamic(b, depth == 0 && move.capturePiece != Piece.None ? 1 : depth, points, beta);
+        int point = ScanMovePointsMinInternalMoveCacheDynamic(b, depth == 0 && move.capturePiece != Piece.None ? 1 : depth, points, beta, oldMoves);
         if (point > points)
         {
           if (i > 0 && nextMoves is MoveList) // Zug nach vorne sortieren?
@@ -728,21 +733,26 @@ namespace Mattjes
         if (points >= beta) break;
       }
 
+      oldMoves.RemoveAt(oldMoves.Count - 1);
+
       return points;
     }
 
-    static int ScanMovePointsMinInternalMoveCacheDynamic(IBoard b, int depth, int alpha, int beta)
+    static int ScanMovePointsMinInternalMoveCacheDynamic(IBoard b, int depth, int alpha, int beta, List<ulong> oldMoves)
     {
+      ulong checksum = b.GetChecksum();
+      for (int i = oldMoves.Count - 2; i >= 0; i -= 2) if (oldMoves[i] == checksum) return 0; // Stellungswiederholung = Remis
+
       if (depth == 0)
       {
         //return b.GetMoves().Any() ? PiecePoints(b) : EndCheck(b, depth);
         //int moveCount = b.GetMoves().Count();
-        int moveCount = GetMoveCacheMoves(b, b.GetChecksum()).Count;
+        int moveCount = GetMoveCacheMoves(b, checksum).Count;
         return moveCount == 0 ? EndCheck(b, depth) : PiecePoints(b) - moveCount;
       }
 
       depth--;
-      var nextMoves = GetMoveCacheMoves(b, b.GetChecksum());
+      var nextMoves = GetMoveCacheMoves(b, checksum);
       if (nextMoves.Count == 0) // keine weiteren Zugmöglichkeit?
       {
         return EndCheck(b, depth);
@@ -751,13 +761,15 @@ namespace Mattjes
       var lastBoardInfos = b.BoardInfos;
       int points = beta;
 
+      oldMoves.Add(checksum);
+
       for (var i = 0; i < nextMoves.Count; i++)
       {
         var move = nextMoves[i];
         if (!b.DoMove(move)) throw new Exception("invalid move?");
         nodeCounter++;
 
-        int point = ScanMovePointsMaxInternalMoveCacheDynamic(b, depth == 0 && move.capturePiece != Piece.None ? 1 : depth, alpha, points);
+        int point = ScanMovePointsMaxInternalMoveCacheDynamic(b, depth == 0 && move.capturePiece != Piece.None ? 1 : depth, alpha, points, oldMoves);
         if (point < points)
         {
           points = point;
@@ -775,6 +787,8 @@ namespace Mattjes
 
         if (points <= alpha) break;
       }
+
+      oldMoves.RemoveAt(oldMoves.Count - 1);
 
       return points;
     }
@@ -828,6 +842,7 @@ namespace Mattjes
 
         var lastBoardInfos = b.BoardInfos;
 
+        var oldMoves = new List<ulong> { b.GetChecksum() };
         var nextMoves = GetMoveCacheMoves(b, b.GetChecksum());
         int points;
         if (b.WhiteMove)
@@ -839,7 +854,7 @@ namespace Mattjes
             if (!b.DoMove(move)) throw new Exception("invalid move?");
             nodeCounter++;
 
-            int point = ScanMovePointsMinInternalMoveCacheDynamic(b, depth, points, int.MaxValue);
+            int point = ScanMovePointsMinInternalMoveCacheDynamic(b, depth, points, int.MaxValue, oldMoves);
             if (point > points)
             {
               if (i > 0 && nextMoves is MoveList) // Zug nach vorne sortieren?
@@ -865,7 +880,7 @@ namespace Mattjes
             if (!b.DoMove(move)) throw new Exception("invalid move?");
             nodeCounter++;
 
-            int point = ScanMovePointsMaxInternalMoveCacheDynamic(b, depth, int.MinValue, points);
+            int point = ScanMovePointsMaxInternalMoveCacheDynamic(b, depth, int.MinValue, points, oldMoves);
             if (point < points)
             {
               if (i > 0 && nextMoves is MoveList) // Zug nach vorne sortieren?
@@ -1018,11 +1033,7 @@ namespace Mattjes
 
         int next = 0;
 
-        if (first)
-        {
-          first = false;
-          goto loop;
-        }
+        if (first) goto loop;
 
         var pointsList = new List<int[]>();
         int time = Environment.TickCount;
@@ -1044,7 +1055,6 @@ namespace Mattjes
           int duration = Environment.TickCount - time;
           Console.WriteLine(" " + duration.ToString("N0") + " ms");
           if (duration > 5000) break;
-          if(maxDepth==4)break;
         }
         time = Environment.TickCount - time;
 
@@ -1083,7 +1093,7 @@ namespace Mattjes
         if (!b.DoMove(moves[next])) throw new Exception("invalid move?");
       loop:
         Console.WriteLine();
-        PrintMarkedBoard(b, new[] { (int)moves[next].fromPos, moves[next].toPos });
+        PrintMarkedBoard(b, first ? new int[] { } : new[] { (int)moves[next].fromPos, moves[next].toPos });
         string fixMove = Console.ReadLine();
         if (fixMove.Length > 0)
         {
@@ -1102,6 +1112,7 @@ namespace Mattjes
           Console.WriteLine("    invalid move: " + fixMove);
           goto loop;
         }
+        first = false;
       }
     }
 
@@ -1168,9 +1179,9 @@ namespace Mattjes
 
       IBoard b = new BoardReference();
 
-      b.SetFEN("r1b1kb1r/p4ppp/2pq1n2/Q7/PP2p3/2Pp4/3P1PPP/RNB1K1NR w KQkq - 8 14");
+      //b.SetFEN("r1b1kb1r/p4ppp/2pq1n2/Q7/PP2p3/2Pp4/3P1PPP/RNB1K1NR w KQkq - 8 14");
 
-      //b.SetFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"); // Startaufstellung
+      b.SetFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"); // Startaufstellung
       //b.SetFEN("r3k2r/p2ppp1p/8/4Q3/8/2BB4/PPPPPPPP/R3K2R w KQkq - 0 1"); // Rochaden-Test: alle erlaubt
       //b.SetFEN("r3k1r1/p2ppp1p/8/B7/8/4P3/PPPP1P1P/RN2K2R b KQq - 0 1"); // Rochaden-Test: keine erlaubt
 
