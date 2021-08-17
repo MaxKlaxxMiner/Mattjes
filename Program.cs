@@ -46,14 +46,20 @@ namespace Mattjes
         var p = b.GetField(pos);
         switch (p)
         {
+          case Piece.BlackKing: if (pos == 2 || pos == 6) r -= 10; break;
+          case Piece.WhiteKing: if (pos == 58 || pos == 62) r += 10; break;
           case Piece.WhiteQueen: r += 900; break;
           case Piece.BlackQueen: r -= 900; break;
           case Piece.WhiteRook: r += 500; break;
           case Piece.BlackRook: r -= 500; break;
-          case Piece.WhiteBishop: r += 300; break;
-          case Piece.BlackBishop: r -= 300; break;
-          case Piece.WhiteKnight: r += 300; break;
-          case Piece.BlackKnight: r -= 300; break;
+          //case Piece.WhiteBishop: r += 300; break;
+          case Piece.WhiteBishop: r += 300; if (pos == 58 || pos == 61) r -= 10; break;
+          //case Piece.BlackBishop: r -= 300; break;
+          case Piece.BlackBishop: r -= 300; if (pos == 2 || pos == 5) r += 10; break;
+          //case Piece.WhiteKnight: r += 300; break;
+          case Piece.WhiteKnight: r += 300; if (pos == 57 || pos == 62) r -= 15; break;
+          //case Piece.BlackKnight: r -= 300; break;
+          case Piece.BlackKnight: r -= 300; if (pos == 1 || pos == 6) r += 15; break;
           //case Piece.WhitePawn: r += 100; break;
           //case Piece.BlackPawn: r -= 100; break;
           case Piece.WhitePawn: r += 100; r += (6 - pos / IBoard.Width) * (6 - pos / IBoard.Width); break;
@@ -90,49 +96,26 @@ namespace Mattjes
 
     static int EndCheck(IBoard b, int depth)
     {
-      for (int kingPos = 0; kingPos < IBoard.Width * IBoard.Height; kingPos++)
+      if (b.WhiteMove)
       {
-        if (b.WhiteMove)
-        {
-          if (b.GetField(kingPos) == Piece.WhiteKing)
-          {
-            return b.IsChecked(kingPos, Piece.Black) ? -25000 - depth * 100 : 1000;
-          }
-        }
-        else
-        {
-          if (b.GetField(kingPos) == Piece.BlackKing)
-          {
-            return b.IsChecked(kingPos, Piece.White) ? 25000 + depth * 100 : -1000;
-          }
-        }
+        return b.IsChecked(b.GetKingPos(Piece.White), Piece.Black) ? -25000 - depth * 100 : 1000;
       }
-      throw new IndexOutOfRangeException();
+      else
+      {
+        return b.IsChecked(b.GetKingPos(Piece.Black), Piece.White) ? 25000 + depth * 100 : -1000;
+      }
     }
 
     static bool IsChecked(IBoard b)
     {
       if (b.WhiteMove)
       {
-        for (int kingPos = 0; kingPos < IBoard.Width * IBoard.Height; kingPos++)
-        {
-          if (b.GetField(kingPos) == Piece.WhiteKing)
-          {
-            return b.IsChecked(kingPos, Piece.Black);
-          }
-        }
+        return b.IsChecked(b.GetKingPos(Piece.White), Piece.Black);
       }
       else
       {
-        for (int kingPos = 0; kingPos < IBoard.Width * IBoard.Height; kingPos++)
-        {
-          if (b.GetField(kingPos) == Piece.BlackKing)
-          {
-            return b.IsChecked(kingPos, Piece.White);
-          }
-        }
+        return b.IsChecked(b.GetKingPos(Piece.Black), Piece.White);
       }
-      throw new IndexOutOfRangeException();
     }
     #endregion
 
@@ -906,9 +889,9 @@ namespace Mattjes
           var time = Stopwatch.StartNew();
           nodeCounter = 0;
           //var points = ScanMovePointsAlphaBeta(b, moves, maxDepth);
-          //var points = ScanMovePointsAlphaBetaShort(b, moves, maxDepth);
+          var points = ScanMovePointsAlphaBetaShort(b, moves, maxDepth);
           //var points = ScanMovePointsAlphaBetaMoveCacheDynamic(b, moves, maxDepth);
-          var points = ScanMovePointsAlphaBetaMoveCacheDynamic(b, moves, maxDepth);
+          //var points = ScanMovePointsAlphaBetaMoveCacheDynamic(b, moves, maxDepth);
           //HashTable.Clear();
           //var points = ScanMovePointsHashed(b, moves, maxDepth);
           time.Stop();
@@ -949,7 +932,7 @@ namespace Mattjes
 
         var pointsList = new List<int[]>();
         int time = Environment.TickCount;
-        int maxDepth;
+        int maxDepth = 0;
         nodeCounter = 0;
         if (moveCacheLen > moveCache.Length / 2)
         {
@@ -957,16 +940,20 @@ namespace Mattjes
           moveCacheDict.Clear();
           Console.WriteLine("    cleared move-cache");
         }
-        for (maxDepth = 0; maxDepth < 100; maxDepth++)
+        if (moves.Length > 1)
         {
-          Console.Write("    scan depth " + maxDepth + " ...");
-          //pointsList.Add(ScanMovePointsAlphaBetaShort(b, moves, maxDepth));
-          pointsList.Add(ScanMovePointsAlphaBetaMoveCacheDynamic(b, moves, maxDepth));
-          int duration = Environment.TickCount - time;
-          Console.WriteLine(" " + duration.ToString("N0") + " ms");
-          if (duration > 5000) break;
+          for (; maxDepth < 100; maxDepth++)
+          {
+            Console.Write("    scan depth " + maxDepth + " ...");
+            //pointsList.Add(ScanMovePointsAlphaBetaShort(b, moves, maxDepth));
+            pointsList.Add(ScanMovePointsAlphaBetaMoveCacheDynamic(b, moves, maxDepth));
+            int duration = Environment.TickCount - time;
+            Console.WriteLine(" " + duration.ToString("N0") + " ms");
+            if (duration > 5000) break;
+          }
         }
-        time = Environment.TickCount - time;
+        else pointsList.Add(new int[1]);
+        time = Environment.TickCount - time + 1;
 
         int bestNext = b.WhiteMove ? int.MinValue : int.MaxValue;
 
@@ -1050,63 +1037,31 @@ namespace Mattjes
     }
     #endregion
 
-    // --- Reference ---
-    // [0]      0,2 ms   -20, -20, -20, -20, -19, -19, -19, -19, -19, -19, -19, -19, -16, -16, -16, -16, -16, -16, -16, -16 (119.109 nps)
-    // [1]      2,1 ms    16,  16,  16,  16,  16,  18,  18,  18,  18,  18,  19,  20,  20,  20,  20,  21,  23,  26,  27,  29 (195.570 nps)
-    // [2]     40,9 ms   -29, -29, -29, -28, -28, -28, -28, -28, -28, -28, -28, -27, -24, -24, -24, -24, -23, -22, -22, -22 (227.922 nps)
-    // [3]  1.114,5 ms    13,  15,  15,  15,  15,  20,  20,  20,  20,  21,  21,  24,  24,  24,  25,  26,  27,  28,  29,  33 (185.381 nps)
-    // [4] 22.711,4 ms   -35, -33, -32, -32, -30, -29, -28, -27, -25, -25, -23, -22,  -9,  -9,  54,  57,  66,  69,  71,  78 (223.333 nps)
+    // --- Alpha/Beta short (Default) ---
+    // [0]      0,1 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  -5 (238.802 nps)
+    // [1]      0,9 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  22 (218.333 nps)
+    // [2]      3,7 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  -7 (335.913 nps)
+    // [3]     37,3 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  24 (259.784 nps)
+    // [4]    459,5 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  82 (337.123 nps)
+    // [5] 13.452,5 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -63 (254.429 nps)
 
-    // --- Reference + BackMove ---
-    // [0]      0,1 ms   -20, -20, -20, -20, -19, -19, -19, -19, -19, -19, -19, -19, -16, -16, -16, -16, -16, -16, -16, -16 (251.111 nps)
-    // [1]      1,6 ms    16,  16,  16,  16,  16,  18,  18,  18,  18,  18,  19,  20,  20,  20,  20,  21,  23,  26,  27,  29 (267.458 nps)
-    // [2]     27,3 ms   -29, -29, -29, -28, -28, -28, -28, -28, -28, -28, -28, -27, -24, -24, -24, -24, -23, -22, -22, -22 (341.865 nps)
-    // [3]    796,4 ms    13,  15,  15,  15,  15,  20,  20,  20,  20,  21,  21,  24,  24,  24,  25,  26,  27,  28,  29,  33 (259.431 nps)
-    // [4] 15.545,0 ms   -35, -33, -32, -32, -30, -29, -28, -27, -25, -25, -23, -22,  -9,  -9,  54,  57,  66,  69,  71,  78 (326.293 nps)
-
-    // --- Reference + BackMove + Hashtable ---
-    // [0]      0,1 ms   -20, -20, -20, -20, -19, -19, -19, -19, -19, -19, -19, -19, -16, -16, -16, -16, -16, -16, -16, -16 (256.398 nps)
-    // [1]      1,6 ms    16,  16,  16,  16,  16,  18,  18,  18,  18,  18,  19,  20,  20,  20,  20,  21,  23,  26,  27,  29 (262.248 nps)
-    // [2]     18,8 ms   -29, -29, -29, -28, -28, -28, -28, -28, -28, -28, -28, -27, -24, -24, -24, -24, -23, -22, -22, -22 (496.205 nps)
-    // [3]    337,4 ms    13,  15,  15,  15,  15,  20,  20,  20,  20,  21,  21,  24,  24,  24,  25,  26,  27,  28,  29,  33 (378.900 nps)
-    // [4]  3.262,7 ms   -35, -33, -32, -32, -30, -29, -28, -27, -25, -25, -23, -22,  -9,  -9,  54,  57,  66,  69,  71,  78 (590.070 nps)
-
-    // --- Alpha/Beta Search ---
-    // [0]      0,1 ms   -20, -20, -20, -20, -19, -19, -19, -19, -19, -19, -19, -19, -16, -16, -16, -16, -16, -16, -16, -16 (286.562 nps)
-    // [1]      1,5 ms    16,  16,  16,  16,  16,  18,  18,  18,  18,  18,  19,  20,  20,  20,  20,  21,  23,  26,  27,  29 (272.371 nps)
-    // [2]     11,7 ms   -29, -29, -29, -28, -28, -28, -28, -28, -28, -28, -28, -27, -24, -24, -24, -24, -23, -22, -22, -22 (330.311 nps)
-    // [3]    195,6 ms    13,  15,  15,  15,  15,  20,  20,  20,  20,  21,  21,  24,  24,  24,  25,  26,  27,  28,  29,  33 (258.927 nps)
-    // [4]  1.909,2 ms   -35, -33, -32, -32, -30, -29, -28, -27, -25, -25, -23, -22,  -9,  -9,  54,  57,  66,  69,  71,  78 (314.437 nps)
-
-    // --- Alpha/Beta Short Search ---
-    // [0]      0,1 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -16 (204.688 nps)
-    // [1]      0,8 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  29 (215.210 nps)
-    // [2]      9,1 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -22 (344.402 nps)
-    // [3]     64,4 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  33 (247.722 nps)
-    // [4]    487,8 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  78 (327.910 nps)
-
-    // --- Alpha/Beta Search + (sorted) Move-Cache ---
-    // [0]      7,5 ms   -20, -20, -20, -20, -19, -19, -19, -19, -19, -19, -19, -19, -16, -16, -16, -16, -16, -16, -16, -16 (2.655 nps)
-    // [1]      3,1 ms    16,  16,  16,  16,  16,  18,  18,  18,  18,  18,  19,  20,  20,  20,  20,  21,  23,  26,  27,  29 (136.240 nps)
-    // [2]      8,6 ms   -29, -29, -29, -28, -28, -28, -28, -28, -28, -28, -28, -27, -24, -24, -24, -24, -23, -22, -22, -22 (336.843 nps)
-    // [3]    106,2 ms    13,  15,  15,  15,  15,  20,  20,  20,  20,  21,  21,  24,  24,  24,  25,  26,  27,  28,  29,  33 (296.316 nps)
-    // [4]    756,2 ms   -35, -33, -32, -32, -30, -29, -28, -27, -25, -25, -23, -22,  -9,  -9,  54,  57,  66,  69,  71,  78 (375.492 nps)
-
-    // --- Alpha/Beta dynamic Search ---
-    // [0]      9,5 ms   -20, -20, -20, -20, -19, -19, -19, -19, -19, -19, -19, -19, -16, -16, -16, -16, -16, -16, -16, -16 (2.114 nps)
-    // [1]      2,8 ms    16,  16,  16,  16,  16,  18,  18,  18,  18,  18,  19,  20,  20,  20,  20,  21,  23,  26,  27,  29 (149.500 nps)
-    // [2]      9,7 ms   -29, -29, -29, -28, -28, -28, -28, -28, -28, -28, -28, -27, -24, -24, -24, -24, -23, -22, -22, -22 (298.739 nps)
-    // [3]     34,7 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  33 (241.573 nps)
-    // [4]    266,2 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -22 (206.833 nps)
+    // --- BoardKingOptimized ---
+    // [0]      0,1 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  -5 (218.455 nps)
+    // [1]      0,8 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  22 (225.927 nps)
+    // [2]      3,4 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  -7 (366.517 nps)
+    // [3]     29,3 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  24 (330.287 nps)
+    // [4]    425,0 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  82 (364.493 nps)
+    // [5] 10.071,6 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -63 (339.837 nps)
 
     static void Main(string[] args)
     {
       Console.WriteLine();
       Console.WriteLine();
 
-      IBoard b = new BoardReference();
+      //IBoard b = new BoardReference();
+      IBoard b = new BoardKingOptimized();
 
-      //b.SetFEN("rnbqk1nr/pppp1ppp/8/4p3/1b1P4/5N2/PPP1PPPP/RNBQKB1R w KQkq - 2 3");
+      //b.SetFEN("r3k2r/pppb1ppp/4p3/3nP3/8/2B5/PPP2PPP/2KR1B1R b kq - 1 11");
 
       b.SetFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"); // Startaufstellung
       //b.SetFEN("r3k2r/p2ppp1p/8/4Q3/8/2BB4/PPPPPPPP/R3K2R w KQkq - 0 1"); // Rochaden-Test: alle erlaubt
@@ -1122,8 +1077,8 @@ namespace Mattjes
       //b.SetFEN("8/8/4k3/3bn3/8/4Q3/8/K7 w - - 0 1"); // Dame gegen Läufer + Springer Mattsuche (Matt in 39)
       //b.SetFEN("5k2/5P1P/4P3/pP6/P6q/3P2P1/2P5/K7 w - a6 0 1"); // Bauern-Test (Matt in 6)
 
-      LolGame(b);
-      //SpeedCheck(b);
+      //LolGame(b);
+      SpeedCheck(b);
 
       //Console.WriteLine();
       //foreach (var move in b.GetMoves())

@@ -104,6 +104,13 @@ namespace Mattjes
     public abstract IEnumerable<Move> GetMoves();
 
     /// <summary>
+    /// fragt die aktuelle Position des Königs ab
+    /// </summary>
+    /// <param name="kingColor">Farbe des Königs, welche abgefragt werden soll</param>
+    /// <returns>Position auf dem Spielbrett</returns>
+    public abstract int GetKingPos(Piece kingColor);
+
+    /// <summary>
     /// prüft, ob ein bestimmtes Spielfeld unter Schach steht
     /// </summary>
     /// <param name="pos">Position, welche geprüft werden soll</param>
