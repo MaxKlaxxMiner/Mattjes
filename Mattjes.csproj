@@ -47,6 +47,7 @@
   <ItemGroup>
     <Compile Include="BoardInfo.cs" />
     <Compile Include="BoardKingOptimized.cs" />
+    <Compile Include="BoardIndexed.cs" />
     <Compile Include="BoardReference.cs" />
     <Compile Include="Crc64.cs" />
     <Compile Include="IBoard.cs" />
