@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+// ReSharper disable UnusedType.Global
 
 namespace Mattjes
 {
@@ -831,7 +832,7 @@ namespace Mattjes
     }
 
     /// <summary>
-    /// macht einen bestimmten Zug wieder Rückgängig (info: <see cref="IBoard.HalfmoveClock"/> kann nach dem Rückwärts-Zug einen negativen Wert enthalten, da dieser nicht immer rekonstruiert werden kann)
+    /// macht einen bestimmten Zug wieder Rückgängig
     /// </summary>
     /// <param name="move">Zug, welcher rückgängig gemacht werden soll</param>
     /// <param name="lastBoardInfos">Spielbrettinformationen der vorherigen Stellung</param>
