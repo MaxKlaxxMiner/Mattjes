@@ -439,43 +439,41 @@ namespace Mattjes
 
     #region # // --- Move ---
     /// <summary>
-    /// prüft die theoretischen Bewegungsmöglichkeiten einer Spielfigur auf einem bestimmten Feld
+    /// prüft die theoretischen Bewegungsmöglichkeiten einer weißen Spielfigur auf einem bestimmten Feld
     /// </summary>
+    /// <param name="piece">Figur, welche gezogen wird</param>
     /// <param name="pos">Position auf dem Spielfeld mit der zu testenden Figur</param>
     /// <returns>Aufzählung der theretisch begehbaren Felder</returns>
-    IEnumerable<int> ScanMove(int pos)
+    IEnumerable<int> ScanWhiteMove(Piece piece, int pos)
     {
-      var piece = fields[pos];
-      if (piece == Piece.None) yield break; // keine Figur auf dem Spielfeld?
-      var color = piece & Piece.Colors;
-      Debug.Assert(color == (WhiteMove ? Piece.White : Piece.Black)); // passt die Figur-Farbe zum Zug?
+      Debug.Assert((piece & Piece.Colors) == Piece.White);
 
       int posX = pos % Width;
       int posY = pos / Width;
-      switch (piece & Piece.BasicPieces)
+      switch (piece)
       {
-        #region # case Piece.King: // König
-        case Piece.King:
+        #region # case Piece.WhiteKing: // König
+        case Piece.WhiteKing:
         {
           if (posX > 0) // nach links
           {
-            if (posY > 0 && (fields[pos - (Width + 1)] & color) == Piece.None) yield return pos - (Width + 1); // links-oben
-            if ((fields[pos - 1] & color) == Piece.None) yield return pos - 1; // links
-            if (posY < Height - 1 && (fields[pos + (Width - 1)] & color) == Piece.None) yield return pos + (Width - 1); // links-unten
+            if (posY > 0 && (fields[pos - (Width + 1)] & Piece.White) == Piece.None) yield return pos - (Width + 1); // links-oben
+            if ((fields[pos - 1] & Piece.White) == Piece.None) yield return pos - 1; // links
+            if (posY < Height - 1 && (fields[pos + (Width - 1)] & Piece.White) == Piece.None) yield return pos + (Width - 1); // links-unten
           }
           if (posX < Width - 1) // nach rechts
           {
-            if (posY > 0 && (fields[pos - (Width - 1)] & color) == Piece.None) yield return pos - (Width - 1); // rechts-oben
-            if ((fields[pos + 1] & color) == Piece.None) yield return pos + 1; // rechts
-            if (posY < Height - 1 && (fields[pos + (Width + 1)] & color) == Piece.None) yield return pos + (Width + 1); // rechts-unten
+            if (posY > 0 && (fields[pos - (Width - 1)] & Piece.White) == Piece.None) yield return pos - (Width - 1); // rechts-oben
+            if ((fields[pos + 1] & Piece.White) == Piece.None) yield return pos + 1; // rechts
+            if (posY < Height - 1 && (fields[pos + (Width + 1)] & Piece.White) == Piece.None) yield return pos + (Width + 1); // rechts-unten
           }
-          if (posY > 0 && (fields[pos - Width] & color) == Piece.None) yield return pos - Width; // oben
-          if (posY < Height - 1 && (fields[pos + Width] & color) == Piece.None) yield return pos + Width; // unten
+          if (posY > 0 && (fields[pos - Width] & Piece.White) == Piece.None) yield return pos - Width; // oben
+          if (posY < Height - 1 && (fields[pos + Width] & Piece.White) == Piece.None) yield return pos + Width; // unten
         } break;
         #endregion
 
-        #region # case Piece.Queen: // Dame
-        case Piece.Queen:
+        #region # case Piece.WhiteQueen: // Dame
+        case Piece.WhiteQueen:
         {
           // links
           for (int i = 1; i < Width; i++)
@@ -483,7 +481,7 @@ namespace Mattjes
             if (posX - i < 0) break;
             int p = pos - i;
             var f = fields[p];
-            if ((f & color) != Piece.None) break;
+            if ((f & Piece.White) != Piece.None) break;
             yield return p;
             if (f != Piece.None) break;
           }
@@ -493,7 +491,7 @@ namespace Mattjes
             if (posX + i >= Width) break;
             int p = pos + i;
             var f = fields[p];
-            if ((f & color) != Piece.None) break;
+            if ((f & Piece.White) != Piece.None) break;
             yield return p;
             if (f != Piece.None) break;
           }
@@ -503,7 +501,7 @@ namespace Mattjes
             if (posY - i < 0) break;
             int p = pos - Width * i;
             var f = fields[p];
-            if ((f & color) != Piece.None) break;
+            if ((f & Piece.White) != Piece.None) break;
             yield return p;
             if (f != Piece.None) break;
           }
@@ -513,55 +511,15 @@ namespace Mattjes
             if (posY + i >= Height) break;
             int p = pos + Width * i;
             var f = fields[p];
-            if ((f & color) != Piece.None) break;
+            if ((f & Piece.White) != Piece.None) break;
             yield return p;
             if (f != Piece.None) break;
           }
-          // links-oben
-          for (int i = 1; i < Math.Max(Width, Height); i++)
-          {
-            if (posX - i < 0 || posY - i < 0) break;
-            int p = pos - (Width * i + i);
-            var f = fields[p];
-            if ((f & color) != Piece.None) break;
-            yield return p;
-            if (f != Piece.None) break;
-          }
-          // links-unten
-          for (int i = 1; i < Math.Max(Width, Height); i++)
-          {
-            if (posX - i < 0 || posY + i >= Height) break;
-            int p = pos + (Width * i - i);
-            var f = fields[p];
-            if ((f & color) != Piece.None) break;
-            yield return p;
-            if (f != Piece.None) break;
-          }
-          // rechts-oben
-          for (int i = 1; i < Math.Max(Width, Height); i++)
-          {
-            if (posX + i >= Width || posY - i < 0) break;
-            int p = pos - (Width * i - i);
-            var f = fields[p];
-            if ((f & color) != Piece.None) break;
-            yield return p;
-            if (f != Piece.None) break;
-          }
-          // rechts-unten
-          for (int i = 1; i < Math.Max(Width, Height); i++)
-          {
-            if (posX + i >= Width || posY + i >= Height) break;
-            int p = pos + (Width * i + i);
-            var f = fields[p];
-            if ((f & color) != Piece.None) break;
-            yield return p;
-            if (f != Piece.None) break;
-          }
-        } break;
+        } goto case Piece.WhiteBishop;
         #endregion
 
-        #region # case Piece.Rook: // Turm
-        case Piece.Rook:
+        #region # case Piece.WhiteRook: // Turm
+        case Piece.WhiteRook:
         {
           // links
           for (int i = 1; i < Width; i++)
@@ -569,7 +527,7 @@ namespace Mattjes
             if (posX - i < 0) break;
             int p = pos - i;
             var f = fields[p];
-            if ((f & color) != Piece.None) break;
+            if ((f & Piece.White) != Piece.None) break;
             yield return p;
             if (f != Piece.None) break;
           }
@@ -579,7 +537,7 @@ namespace Mattjes
             if (posX + i >= Width) break;
             int p = pos + i;
             var f = fields[p];
-            if ((f & color) != Piece.None) break;
+            if ((f & Piece.White) != Piece.None) break;
             yield return p;
             if (f != Piece.None) break;
           }
@@ -589,7 +547,7 @@ namespace Mattjes
             if (posY - i < 0) break;
             int p = pos - Width * i;
             var f = fields[p];
-            if ((f & color) != Piece.None) break;
+            if ((f & Piece.White) != Piece.None) break;
             yield return p;
             if (f != Piece.None) break;
           }
@@ -599,15 +557,15 @@ namespace Mattjes
             if (posY + i >= Height) break;
             int p = pos + Width * i;
             var f = fields[p];
-            if ((f & color) != Piece.None) break;
+            if ((f & Piece.White) != Piece.None) break;
             yield return p;
             if (f != Piece.None) break;
           }
         } break;
         #endregion
 
-        #region # case Piece.Bishop: // Läufer
-        case Piece.Bishop:
+        #region # case Piece.WhiteBishop: // Läufer
+        case Piece.WhiteBishop:
         {
           // links-oben
           for (int i = 1; i < Math.Max(Width, Height); i++)
@@ -615,7 +573,7 @@ namespace Mattjes
             if (posX - i < 0 || posY - i < 0) break;
             int p = pos - (Width * i + i);
             var f = fields[p];
-            if ((f & color) != Piece.None) break;
+            if ((f & Piece.White) != Piece.None) break;
             yield return p;
             if (f != Piece.None) break;
           }
@@ -625,7 +583,7 @@ namespace Mattjes
             if (posX - i < 0 || posY + i >= Height) break;
             int p = pos + (Width * i - i);
             var f = fields[p];
-            if ((f & color) != Piece.None) break;
+            if ((f & Piece.White) != Piece.None) break;
             yield return p;
             if (f != Piece.None) break;
           }
@@ -635,7 +593,7 @@ namespace Mattjes
             if (posX + i >= Width || posY - i < 0) break;
             int p = pos - (Width * i - i);
             var f = fields[p];
-            if ((f & color) != Piece.None) break;
+            if ((f & Piece.White) != Piece.None) break;
             yield return p;
             if (f != Piece.None) break;
           }
@@ -645,64 +603,266 @@ namespace Mattjes
             if (posX + i >= Width || posY + i >= Height) break;
             int p = pos + (Width * i + i);
             var f = fields[p];
-            if ((f & color) != Piece.None) break;
+            if ((f & Piece.White) != Piece.None) break;
             yield return p;
             if (f != Piece.None) break;
           }
         } break;
         #endregion
 
-        #region # case Piece.Knight: // Springer
-        case Piece.Knight:
+        #region # case Piece.WhiteKnight: // Springer
+        case Piece.WhiteKnight:
         {
           if (posX > 0) // 1 nach links
           {
-            if (posY > 1 && (fields[pos - (Width * 2 + 1)] & color) == Piece.None) yield return pos - (Width * 2 + 1); // -1, -2
-            if (posY < Height - 2 && (fields[pos + (Width * 2 - 1)] & color) == Piece.None) yield return pos + (Width * 2 - 1); // -1, +2
+            if (posY > 1 && (fields[pos - (Width * 2 + 1)] & Piece.White) == Piece.None) yield return pos - (Width * 2 + 1); // -1, -2
+            if (posY < Height - 2 && (fields[pos + (Width * 2 - 1)] & Piece.White) == Piece.None) yield return pos + (Width * 2 - 1); // -1, +2
             if (posX > 1) // 2 nach links
             {
-              if (posY > 0 && (fields[pos - (Width + 2)] & color) == Piece.None) yield return pos - (Width + 2); // -2, -1
-              if (posY < Height - 1 && (fields[pos + (Width - 2)] & color) == Piece.None) yield return pos + (Width - 2); // -2, +1
+              if (posY > 0 && (fields[pos - (Width + 2)] & Piece.White) == Piece.None) yield return pos - (Width + 2); // -2, -1
+              if (posY < Height - 1 && (fields[pos + (Width - 2)] & Piece.White) == Piece.None) yield return pos + (Width - 2); // -2, +1
             }
           }
           if (posX < Width - 1) // 1 nach rechts
           {
-            if (posY > 1 && (fields[pos - (Width * 2 - 1)] & color) == Piece.None) yield return pos - (Width * 2 - 1); // +1, -2
-            if (posY < Height - 2 && (fields[pos + (Width * 2 + 1)] & color) == Piece.None) yield return pos + (Width * 2 + 1); // +1, +2
+            if (posY > 1 && (fields[pos - (Width * 2 - 1)] & Piece.White) == Piece.None) yield return pos - (Width * 2 - 1); // +1, -2
+            if (posY < Height - 2 && (fields[pos + (Width * 2 + 1)] & Piece.White) == Piece.None) yield return pos + (Width * 2 + 1); // +1, +2
             if (posX < Width - 2) // 2 nach rechts
             {
-              if (posY > 0 && (fields[pos - (Width - 2)] & color) == Piece.None) yield return pos - (Width - 2); // +2, +1
-              if (posY < Height - 1 && (fields[pos + (Width + 2)] & color) == Piece.None) yield return pos + (Width + 2); // +2, -1
+              if (posY > 0 && (fields[pos - (Width - 2)] & Piece.White) == Piece.None) yield return pos - (Width - 2); // +2, +1
+              if (posY < Height - 1 && (fields[pos + (Width + 2)] & Piece.White) == Piece.None) yield return pos + (Width + 2); // +2, -1
             }
           }
         } break;
         #endregion
 
-        #region # case Piece.Pawn: // Bauer
-        case Piece.Pawn:
+        #region # case Piece.WhitePawn: // Bauer
+        case Piece.WhitePawn:
         {
           if (posY < 1 || posY >= Height - 1) break; // ungültige Position
 
-          if (color == Piece.White) // weißer Bauer = nach oben laufen
+          if (fields[pos - Width] == Piece.None) // Laufweg frei?
           {
-            if (fields[pos - Width] == Piece.None) // Laufweg frei?
-            {
-              yield return pos - Width;
-              if (posY == 6 && fields[pos - Width * 2] == Piece.None) yield return pos - Width * 2; // Doppelzug
-            }
-            if (posX > 0 && (EnPassantPos == pos - (Width + 1) || (fields[pos - (Width + 1)] & Piece.Colors) == Piece.Black)) yield return pos - (Width + 1); // nach links-oben schlagen
-            if (posX < Width - 1 && (EnPassantPos == pos - (Width - 1) || (fields[pos - (Width - 1)] & Piece.Colors) == Piece.Black)) yield return pos - (Width - 1); // nach rechts-oben schlagen
+            yield return pos - Width;
+            if (posY == 6 && fields[pos - Width * 2] == Piece.None) yield return pos - Width * 2; // Doppelzug
           }
-          else // schwarzer Bauer = nach unten laufen
+          if (posX > 0 && (EnPassantPos == pos - (Width + 1) || (fields[pos - (Width + 1)] & Piece.Colors) == Piece.Black)) yield return pos - (Width + 1); // nach links-oben schlagen
+          if (posX < Width - 1 && (EnPassantPos == pos - (Width - 1) || (fields[pos - (Width - 1)] & Piece.Colors) == Piece.Black)) yield return pos - (Width - 1); // nach rechts-oben schlagen
+        } break;
+        #endregion
+      }
+    }
+
+    /// <summary>
+    /// prüft die theoretischen Bewegungsmöglichkeiten einer schwarzen Spielfigur auf einem bestimmten Feld
+    /// </summary>
+    /// <param name="piece">Figur, welche gezogen wird</param>
+    /// <param name="pos">Position auf dem Spielfeld mit der zu testenden Figur</param>
+    /// <returns>Aufzählung der theretisch begehbaren Felder</returns>
+    IEnumerable<int> ScanBlackMove(Piece piece, int pos)
+    {
+      Debug.Assert((piece & Piece.Colors) == Piece.Black);
+
+      int posX = pos % Width;
+      int posY = pos / Width;
+      switch (piece)
+      {
+        #region # case Piece.BlackKing: // König
+        case Piece.BlackKing:
+        {
+          if (posX > 0) // nach links
           {
-            if (fields[pos + Width] == Piece.None) // Laufweg frei?
-            {
-              yield return pos + Width;
-              if (posY == 1 && fields[pos + Width * 2] == Piece.None) yield return pos + Width * 2; // Doppelzug
-            }
-            if (posX > 0 && (EnPassantPos == pos + (Width - 1) || (fields[pos + (Width - 1)] & Piece.Colors) == Piece.White)) yield return pos + (Width - 1); // nach links-unten schlagen
-            if (posX < Width - 1 && (EnPassantPos == pos + (Width + 1) || (fields[pos + (Width + 1)] & Piece.Colors) == Piece.White)) yield return pos + (Width + 1); // nach rechts-unten schlagen
+            if (posY > 0 && (fields[pos - (Width + 1)] & Piece.Black) == Piece.None) yield return pos - (Width + 1); // links-oben
+            if ((fields[pos - 1] & Piece.Black) == Piece.None) yield return pos - 1; // links
+            if (posY < Height - 1 && (fields[pos + (Width - 1)] & Piece.Black) == Piece.None) yield return pos + (Width - 1); // links-unten
           }
+          if (posX < Width - 1) // nach rechts
+          {
+            if (posY > 0 && (fields[pos - (Width - 1)] & Piece.Black) == Piece.None) yield return pos - (Width - 1); // rechts-oben
+            if ((fields[pos + 1] & Piece.Black) == Piece.None) yield return pos + 1; // rechts
+            if (posY < Height - 1 && (fields[pos + (Width + 1)] & Piece.Black) == Piece.None) yield return pos + (Width + 1); // rechts-unten
+          }
+          if (posY > 0 && (fields[pos - Width] & Piece.Black) == Piece.None) yield return pos - Width; // oben
+          if (posY < Height - 1 && (fields[pos + Width] & Piece.Black) == Piece.None) yield return pos + Width; // unten
+        } break;
+        #endregion
+
+        #region # case Piece.BlackQueen: // Dame
+        case Piece.BlackQueen:
+        {
+          // links
+          for (int i = 1; i < Width; i++)
+          {
+            if (posX - i < 0) break;
+            int p = pos - i;
+            var f = fields[p];
+            if ((f & Piece.Black) != Piece.None) break;
+            yield return p;
+            if (f != Piece.None) break;
+          }
+          // rechts
+          for (int i = 1; i < Width; i++)
+          {
+            if (posX + i >= Width) break;
+            int p = pos + i;
+            var f = fields[p];
+            if ((f & Piece.Black) != Piece.None) break;
+            yield return p;
+            if (f != Piece.None) break;
+          }
+          // oben
+          for (int i = 1; i < Height; i++)
+          {
+            if (posY - i < 0) break;
+            int p = pos - Width * i;
+            var f = fields[p];
+            if ((f & Piece.Black) != Piece.None) break;
+            yield return p;
+            if (f != Piece.None) break;
+          }
+          // unten
+          for (int i = 1; i < Height; i++)
+          {
+            if (posY + i >= Height) break;
+            int p = pos + Width * i;
+            var f = fields[p];
+            if ((f & Piece.Black) != Piece.None) break;
+            yield return p;
+            if (f != Piece.None) break;
+          }
+        } goto case Piece.BlackBishop;
+        #endregion
+
+        #region # case Piece.BlackRook: // Turm
+        case Piece.BlackRook:
+        {
+          // links
+          for (int i = 1; i < Width; i++)
+          {
+            if (posX - i < 0) break;
+            int p = pos - i;
+            var f = fields[p];
+            if ((f & Piece.Black) != Piece.None) break;
+            yield return p;
+            if (f != Piece.None) break;
+          }
+          // rechts
+          for (int i = 1; i < Width; i++)
+          {
+            if (posX + i >= Width) break;
+            int p = pos + i;
+            var f = fields[p];
+            if ((f & Piece.Black) != Piece.None) break;
+            yield return p;
+            if (f != Piece.None) break;
+          }
+          // oben
+          for (int i = 1; i < Height; i++)
+          {
+            if (posY - i < 0) break;
+            int p = pos - Width * i;
+            var f = fields[p];
+            if ((f & Piece.Black) != Piece.None) break;
+            yield return p;
+            if (f != Piece.None) break;
+          }
+          // unten
+          for (int i = 1; i < Height; i++)
+          {
+            if (posY + i >= Height) break;
+            int p = pos + Width * i;
+            var f = fields[p];
+            if ((f & Piece.Black) != Piece.None) break;
+            yield return p;
+            if (f != Piece.None) break;
+          }
+        } break;
+        #endregion
+
+        #region # case Piece.BlackBishop: // Läufer
+        case Piece.BlackBishop:
+        {
+          // links-oben
+          for (int i = 1; i < Math.Max(Width, Height); i++)
+          {
+            if (posX - i < 0 || posY - i < 0) break;
+            int p = pos - (Width * i + i);
+            var f = fields[p];
+            if ((f & Piece.Black) != Piece.None) break;
+            yield return p;
+            if (f != Piece.None) break;
+          }
+          // links-unten
+          for (int i = 1; i < Math.Max(Width, Height); i++)
+          {
+            if (posX - i < 0 || posY + i >= Height) break;
+            int p = pos + (Width * i - i);
+            var f = fields[p];
+            if ((f & Piece.Black) != Piece.None) break;
+            yield return p;
+            if (f != Piece.None) break;
+          }
+          // rechts-oben
+          for (int i = 1; i < Math.Max(Width, Height); i++)
+          {
+            if (posX + i >= Width || posY - i < 0) break;
+            int p = pos - (Width * i - i);
+            var f = fields[p];
+            if ((f & Piece.Black) != Piece.None) break;
+            yield return p;
+            if (f != Piece.None) break;
+          }
+          // rechts-unten
+          for (int i = 1; i < Math.Max(Width, Height); i++)
+          {
+            if (posX + i >= Width || posY + i >= Height) break;
+            int p = pos + (Width * i + i);
+            var f = fields[p];
+            if ((f & Piece.Black) != Piece.None) break;
+            yield return p;
+            if (f != Piece.None) break;
+          }
+        } break;
+        #endregion
+
+        #region # case Piece.BlackKnight: // Springer
+        case Piece.BlackKnight:
+        {
+          if (posX > 0) // 1 nach links
+          {
+            if (posY > 1 && (fields[pos - (Width * 2 + 1)] & Piece.Black) == Piece.None) yield return pos - (Width * 2 + 1); // -1, -2
+            if (posY < Height - 2 && (fields[pos + (Width * 2 - 1)] & Piece.Black) == Piece.None) yield return pos + (Width * 2 - 1); // -1, +2
+            if (posX > 1) // 2 nach links
+            {
+              if (posY > 0 && (fields[pos - (Width + 2)] & Piece.Black) == Piece.None) yield return pos - (Width + 2); // -2, -1
+              if (posY < Height - 1 && (fields[pos + (Width - 2)] & Piece.Black) == Piece.None) yield return pos + (Width - 2); // -2, +1
+            }
+          }
+          if (posX < Width - 1) // 1 nach rechts
+          {
+            if (posY > 1 && (fields[pos - (Width * 2 - 1)] & Piece.Black) == Piece.None) yield return pos - (Width * 2 - 1); // +1, -2
+            if (posY < Height - 2 && (fields[pos + (Width * 2 + 1)] & Piece.Black) == Piece.None) yield return pos + (Width * 2 + 1); // +1, +2
+            if (posX < Width - 2) // 2 nach rechts
+            {
+              if (posY > 0 && (fields[pos - (Width - 2)] & Piece.Black) == Piece.None) yield return pos - (Width - 2); // +2, +1
+              if (posY < Height - 1 && (fields[pos + (Width + 2)] & Piece.Black) == Piece.None) yield return pos + (Width + 2); // +2, -1
+            }
+          }
+        } break;
+        #endregion
+
+        #region # case Piece.BlackPawn: // Bauer
+        case Piece.BlackPawn:
+        {
+          if (posY < 1 || posY >= Height - 1) break; // ungültige Position
+
+          if (fields[pos + Width] == Piece.None) // Laufweg frei?
+          {
+            yield return pos + Width;
+            if (posY == 1 && fields[pos + Width * 2] == Piece.None) yield return pos + Width * 2; // Doppelzug
+          }
+          if (posX > 0 && (EnPassantPos == pos + (Width - 1) || (fields[pos + (Width - 1)] & Piece.Colors) == Piece.White)) yield return pos + (Width - 1); // nach links-unten schlagen
+          if (posX < Width - 1 && (EnPassantPos == pos + (Width + 1) || (fields[pos + (Width + 1)] & Piece.Colors) == Piece.White)) yield return pos + (Width + 1); // nach rechts-unten schlagen
         } break;
         #endregion
       }
@@ -967,6 +1127,12 @@ namespace Mattjes
         .Crc64Update(EnPassantPos);          // letzter doppelter Bauernzug für "en passant"
     }
 
+    /// <summary>
+    /// führt einen weißen Zug durch und gibt true zurück, wenn dieser erfolgreich war
+    /// </summary>
+    /// <param name="move">Zug, welcher ausgeführt werden soll</param>
+    /// <param name="onlyCheck">optional: gibt an, dass der Zug nur geprüft aber nicht durchgeführt werden soll (default: false)</param>
+    /// <returns>true, wenn erfolgreich, sonst false</returns>
     bool DoMoveWhite(Move move, bool onlyCheck)
     {
       var piece = fields[move.fromPos];
@@ -1091,6 +1257,12 @@ namespace Mattjes
       return true;
     }
 
+    /// <summary>
+    /// führt einen schwarzen Zug durch und gibt true zurück, wenn dieser erfolgreich war
+    /// </summary>
+    /// <param name="move">Zug, welcher ausgeführt werden soll</param>
+    /// <param name="onlyCheck">optional: gibt an, dass der Zug nur geprüft aber nicht durchgeführt werden soll (default: false)</param>
+    /// <returns>true, wenn erfolgreich, sonst false</returns>
     bool DoMoveBlack(Move move, bool onlyCheck)
     {
       var piece = fields[move.fromPos];
@@ -1382,40 +1554,38 @@ namespace Mattjes
     }
 
     /// <summary>
-    /// berechnet alle erlaubten Zugmöglichkeiten und gibt diese zurück
+    /// berechnet alle erlaubten weißen Zugmöglichkeiten und gibt diese zurück
     /// </summary>
     /// <returns>Aufzählung der Zugmöglichkeiten</returns>
-    public override IEnumerable<Move> GetMoves()
+    IEnumerable<Move> GetWhiteMoves()
     {
-      var color = WhiteMove ? Piece.White : Piece.Black;
-
       for (int pos = 0; pos < fields.Length; pos++)
       {
         var piece = fields[pos];
-        if ((piece & Piece.Colors) != color) continue; // Farbe der Figur passt nicht zum Zug oder das Feld ist leer
+        if ((piece & Piece.Colors) != Piece.White) continue; // Farbe der Figur passt nicht zum Zug oder das Feld ist leer
 
-        if ((piece & Piece.Pawn) != Piece.None && ((pos < Width * 2 && WhiteMove) || (pos >= Height * Width - Width * 2 && !WhiteMove)))
+        if (piece == Piece.WhitePawn && pos < Width * 2)
         {
           // Promotion-Zug gefunden? (ein Bauer hat das Ziel erreicht und wird umgewandelt)
-          foreach (int movePos in ScanMove(pos)) // alle theoretischen Bewegungsmöglichkeiten prüfen
+          foreach (int movePos in ScanWhiteMove(piece, pos)) // alle theoretischen Bewegungsmöglichkeiten prüfen
           {
-            var move = new Move(pos, movePos, fields[movePos], color | Piece.Queen);
+            var move = new Move(pos, movePos, fields[movePos], Piece.WhiteQueen);
             if (DoMove(move, true)) // gültigen Zug gefunden?
             {
               yield return move;
               // weitere Wahlmöglichkeiten als gültige Züge zurück geben
-              move.promoPiece = color | Piece.Rook;
+              move.promoPiece = Piece.WhiteRook;
               yield return move;
-              move.promoPiece = color | Piece.Bishop;
+              move.promoPiece = Piece.WhiteBishop;
               yield return move;
-              move.promoPiece = color | Piece.Knight;
+              move.promoPiece = Piece.WhiteKnight;
               yield return move;
             }
           }
         }
         else
         {
-          foreach (int movePos in ScanMove(pos)) // alle theoretischen Bewegungsmöglichkeiten prüfen
+          foreach (int movePos in ScanWhiteMove(piece, pos)) // alle theoretischen Bewegungsmöglichkeiten prüfen
           {
             var move = new Move(pos, movePos, fields[movePos], Piece.None);
             if (DoMove(move, true)) // gültigen Zug gefunden?
@@ -1442,7 +1612,53 @@ namespace Mattjes
               yield return new Move(pos, pos + 2, Piece.None, Piece.None); // König läuft zwei Felder = Rochade
             }
           }
-          else if (pos == 4 && piece == Piece.BlackKing) // der weiße König steht noch auf der Startposition?
+        }
+      }
+    }
+
+    /// <summary>
+    /// berechnet alle erlaubten schwarzen Zugmöglichkeiten und gibt diese zurück
+    /// </summary>
+    /// <returns>Aufzählung der Zugmöglichkeiten</returns>
+    IEnumerable<Move> GetBlackMoves()
+    {
+      for (int pos = 0; pos < fields.Length; pos++)
+      {
+        var piece = fields[pos];
+        if ((piece & Piece.Colors) != Piece.Black) continue; // Farbe der Figur passt nicht zum Zug oder das Feld ist leer
+
+        if (piece == Piece.BlackPawn && pos >= Height * Width - Width * 2)
+        {
+          // Promotion-Zug gefunden? (ein Bauer hat das Ziel erreicht und wird umgewandelt)
+          foreach (int movePos in ScanBlackMove(piece, pos)) // alle theoretischen Bewegungsmöglichkeiten prüfen
+          {
+            var move = new Move(pos, movePos, fields[movePos], Piece.BlackQueen);
+            if (DoMove(move, true)) // gültigen Zug gefunden?
+            {
+              yield return move;
+              // weitere Wahlmöglichkeiten als gültige Züge zurück geben
+              move.promoPiece = Piece.BlackRook;
+              yield return move;
+              move.promoPiece = Piece.BlackBishop;
+              yield return move;
+              move.promoPiece = Piece.BlackKnight;
+              yield return move;
+            }
+          }
+        }
+        else
+        {
+          foreach (int movePos in ScanBlackMove(piece, pos)) // alle theoretischen Bewegungsmöglichkeiten prüfen
+          {
+            var move = new Move(pos, movePos, fields[movePos], Piece.None);
+            if (DoMove(move, true)) // gültigen Zug gefunden?
+            {
+              yield return move;
+            }
+          }
+
+          // Rochade-Züge prüfen
+          if (pos == 4 && piece == Piece.BlackKing) // der weiße König steht noch auf der Startposition?
           {
             if (BlackCanCastleQueenside // lange Rochade O-O-O möglich?
                 && fields[1] == Piece.None && fields[2] == Piece.None && fields[3] == Piece.None // sind die Felder noch frei?
@@ -1461,6 +1677,15 @@ namespace Mattjes
           }
         }
       }
+    }
+
+    /// <summary>
+    /// berechnet alle erlaubten Zugmöglichkeiten und gibt diese zurück
+    /// </summary>
+    /// <returns>Aufzählung der Zugmöglichkeiten</returns>
+    public override IEnumerable<Move> GetMoves()
+    {
+      return WhiteMove ? GetWhiteMoves() : GetBlackMoves();
     }
     #endregion
   }
