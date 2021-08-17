@@ -1068,8 +1068,8 @@ namespace Mattjes
       Console.WriteLine();
 
       //IBoard b = new BoardReference();
-      IBoard b = new BoardKingOptimized();
-      //IBoard b = new BoardIndexed();
+      //IBoard b = new BoardKingOptimized();
+      IBoard b = new BoardIndexed();
 
       //b.SetFEN("r1bqk1nr/pppp3p/2nb1p2/6p1/2B1P3/4QN2/PPP2PPP/RNB2RK1 b kq - 1 7");
 

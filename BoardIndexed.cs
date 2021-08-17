@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+// ReSharper disable UnusedType.Global
+// ReSharper disable UnusedMember.Local
 
 namespace Mattjes
 {
@@ -150,7 +152,7 @@ namespace Mattjes
           blackPieceCount--;
           return;
         }
-        Debug.Assert(i < whitePieceCount);
+        Debug.Assert(i < blackPieceCount);
       }
       throw new Exception("Index-Entry not found!");
     }
@@ -186,6 +188,75 @@ namespace Mattjes
       IndexRemove(piece, oldPos);
       IndexAdd(piece, newPos);
     }
+
+    /// <summary>
+    /// prüft, ob die Index-Einträge alle gültig sind
+    /// </summary>
+    /// <returns>true, wenn die Validierung erfolgreich war</returns>
+    bool IndexValidation()
+    {
+      var whitePieces = new List<ushort>();
+      var blackPieces = new List<ushort>();
+
+      for (int i = 0; i < fields.Length; i++)
+      {
+        var piece = fields[i];
+        if (piece == Piece.None) continue;
+        if ((piece & Piece.BasicPieces) == Piece.None)
+        {
+          Debug.Fail("color without piece? [" + i + "] - " + piece);
+          return false;
+        }
+        if ((piece & Piece.Colors) == Piece.White)
+        {
+          whitePieces.Add((ushort)((byte)piece << 8 | i));
+        }
+        else if ((piece & Piece.Colors) == Piece.Black)
+        {
+          blackPieces.Add((ushort)((byte)piece << 8 | i));
+        }
+        else
+        {
+          Debug.Fail("piece without color? [" + i + "] - " + piece);
+          return false;
+        }
+      }
+
+      whitePieces.Sort();
+      blackPieces.Sort();
+
+      if (whitePieces.Count != whitePieceCount)
+      {
+        Debug.Fail("white pieces not match index: " + whitePieces.Count + " != " + whitePieceCount);
+        return false;
+      }
+
+      if (blackPieces.Count != blackPieceCount)
+      {
+        Debug.Fail("black pieces not match index: " + blackPieces.Count + " != " + blackPieceCount);
+        return false;
+      }
+
+      for (int i = 0; i < whitePieceCount; i++)
+      {
+        if (whitePieces[i] != whiteIndex[i])
+        {
+          Debug.Fail("white piece not match index: 0x" + whitePieces[i].ToString("x4") + " != 0x" + whiteIndex[i].ToString("x4"));
+          return false;
+        }
+      }
+
+      for (int i = 0; i < blackPieceCount; i++)
+      {
+        if (blackPieces[i] != blackIndex[i])
+        {
+          Debug.Fail("white piece not match index: 0x" + blackPieces[i].ToString("x4") + " != 0x" + blackIndex[i].ToString("x4"));
+          return false;
+        }
+      }
+
+      return true;
+    }
     #endregion
 
     #region # // --- SetField / GetField / Clear ---
@@ -219,8 +290,12 @@ namespace Mattjes
       var oldPiece = fields[pos];
       if (oldPiece != Piece.None) IndexRemove(oldPiece, pos);
 
+      Debug.Assert(IndexValidation());
+
       fields[pos] = piece;
       if (piece != Piece.None) IndexAdd(piece, pos);
+
+      Debug.Assert(IndexValidation());
     }
 
     /// <summary>
@@ -804,6 +879,8 @@ namespace Mattjes
       HalfmoveClock = array[ofs + p] | array[ofs + p + 1] << 8; p += sizeof(short);
       MoveNumber = array[ofs + p] | array[ofs + p + 1] << 8; p += sizeof(short);
 
+      Debug.Assert(IndexValidation());
+
       return p;
     }
 
@@ -856,6 +933,8 @@ namespace Mattjes
       fields[move.fromPos] = Piece.None;
       IndexUpdate(piece, move.fromPos, move.toPos);
 
+      Debug.Assert(IndexValidation());
+
       if (move.toPos == EnPassantPos && (piece & Piece.Pawn) != Piece.None) // ein Bauer schlägt "en passant"?
       {
         Debug.Assert(move.toPos % Width != move.fromPos % Width); // Spalte muss sich ändern
@@ -865,6 +944,8 @@ namespace Mattjes
 
         IndexRemove(fields[removePawnPos], removePawnPos);
         fields[removePawnPos] = Piece.None; // Bauer entfernen
+
+        Debug.Assert(IndexValidation());
       }
 
       if (move.promoPiece != Piece.None)
@@ -872,6 +953,8 @@ namespace Mattjes
         fields[move.toPos] = move.promoPiece;
         IndexRemove(piece, move.toPos);
         IndexAdd(move.promoPiece, move.toPos);
+
+        Debug.Assert(IndexValidation());
       }
 
       // --- prüfen, ob der König nach dem Zug im Schach steht ---
@@ -916,6 +999,7 @@ namespace Mattjes
                 } break;
                 default: throw new Exception(); // Rochade war unmöglich
               }
+              Debug.Assert(IndexValidation());
               break; // weiterer Schach-Checks nach Rochade nicht notwendig
             }
           }
@@ -940,6 +1024,7 @@ namespace Mattjes
                 IndexAdd(Piece.WhitePawn, move.toPos - Width);
               }
             }
+            Debug.Assert(IndexValidation());
             return false; // Zug war nicht erlaubt, da der König sonst im Schach stehen würde
           }
           break;
@@ -966,6 +1051,7 @@ namespace Mattjes
             IndexAdd(Piece.WhitePawn, move.toPos - Width);
           }
         }
+        Debug.Assert(IndexValidation());
         return true;
       }
 
@@ -1028,6 +1114,8 @@ namespace Mattjes
       fields[move.toPos] = move.capturePiece; // eventuell geschlagene Figur wiederherstellen
       if (move.capturePiece != Piece.None) IndexAdd(move.capturePiece, move.toPos);
 
+      Debug.Assert(IndexValidation());
+
       // --- Bauer Umwandlung: promotion ---
       if (move.promoPiece != Piece.None)
       {
@@ -1035,6 +1123,7 @@ namespace Mattjes
         IndexRemove(fields[move.fromPos], move.fromPos);
         fields[move.fromPos] = (piece & Piece.Colors) | Piece.Pawn; // Figur zum Bauern zurück verwandeln :)
         IndexAdd(fields[move.fromPos], move.fromPos);
+        Debug.Assert(IndexValidation());
       }
 
       // --- Bauer hat "en passant" geschlagen ---
@@ -1053,6 +1142,7 @@ namespace Mattjes
           fields[(uint)(lastBoardInfos & BoardInfo.EnPassantMask) + Width] = Piece.BlackPawn;
           IndexAdd(Piece.BlackPawn, (int)((uint)(lastBoardInfos & BoardInfo.EnPassantMask) + Width));
         }
+        Debug.Assert(IndexValidation());
       }
 
       // --- eine Rochade wurde gemacht ---
@@ -1094,6 +1184,7 @@ namespace Mattjes
 
           default: throw new Exception("invalid move"); // König hat sich seltsam bewegt
         }
+        Debug.Assert(IndexValidation());
       }
 
       // --- Spielbrett Infos anpassen ---
