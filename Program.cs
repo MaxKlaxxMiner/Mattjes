@@ -38,6 +38,57 @@ namespace Mattjes
       }
     }
 
+    //static int PiecePoints(IBoard b)
+    //{
+    //  int r = 0;
+    //  for (var pos = 0; pos < IBoard.Width * IBoard.Height; pos++)
+    //  {
+    //    var p = b.GetField(pos);
+    //    switch (p)
+    //    {
+    //      case Piece.BlackKing: if (pos == 2 || pos == 6) r -= 10; break;
+    //      case Piece.WhiteKing: if (pos == 58 || pos == 62) r += 10; break;
+    //      case Piece.WhiteQueen: r += 900; break;
+    //      case Piece.BlackQueen: r -= 900; break;
+    //      case Piece.WhiteRook: r += 500; break;
+    //      case Piece.BlackRook: r -= 500; break;
+    //      //case Piece.WhiteBishop: r += 300; break;
+    //      case Piece.WhiteBishop: r += 300; if (pos == 58 || pos == 61) r--; break;
+    //      //case Piece.BlackBishop: r -= 300; break;
+    //      case Piece.BlackBishop: r -= 300; if (pos == 2 || pos == 5) r++; break;
+    //      //case Piece.WhiteKnight: r += 300; break;
+    //      case Piece.WhiteKnight: r += 300; if (pos == 57 || pos == 62) r -= 2; break;
+    //      //case Piece.BlackKnight: r -= 300; break;
+    //      case Piece.BlackKnight: r -= 300; if (pos == 1 || pos == 6) r += 2; break;
+    //      //case Piece.WhitePawn: r += 100; break;
+    //      //case Piece.BlackPawn: r -= 100; break;
+    //      case Piece.WhitePawn: r += 100; r += (6 - pos / IBoard.Width) * (6 - pos / IBoard.Width); break;
+    //      case Piece.BlackPawn: r -= 100; r -= (pos / IBoard.Width - 1) * (pos / IBoard.Width - 1); break;
+    //    }
+    //  }
+    //  return r;
+    //}
+
+    static readonly int[] GoodWall = GetGoodWall().ToArray();
+
+    static IEnumerable<int> GetGoodWall()
+    {
+      for (int pos = 0; pos < IBoard.Width * IBoard.Height; pos++)
+      {
+        int leftDist = pos % IBoard.Width;
+        int rightDist = IBoard.Width - 1 - pos % IBoard.Width;
+        int topDist = pos / IBoard.Width;
+        int bottomDist = IBoard.Height - 1 - pos / IBoard.Width;
+        int pts = 0;
+        for (int i = 0; i < 4; i++)
+        {
+          if (leftDist > i && rightDist > i) pts++;
+          if (topDist > i && bottomDist > i) pts++;
+        }
+        yield return pts;
+      }
+    }
+
     static int PiecePoints(IBoard b)
     {
       int r = 0;
@@ -210,12 +261,14 @@ namespace Mattjes
     {
       if (depth == 0)
       {
-        int moveCount = b.GetMoves().Count();
-        return moveCount == 0 ? EndCheck(b, depth) : PiecePoints(b) + moveCount;
+        //int moveCount = b.GetMoves().Count();
+        //return moveCount == 0 ? EndCheck(b, depth) : PiecePoints(b) + moveCount;
+        return b.GetMoves().Any() ? PiecePoints(b) : EndCheck(b, depth);
       }
 
       depth--;
       var nextMoves = b.GetMoves().ToArray();
+      Move.Sort(nextMoves, 0, nextMoves.Length);
 
       if (nextMoves.Length == 0) // keine weiteren Zugmöglichkeit?
       {
@@ -244,12 +297,14 @@ namespace Mattjes
     {
       if (depth == 0)
       {
-        int moveCount = b.GetMoves().Count();
-        return moveCount == 0 ? EndCheck(b, depth) : PiecePoints(b) - moveCount;
+        //int moveCount = b.GetMoves().Count();
+        //return moveCount == 0 ? EndCheck(b, depth) : PiecePoints(b) - moveCount;
+        return b.GetMoves().Any() ? PiecePoints(b) : EndCheck(b, depth);
       }
 
       depth--;
       var nextMoves = b.GetMoves().ToArray();
+      Move.Sort(nextMoves, 0, nextMoves.Length);
 
       if (nextMoves.Length == 0) // keine weiteren Zugmöglichkeit?
       {
@@ -307,6 +362,7 @@ namespace Mattjes
 
       var lastBoardInfos = b.BoardInfos;
       var nextMoves = moves.ToArray();
+      Move.Sort(nextMoves, 0, nextMoves.Length);
       if (depth > 3)
       {
         var tmpPoints = ScanMovePointsAlphaBetaShort(b, moves, 3);
@@ -1039,28 +1095,22 @@ namespace Mattjes
     #endregion
 
     // --- Alpha/Beta short (Default) ---
-    // [0]      0,1 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -16 (198.031 nps)
-    // [1]      0,9 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  29 (188.415 nps)
-    // [2]      9,3 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -22 (324.403 nps)
-    // [3]     54,6 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  33 (234.675 nps)
-    // [4]    469,0 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  78 (319.221 nps)
-    // [5] 10.328,9 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -59 (240.617 nps)
+    // [0]      0,0 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   4 (559.949 nps)
+    // [1]      0,2 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   0 (767.216 nps)
+    // [2]      1,3 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   4 (981.523 nps)
+    // [3]      7,9 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   0 (1.050.236 nps)
+    // [4]    210,1 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  97 (1.319.456 nps)
+    // [5]  2.237,4 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -93 (1.192.071 nps)
+    // [6] 24.427,3 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, 100 (1.397.942 nps)
 
     // --- BoardKingOptimized ---
-    // [0]      0,1 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -16 (213.665 nps)
-    // [1]      0,7 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  29 (225.008 nps)
-    // [2]      8,5 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -22 (352.459 nps)
-    // [3]     42,1 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  33 (304.493 nps)
-    // [4]    427,5 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  78 (350.218 nps)
-    // [5]  7.553,3 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -59 (329.035 nps)
-
-    // --- BoardIndexed (unfinished) ---
-    // [0]      0,1 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -16 (181.774 nps)
-    // [1]      1,2 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  29 (140.542 nps)
-    // [2]     13,2 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -22 (227.994 nps)
-    // [3]     78,1 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  33 (164.199 nps)
-    // [4]    668,5 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  78 (223.951 nps)
-    // [5] 15.021,4 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -59 (165.451 nps)
+    // [0]      0,0 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   4 (547.365 nps)
+    // [1]      0,2 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   0 (815.728 nps)
+    // [2]      1,1 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   4 (1.094.613 nps)
+    // [3]      7,6 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   0 (1.093.536 nps)
+    // [4]    176,8 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  97 (1.567.848 nps)
+    // [5]  1.995,3 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -93 (1.336.683 nps)
+    // [6] 20.423,6 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, 100 (1.671.984 nps)
 
     static void Main(string[] args)
     {
@@ -1069,7 +1119,8 @@ namespace Mattjes
 
       //IBoard b = new BoardReference();
       //IBoard b = new BoardKingOptimized();
-      IBoard b = new BoardIndexed();
+      IBoard b = new BoardKingOptimized2();
+      //IBoard b = new BoardIndexed();
 
       //b.SetFEN("r1bqk1nr/pppp3p/2nb1p2/6p1/2B1P3/4QN2/PPP2PPP/RNB2RK1 b kq - 1 7");
 

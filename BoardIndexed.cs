@@ -1,8 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Runtime.CompilerServices;
-
 // ReSharper disable UnusedType.Global
 // ReSharper disable UnusedMember.Local
 
@@ -1559,10 +1557,12 @@ namespace Mattjes
     /// <returns>Aufzählung der Zugmöglichkeiten</returns>
     IEnumerable<Move> GetWhiteMoves()
     {
-      for (int pos = 0; pos < fields.Length; pos++)
+      for (int index = 0; index < whitePieceCount; index++)
       {
-        var piece = fields[pos];
-        if ((piece & Piece.Colors) != Piece.White) continue; // Farbe der Figur passt nicht zum Zug oder das Feld ist leer
+        var key = whiteIndex[index];
+        int pos = key & 0xff;
+        var piece = (Piece)(byte)(key >> 8);
+        Debug.Assert((piece & Piece.Colors) == Piece.White);
 
         if (piece == Piece.WhitePawn && pos < Width * 2)
         {
@@ -1622,10 +1622,13 @@ namespace Mattjes
     /// <returns>Aufzählung der Zugmöglichkeiten</returns>
     IEnumerable<Move> GetBlackMoves()
     {
-      for (int pos = 0; pos < fields.Length; pos++)
+      for (int index = 0; index < blackPieceCount; index++)
+      //for (int index = blackPieceCount - 1; index >= 0; index--)
       {
-        var piece = fields[pos];
-        if ((piece & Piece.Colors) != Piece.Black) continue; // Farbe der Figur passt nicht zum Zug oder das Feld ist leer
+        var key = blackIndex[index];
+        int pos = key & 0xff;
+        var piece = (Piece)(byte)(key >> 8);
+        Debug.Assert((piece & Piece.Colors) == Piece.Black);
 
         if (piece == Piece.BlackPawn && pos >= Height * Width - Width * 2)
         {

@@ -52,5 +52,39 @@ namespace Mattjes
     {
       return IBoard.PosChars(fromPos) + "-" + IBoard.PosChars(toPos) + (promoPiece != Piece.None ? IBoard.PieceChar(promoPiece).ToString() : "");
     }
+
+    /// <summary>
+    /// sortiert uint-Werte in einer Liste
+    /// </summary>
+    /// <param name="ptr">Pointer auf die Liste</param>
+    /// <param name="count">Anzahl der Elemente</param>
+    static unsafe void Sort(uint* ptr, int count)
+    {
+      for (int start = 1; start < count; start++)
+      {
+        int i = start;
+        uint tmp = ptr[start];
+        for (; i > 0 && tmp < ptr[i - 1]; i--)
+        {
+          ptr[i] = ptr[i - 1];
+        }
+        ptr[i] = tmp;
+      }
+    }
+
+    /// <summary>
+    /// sortiert die Züge in einem Array
+    /// </summary>
+    /// <param name="moves">Züge, welche sortiert werden sollen</param>
+    /// <param name="ofs">Startposition innerhalb des Arrays</param>
+    /// <param name="count">Anzahl der enthaltenen Züge</param>
+    public static unsafe void Sort(Move[] moves, int ofs, int count)
+    {
+      if (count < 2) return;
+      fixed (Move* ptr = &moves[ofs])
+      {
+        Sort((uint*)ptr, count);
+      }
+    }
   }
 }
