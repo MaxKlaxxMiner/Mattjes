@@ -268,7 +268,7 @@ namespace Mattjes
 
       depth--;
       var nextMoves = b.GetMovesArray();
-      Move.Sort(nextMoves, 0, nextMoves.Length);
+      if (b.WhiteMove) Move.Sort(nextMoves, 0, nextMoves.Length); else Move.SortBackward(nextMoves, 0, nextMoves.Length);
 
       if (nextMoves.Length == 0) // keine weiteren Zugmöglichkeit?
       {
@@ -304,7 +304,7 @@ namespace Mattjes
 
       depth--;
       var nextMoves = b.GetMovesArray();
-      Move.Sort(nextMoves, 0, nextMoves.Length);
+      if (b.WhiteMove) Move.Sort(nextMoves, 0, nextMoves.Length); else Move.SortBackward(nextMoves, 0, nextMoves.Length);
 
       if (nextMoves.Length == 0) // keine weiteren Zugmöglichkeit?
       {
@@ -362,7 +362,7 @@ namespace Mattjes
 
       var lastBoardInfos = b.BoardInfos;
       var nextMoves = moves.ToArray();
-      Move.Sort(nextMoves, 0, nextMoves.Length);
+      if (b.WhiteMove) Move.Sort(nextMoves, 0, nextMoves.Length); else Move.SortBackward(nextMoves, 0, nextMoves.Length);
       if (depth > 3)
       {
         var tmpPoints = ScanMovePointsAlphaBetaShort(b, moves, 3);
@@ -1130,16 +1130,25 @@ namespace Mattjes
     // [5]  1.269,9 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -93 (1.700.468 nps)
     // [6] 14.225,1 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, 100 (1.786.899 nps)
 
+    // --- BoardKingOptimized3 - simple sort order optimized ---
+    // [0]      0,0 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   4 (716.406 nps)
+    // [1]      0,1 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   0 (579.480 nps)
+    // [2]      0,8 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   4 (978.841 nps)
+    // [3]      1,8 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   0 (862.039 nps)
+    // [4]     53,5 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  97 (884.247 nps)
+    // [5]    351,5 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -93 (1.125.469 nps)
+    // [6]  1.932,0 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, 100 (1.233.984 nps)
+
     static void Main(string[] args)
     {
       Console.WriteLine();
       Console.WriteLine();
 
       //IBoard b = new BoardReference();
+      //IBoard b = new BoardIndexed();
       //IBoard b = new BoardKingOptimized();
       //IBoard b = new BoardKingOptimized2();
       IBoard b = new BoardKingOptimized3();
-      //IBoard b = new BoardIndexed();
 
       //b.SetFEN("r1bqk1nr/pppp3p/2nb1p2/6p1/2B1P3/4QN2/PPP2PPP/RNB2RK1 b kq - 1 7");
 
