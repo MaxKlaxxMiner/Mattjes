@@ -158,6 +158,15 @@ namespace Mattjes
         return GetMoves().Any();
       }
     }
+
+    /// <summary>
+    /// gibt alle Züge als Array zurück
+    /// </summary>
+    /// <returns>alle gültigen Züge als Array</returns>
+    public virtual Move[] GetMovesArray()
+    {
+      return GetMoves().ToArray();
+    }
     #endregion
 
     #region # // --- Helper Methods ---

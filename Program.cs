@@ -224,7 +224,7 @@ namespace Mattjes
         int points;
         if (!HashTable.TryGetValue(checkSum, out points))
         {
-          var nextMoves = b.GetMoves().ToArray();
+          var nextMoves = b.GetMovesArray();
 
           if (nextMoves.Length == 0) // keine weiteren Zugmöglichkeit?
           {
@@ -267,7 +267,7 @@ namespace Mattjes
       }
 
       depth--;
-      var nextMoves = b.GetMoves().ToArray();
+      var nextMoves = b.GetMovesArray();
       Move.Sort(nextMoves, 0, nextMoves.Length);
 
       if (nextMoves.Length == 0) // keine weiteren Zugmöglichkeit?
@@ -303,7 +303,7 @@ namespace Mattjes
       }
 
       depth--;
-      var nextMoves = b.GetMoves().ToArray();
+      var nextMoves = b.GetMovesArray();
       Move.Sort(nextMoves, 0, nextMoves.Length);
 
       if (nextMoves.Length == 0) // keine weiteren Zugmöglichkeit?
@@ -451,7 +451,7 @@ namespace Mattjes
 
       if (moveCacheLen == moveCache.Length)
       {
-        return b.GetMoves().ToArray();
+        return b.GetMovesArray();
       }
 
       moveOfs = moveCacheLen;
@@ -936,7 +936,7 @@ namespace Mattjes
 
     static void SpeedCheck(IBoard b)
     {
-      var moves = b.GetMoves().ToArray();
+      var moves = b.GetMovesArray();
       Console.WriteLine("    moves: " + moves.Length);
 
       for (int maxDepth = 0; maxDepth < 100; maxDepth++)
@@ -974,7 +974,7 @@ namespace Mattjes
       {
         Console.WriteLine();
         Console.WriteLine("    FEN: " + b.GetFEN());
-        var moves = b.GetMoves().ToArray();
+        var moves = b.GetMovesArray();
         Console.WriteLine("    moves: " + moves.Length);
 
         if (moves.Length == 0)
@@ -1128,7 +1128,8 @@ namespace Mattjes
 
       //IBoard b = new BoardReference();
       //IBoard b = new BoardKingOptimized();
-      IBoard b = new BoardKingOptimized2();
+      //IBoard b = new BoardKingOptimized2();
+      IBoard b = new BoardKingOptimized3();
       //IBoard b = new BoardIndexed();
 
       //b.SetFEN("r1bqk1nr/pppp3p/2nb1p2/6p1/2B1P3/4QN2/PPP2PPP/RNB2RK1 b kq - 1 7");

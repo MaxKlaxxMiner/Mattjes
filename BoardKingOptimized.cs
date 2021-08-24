@@ -975,7 +975,7 @@ namespace Mattjes
               yield return new Move(pos, pos + 2, Piece.None, Piece.None); // König läuft zwei Felder = Rochade
             }
           }
-          else if (pos == 4 && piece == Piece.BlackKing) // der weiße König steht noch auf der Startposition?
+          else if (pos == 4 && piece == Piece.BlackKing) // der schwarze König steht noch auf der Startposition?
           {
             if (BlackCanCastleQueenside // lange Rochade O-O-O möglich?
                 && fields[1] == Piece.None && fields[2] == Piece.None && fields[3] == Piece.None // sind die Felder noch frei?

@@ -1661,7 +1661,7 @@ namespace Mattjes
           }
 
           // Rochade-Züge prüfen
-          if (pos == 4 && piece == Piece.BlackKing) // der weiße König steht noch auf der Startposition?
+          if (pos == 4 && piece == Piece.BlackKing) // der schwarze König steht noch auf der Startposition?
           {
             if (BlackCanCastleQueenside // lange Rochade O-O-O möglich?
                 && fields[1] == Piece.None && fields[2] == Piece.None && fields[3] == Piece.None // sind die Felder noch frei?

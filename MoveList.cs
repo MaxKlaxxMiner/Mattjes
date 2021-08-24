@@ -2,6 +2,8 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+
 // ReSharper disable UnusedMember.Global
 
 // ReSharper disable MemberCanBePrivate.Global
@@ -163,6 +165,20 @@ namespace Mattjes
       {
         array[arrayIndex + i] = GetMove(i);
       }
+    }
+
+    /// <summary>
+    /// gibt die Liste als Array zurück
+    /// </summary>
+    /// <returns>fertiges Array</returns>
+    public Move[] ToArray()
+    {
+      var result = new Move[Count];
+      fixed (Move* resultPtr = result)
+      {
+        Tools.CopyBytes(data, (byte*)resultPtr, result.Length * sizeof(Move));
+      }
+      return result;
     }
 
     /// <summary>

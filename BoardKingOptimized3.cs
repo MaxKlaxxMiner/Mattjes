@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Runtime.InteropServices;
+
 // ReSharper disable UnusedType.Global
 
 namespace Mattjes
@@ -9,7 +11,7 @@ namespace Mattjes
   /// <summary>
   /// Merkt sich ein Schachbrett
   /// </summary>
-  public sealed class BoardKingOptimized2 : IBoard
+  public sealed unsafe class BoardKingOptimized3 : IBoard
   {
     #region # // --- values ---
     /// <summary>
@@ -915,6 +917,82 @@ namespace Mattjes
       BoardInfos = lastBoardInfos;
     }
 
+    void GetWhiteMoves(MoveList moveList)
+    {
+      for (int pos = fields.Length - 1; pos >= 0; pos--)
+      {
+        var piece = fields[pos];
+        if ((piece & Piece.Colors) != Piece.White) continue; // Farbe der Figur passt nicht zum Zug oder das Feld ist leer
+
+        if ((piece & Piece.Pawn) != Piece.None && pos < Width * 2)
+        {
+          // Promotion-Zug gefunden? (ein Bauer hat das Ziel erreicht und wird umgewandelt)
+          foreach (int movePos in ScanMove(pos)) // alle theoretischen Bewegungsmöglichkeiten prüfen
+          {
+            var move = new Move(pos, movePos, fields[movePos], Piece.White | Piece.Queen);
+            if (DoMove(move, true)) // gültigen Zug gefunden?
+            {
+              moveList.Add(move);
+              // weitere Wahlmöglichkeiten als gültige Züge zurück geben
+              move.promoPiece = Piece.White | Piece.Rook;
+              moveList.Add(move);
+              move.promoPiece = Piece.White | Piece.Bishop;
+              moveList.Add(move);
+              move.promoPiece = Piece.White | Piece.Knight;
+              moveList.Add(move);
+            }
+          }
+        }
+        else
+        {
+          foreach (int movePos in ScanMove(pos)) // alle theoretischen Bewegungsmöglichkeiten prüfen
+          {
+            var move = new Move(pos, movePos, fields[movePos], Piece.None);
+            if (DoMove(move, true)) // gültigen Zug gefunden?
+            {
+              moveList.Add(move);
+            }
+          }
+
+          // Rochade-Züge prüfen
+          if (pos == 60 && piece == Piece.WhiteKing) // der weiße König steht noch auf der Startposition?
+          {
+            if (WhiteCanCastleQueenside // lange Rochade O-O-O möglich?
+                && fields[57] == Piece.None && fields[58] == Piece.None && fields[59] == Piece.None // sind die Felder noch frei?
+                && !IsChecked(58, Piece.Black) && !IsChecked(59, Piece.Black) && !IsChecked(60, Piece.Black)) // steht der König und seine Laufwege auch nicht im Schach?
+            {
+              Debug.Assert(fields[56] == Piece.WhiteRook); // weißer Turm sollte noch in der Ecke stehen
+              moveList.Add(new Move(pos, pos - 2, Piece.None, Piece.None)); // König läuft zwei Felder = Rochade
+            }
+            if (WhiteCanCastleKingside // kurze Rochade O-O möglich?
+                && fields[61] == Piece.None && fields[62] == Piece.None // sind die Felder noch frei?
+                && !IsChecked(60, Piece.Black) && !IsChecked(61, Piece.Black) && !IsChecked(62, Piece.Black)) // steht der König und seine Laufwege auch nicht im Schach?
+            {
+              Debug.Assert(fields[63] == Piece.WhiteRook); // weißer Turm solle noch in der Ecke stehen
+              moveList.Add(new Move(pos, pos + 2, Piece.None, Piece.None)); // König läuft zwei Felder = Rochade
+            }
+          }
+          else if (pos == 4 && piece == Piece.BlackKing) // der schwarze König steht noch auf der Startposition?
+          {
+            if (BlackCanCastleQueenside // lange Rochade O-O-O möglich?
+                && fields[1] == Piece.None && fields[2] == Piece.None && fields[3] == Piece.None // sind die Felder noch frei?
+                && !IsChecked(2, Piece.White) && !IsChecked(3, Piece.White) && !IsChecked(4, Piece.White)) // steht der König und seine Laufwege auch nicht im Schach?
+            {
+              Debug.Assert(fields[0] == Piece.BlackRook); // schwarzer Turm sollte noch in der Ecke stehen
+              moveList.Add(new Move(pos, pos - 2, Piece.None, Piece.None)); // König läuft zwei Felder = Rochade
+            }
+            if (BlackCanCastleKingside // kurze Rochade O-O möglich?
+                && fields[5] == Piece.None && fields[6] == Piece.None // sind die Felder noch frei?
+                && !IsChecked(4, Piece.White) && !IsChecked(5, Piece.White) && !IsChecked(6, Piece.White)) // steht der König und seine Laufwege auch nicht im Schach?
+            {
+              Debug.Assert(fields[7] == Piece.BlackRook); // schwarzer Turm solle noch in der Ecke stehen
+              moveList.Add(new Move(pos, pos + 2, Piece.None, Piece.None)); // König läuft zwei Felder = Rochade
+            }
+          }
+        }
+      }
+    }
+
     IEnumerable<Move> GetWhiteMoves()
     {
       for (int pos = fields.Length - 1; pos >= 0; pos--)
@@ -1074,6 +1152,31 @@ namespace Mattjes
     public override IEnumerable<Move> GetMoves()
     {
       return WhiteMove ? GetWhiteMoves() : GetBlackMoves();
+    }
+
+    readonly MoveList tmpMoveList = new MoveList((byte*)Marshal.AllocHGlobal(sizeof(Move) * 64), true);
+
+    /// <summary>
+    /// gibt alle Züge als Array zurück
+    /// </summary>
+    /// <returns>alle gültigen Züge als Array</returns>
+    public override Move[] GetMovesArray()
+    {
+      if (WhiteMove)
+      {
+        tmpMoveList.Clear();
+        GetWhiteMoves(tmpMoveList);
+        return tmpMoveList.ToArray();
+      }
+      else
+      {
+        tmpMoveList.Clear();
+        foreach (var m in GetBlackMoves())
+        {
+          tmpMoveList.Add(m);
+        }
+        return tmpMoveList.ToArray();
+      }
     }
 
     /// <summary>
