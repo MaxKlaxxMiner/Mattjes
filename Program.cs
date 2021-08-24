@@ -259,14 +259,6 @@ namespace Mattjes
     #region # // --- Alpha/Beta Search ---
     static int ScanMovePointsMaxInternal(IBoard b, int depth, int alpha, int beta)
     {
-      if (depth == 0)
-      {
-        //int moveCount = b.GetMoves().Count();
-        //return moveCount == 0 ? EndCheck(b, depth) : PiecePoints(b) + moveCount;
-        return b.HasMoves ? PiecePoints(b) : EndCheck(b, depth);
-      }
-
-      depth--;
       var nextMoves = b.GetMovesArray();
       if (b.WhiteMove) Move.Sort(nextMoves, 0, nextMoves.Length); else Move.SortBackward(nextMoves, 0, nextMoves.Length);
 
@@ -278,31 +270,41 @@ namespace Mattjes
       var lastBoardInfos = b.BoardInfos;
       int points = alpha;
 
-      foreach (var move in nextMoves)
+      if (depth == 0)
       {
-        if (!b.DoMove(move)) throw new Exception("invalid move?");
-        nodeCounter++;
+        foreach (var move in nextMoves)
+        {
+          if (!b.DoMove(move)) throw new Exception("invalid move?");
+          nodeCounter++;
 
-        int point = ScanMovePointsMinInternal(b, depth, points, beta);
-        if (point > points) points = point;
+          int point = b.HasMoves ? PiecePoints(b) : EndCheck(b, 0);
+          if (point > points) points = point;
 
-        b.DoMoveBackward(move, lastBoardInfos);
+          b.DoMoveBackward(move, lastBoardInfos);
 
-        if (points >= beta) break;
+          if (points >= beta) break;
+        }
+      }
+      else
+      {
+        foreach (var move in nextMoves)
+        {
+          if (!b.DoMove(move)) throw new Exception("invalid move?");
+          nodeCounter++;
+
+          int point = ScanMovePointsMinInternal(b, depth - 1, points, beta);
+          if (point > points) points = point;
+
+          b.DoMoveBackward(move, lastBoardInfos);
+
+          if (points >= beta) break;
+        }
       }
       return points;
     }
 
     static int ScanMovePointsMinInternal(IBoard b, int depth, int alpha, int beta)
     {
-      if (depth == 0)
-      {
-        //int moveCount = b.GetMoves().Count();
-        //return moveCount == 0 ? EndCheck(b, depth) : PiecePoints(b) - moveCount;
-        return b.HasMoves ? PiecePoints(b) : EndCheck(b, depth);
-      }
-
-      depth--;
       var nextMoves = b.GetMovesArray();
       if (b.WhiteMove) Move.Sort(nextMoves, 0, nextMoves.Length); else Move.SortBackward(nextMoves, 0, nextMoves.Length);
 
@@ -314,45 +316,38 @@ namespace Mattjes
       var lastBoardInfos = b.BoardInfos;
       int points = beta;
 
-      foreach (var move in nextMoves)
+      if (depth == 0)
       {
-        if (!b.DoMove(move)) throw new Exception("invalid move?");
-        nodeCounter++;
+        foreach (var move in nextMoves)
+        {
+          if (!b.DoMove(move)) throw new Exception("invalid move?");
+          nodeCounter++;
 
-        int point = ScanMovePointsMaxInternal(b, depth, alpha, points);
-        if (point < points) points = point;
+          int point = b.HasMoves ? PiecePoints(b) : EndCheck(b, 0);
+          if (point < points) points = point;
 
-        b.DoMoveBackward(move, lastBoardInfos);
+          b.DoMoveBackward(move, lastBoardInfos);
 
-        if (points <= alpha) break;
+          if (points <= alpha) break;
+        }
+      }
+      else
+      {
+        depth--;
+        foreach (var move in nextMoves)
+        {
+          if (!b.DoMove(move)) throw new Exception("invalid move?");
+          nodeCounter++;
+
+          int point = ScanMovePointsMaxInternal(b, depth, alpha, points);
+          if (point < points) points = point;
+
+          b.DoMoveBackward(move, lastBoardInfos);
+
+          if (points <= alpha) break;
+        }
       }
       return points;
-    }
-
-    static int[] ScanMovePointsAlphaBeta(IBoard b, Move[] moves, int depth)
-    {
-      var result = new int[moves.Length];
-
-      var lastBoardInfos = b.BoardInfos;
-
-      for (int i = 0; i < moves.Length; i++)
-      {
-        if (!b.DoMove(moves[i])) throw new Exception("invalid move?");
-        nodeCounter++;
-
-        if (b.WhiteMove)
-        {
-          result[i] = ScanMovePointsMaxInternal(b, depth, int.MinValue, int.MaxValue);
-        }
-        else
-        {
-          result[i] = ScanMovePointsMinInternal(b, depth, int.MinValue, int.MaxValue);
-        }
-
-        b.DoMoveBackward(moves[i], lastBoardInfos);
-      }
-
-      return result;
     }
 
     static int[] ScanMovePointsAlphaBetaShort(IBoard b, Move[] moves, int depth)
@@ -380,7 +375,15 @@ namespace Mattjes
           if (!b.DoMove(move)) throw new Exception("invalid move?");
           nodeCounter++;
 
-          int point = ScanMovePointsMinInternal(b, depth, points, int.MaxValue);
+          int point;
+          if (depth == 0)
+          {
+            point = b.HasMoves ? PiecePoints(b) : EndCheck(b, 0);
+          }
+          else
+          {
+            point = ScanMovePointsMinInternal(b, depth - 1, points, int.MaxValue);
+          }
           if (point > points)
           {
             if (i > 0) // Zug nach vorne sortieren?
@@ -406,7 +409,221 @@ namespace Mattjes
           if (!b.DoMove(move)) throw new Exception("invalid move?");
           nodeCounter++;
 
-          int point = ScanMovePointsMaxInternal(b, depth, int.MinValue, points);
+          int point;
+          if (depth == 0)
+          {
+            point = b.HasMoves ? PiecePoints(b) : EndCheck(b, 0);
+          }
+          else
+          {
+            point = ScanMovePointsMaxInternal(b, depth - 1, int.MinValue, points);
+          }
+          if (point < points)
+          {
+            if (i > 0) // Zug nach vorne sortieren?
+            {
+              for (int sort = i; sort > 0; sort--)
+              {
+                nextMoves[sort] = nextMoves[sort - 1];
+              }
+              nextMoves[0] = move;
+            }
+            points = point;
+          }
+
+          b.DoMoveBackward(move, lastBoardInfos);
+        }
+      }
+
+      for (int i = 0; i < moves.Length; i++)
+      {
+        if (moves[i].ToString() == nextMoves[0].ToString())
+        {
+          result[i] = points;
+        }
+      }
+      return result;
+    }
+    #endregion
+
+    #region # // --- Alpha/Beta Search Dynamic ---
+    static int ScanMovePointsMaxInternalDynamic(IBoard b, int depth, int alpha, int beta)
+    {
+      var nextMoves = b.GetMovesArray();
+      if (b.WhiteMove) Move.Sort(nextMoves, 0, nextMoves.Length); else Move.SortBackward(nextMoves, 0, nextMoves.Length);
+
+      if (nextMoves.Length == 0) // keine weiteren Zugmöglichkeit?
+      {
+        return EndCheck(b, depth);
+      }
+
+      var lastBoardInfos = b.BoardInfos;
+      int points = alpha;
+
+      if (depth == 0)
+      {
+        foreach (var move in nextMoves)
+        {
+          if (!b.DoMove(move)) throw new Exception("invalid move?");
+          nodeCounter++;
+
+          int point;
+          //if (move.capturePiece != Piece.None)
+          //{
+          //  point = ScanMovePointsMinInternalDynamic(b, depth, points, beta);
+          //}
+          //else
+          {
+            point = b.HasMoves ? PiecePoints(b) : EndCheck(b, 0);
+          }
+          if (point > points) points = point;
+
+          b.DoMoveBackward(move, lastBoardInfos);
+
+          if (points >= beta) break;
+        }
+      }
+      else
+      {
+        foreach (var move in nextMoves)
+        {
+          if (!b.DoMove(move)) throw new Exception("invalid move?");
+          nodeCounter++;
+
+          int point = ScanMovePointsMinInternalDynamic(b, depth - 1, points, beta);
+          if (point > points) points = point;
+
+          b.DoMoveBackward(move, lastBoardInfos);
+
+          if (points >= beta) break;
+        }
+      }
+      return points;
+    }
+
+    static int ScanMovePointsMinInternalDynamic(IBoard b, int depth, int alpha, int beta)
+    {
+      var nextMoves = b.GetMovesArray();
+      if (b.WhiteMove) Move.Sort(nextMoves, 0, nextMoves.Length); else Move.SortBackward(nextMoves, 0, nextMoves.Length);
+
+      if (nextMoves.Length == 0) // keine weiteren Zugmöglichkeit?
+      {
+        return EndCheck(b, depth);
+      }
+
+      var lastBoardInfos = b.BoardInfos;
+      int points = beta;
+
+      if (depth == 0)
+      {
+        foreach (var move in nextMoves)
+        {
+          if (!b.DoMove(move)) throw new Exception("invalid move?");
+          nodeCounter++;
+
+          int point;
+          //if (move.capturePiece != Piece.None)
+          //{
+          //  point = ScanMovePointsMaxInternalDynamic(b, depth, alpha, points);
+          //}
+          //else
+          {
+            point = b.HasMoves ? PiecePoints(b) : EndCheck(b, 0);
+          }
+          if (point < points) points = point;
+
+          b.DoMoveBackward(move, lastBoardInfos);
+
+          if (points <= alpha) break;
+        }
+      }
+      else
+      {
+        depth--;
+        foreach (var move in nextMoves)
+        {
+          if (!b.DoMove(move)) throw new Exception("invalid move?");
+          nodeCounter++;
+
+          int point = ScanMovePointsMaxInternalDynamic(b, depth, alpha, points);
+          if (point < points) points = point;
+
+          b.DoMoveBackward(move, lastBoardInfos);
+
+          if (points <= alpha) break;
+        }
+      }
+      return points;
+    }
+
+    static int[] ScanMovePointsAlphaBetaShortDynamic(IBoard b, Move[] moves, int depth)
+    {
+      var result = new int[moves.Length];
+      for (int i = 0; i < result.Length; i++) result[i] = b.WhiteMove ? int.MinValue : int.MaxValue;
+
+      var lastBoardInfos = b.BoardInfos;
+      var nextMoves = moves.ToArray();
+      if (b.WhiteMove) Move.Sort(nextMoves, 0, nextMoves.Length); else Move.SortBackward(nextMoves, 0, nextMoves.Length);
+      if (depth > 3)
+      {
+        var tmpPoints = ScanMovePointsAlphaBetaShortDynamic(b, moves, 3);
+        nextMoves = Enumerable.Range(0, moves.Length).OrderBy(i => tmpPoints[i]).Select(i => moves[i]).ToArray();
+        if (b.WhiteMove) nextMoves = nextMoves.Reverse().ToArray();
+      }
+
+      int points;
+      if (b.WhiteMove)
+      {
+        points = int.MinValue;
+        for (var i = 0; i < nextMoves.Length; i++)
+        {
+          var move = nextMoves[i];
+          if (!b.DoMove(move)) throw new Exception("invalid move?");
+          nodeCounter++;
+
+          int point;
+          if (depth == 0)
+          {
+            point = b.HasMoves ? PiecePoints(b) : EndCheck(b, 0);
+          }
+          else
+          {
+            point = ScanMovePointsMinInternalDynamic(b, depth - 1, points, int.MaxValue);
+          }
+          if (point > points)
+          {
+            if (i > 0) // Zug nach vorne sortieren?
+            {
+              for (int sort = i; sort > 0; sort--)
+              {
+                nextMoves[sort] = nextMoves[sort - 1];
+              }
+              nextMoves[0] = move;
+            }
+            points = point;
+          }
+
+          b.DoMoveBackward(move, lastBoardInfos);
+        }
+      }
+      else
+      {
+        points = int.MaxValue;
+        for (var i = 0; i < nextMoves.Length; i++)
+        {
+          var move = nextMoves[i];
+          if (!b.DoMove(move)) throw new Exception("invalid move?");
+          nodeCounter++;
+
+          int point;
+          if (depth == 0)
+          {
+            point = b.HasMoves ? PiecePoints(b) : EndCheck(b, 0);
+          }
+          else
+          {
+            point = ScanMovePointsMaxInternalDynamic(b, depth - 1, int.MinValue, points);
+          }
           if (point < points)
           {
             if (i > 0) // Zug nach vorne sortieren?
@@ -948,6 +1165,7 @@ namespace Mattjes
           nodeCounter = 0;
           //var points = ScanMovePointsAlphaBeta(b, moves, maxDepth);
           var points = ScanMovePointsAlphaBetaShort(b, moves, maxDepth);
+          //var points = ScanMovePointsAlphaBetaShortDynamic(b, moves, maxDepth);
           //var points = ScanMovePointsAlphaBetaMoveCacheDynamic(b, moves, maxDepth);
           //HashTable.Clear();
           //var points = ScanMovePointsHashed(b, moves, maxDepth);
@@ -1002,8 +1220,8 @@ namespace Mattjes
           for (; maxDepth < 100; maxDepth++)
           {
             Console.Write("    scan depth " + maxDepth + " ...");
-            //pointsList.Add(ScanMovePointsAlphaBetaShort(b, moves, maxDepth));
-            pointsList.Add(ScanMovePointsAlphaBetaMoveCacheDynamic(b, moves, maxDepth));
+            pointsList.Add(ScanMovePointsAlphaBetaShort(b, moves, maxDepth));
+            //pointsList.Add(ScanMovePointsAlphaBetaMoveCacheDynamic(b, moves, maxDepth));
             int duration = Environment.TickCount - time;
             Console.WriteLine(" " + duration.ToString("N0") + " ms");
             if (duration > 5000) break;
@@ -1131,13 +1349,13 @@ namespace Mattjes
     // [6] 14.225,1 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, 100 (1.786.899 nps)
 
     // --- BoardKingOptimized3 - simple sort order optimized ---
-    // [0]      0,0 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   4 (716.406 nps)
-    // [1]      0,1 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   0 (579.480 nps)
-    // [2]      0,8 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   4 (978.841 nps)
-    // [3]      1,8 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   0 (862.039 nps)
-    // [4]     53,5 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  97 (884.247 nps)
-    // [5]    351,5 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -93 (1.125.469 nps)
-    // [6]  1.932,0 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, 100 (1.233.984 nps)
+    // [0]      0,0 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   4 (706.023 nps)
+    // [1]      0,1 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   0 (584.191 nps)
+    // [2]      0,9 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   4 (911.952 nps)
+    // [3]      1,7 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   0 (879.316 nps)
+    // [4]     40,6 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  97 (1.166.110 nps)
+    // [5]    346,9 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -93 (1.140.168 nps)
+    // [6]  1.892,2 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, 100 (1.259.911 nps)
 
     static void Main(string[] args)
     {
