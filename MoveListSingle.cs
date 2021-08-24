@@ -11,7 +11,7 @@ namespace Mattjes
   /// <summary>
   /// bildet eine Zugliste ab
   /// </summary>
-  public unsafe class MoveList : IList<Move>
+  public unsafe class MoveListSingle : IList<Move>
   {
     /// <summary>
     /// merkt sich den Zeiger auf die Basis-Daten (0 = erster Zug, -1 = Anzahl der Züge)
@@ -19,14 +19,17 @@ namespace Mattjes
     public readonly byte* data;
 
     /// <summary>
+    /// gibt die Anzahl der Elemente zurück
+    /// </summary>
+    public int Count { get; set; }
+
+    /// <summary>
     /// Konstruktor
     /// </summary>
     /// <param name="data">Zeiger auf die Daten</param>
-    /// <param name="init">optional: lässt die Liste initialisieren, default: false</param>
-    public MoveList(byte* data, bool init = false)
+    public MoveListSingle(byte* data)
     {
-      this.data = data + 1;
-      if (init) Count = 0;
+      this.data = data;
     }
 
     /// <summary>
@@ -34,8 +37,8 @@ namespace Mattjes
     /// </summary>
     /// <param name="data">Zeiger auf die Daten</param>
     /// <param name="moves">Züge, welche initial hinzugefügt werden sollen</param>
-    public MoveList(byte* data, IEnumerable<Move> moves)
-      : this(data, true)
+    public MoveListSingle(byte* data, IEnumerable<Move> moves)
+      : this(data)
     {
       int count = 0;
       foreach (var move in moves)
@@ -176,21 +179,6 @@ namespace Mattjes
         Tools.CopyBytes(data, (byte*)resultPtr, result.Length * sizeof(Move));
       }
       return result;
-    }
-
-    /// <summary>
-    /// gibt die Anzahl der Elemente zurück
-    /// </summary>
-    public int Count
-    {
-      get
-      {
-        return data[-1];
-      }
-      private set
-      {
-        data[-1] = (byte)(uint)value;
-      }
     }
 
     /// <summary>

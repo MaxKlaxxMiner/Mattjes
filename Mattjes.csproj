@@ -54,6 +54,7 @@
     <Compile Include="Crc64.cs" />
     <Compile Include="IBoard.cs" />
     <Compile Include="Move.cs" />
+    <Compile Include="MoveListSingle.cs" />
     <Compile Include="MoveList.cs" />
     <Compile Include="Piece.cs" />
     <Compile Include="Program.cs" />
