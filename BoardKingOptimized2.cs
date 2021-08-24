@@ -1,6 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
+using System.Runtime.CompilerServices;
+
 // ReSharper disable UnusedType.Global
 
 namespace Mattjes
@@ -1073,6 +1076,31 @@ namespace Mattjes
     public override IEnumerable<Move> GetMoves()
     {
       return WhiteMove ? GetWhiteMoves() : GetBlackMoves();
+    }
+
+    /// <summary>
+    /// gibt an, ob irgend ein Zug möglich ist
+    /// </summary>
+    public override bool HasMoves
+    {
+      get
+      {
+        var fs = fields;
+        if (WhiteMove)
+        {
+          int posX = whiteKingPos % Width;
+          if (posX > 0 && (fs[whiteKingPos - 1] & Piece.White) == Piece.None && !IsChecked(whiteKingPos - 1, Piece.Black)) return true;
+          if (posX < 7 && (fs[whiteKingPos + 1] & Piece.White) == Piece.None && !IsChecked(whiteKingPos + 1, Piece.Black)) return true;
+          return GetWhiteMoves().Any();
+        }
+        else
+        {
+          int posX = blackKingPos % Width;
+          if (posX > 0 && (fs[blackKingPos - 1] & Piece.Black) == Piece.None && !IsChecked(blackKingPos - 1, Piece.White)) return true;
+          if (posX < 7 && (fs[blackKingPos + 1] & Piece.Black) == Piece.None && !IsChecked(blackKingPos + 1, Piece.White)) return true;
+          return GetBlackMoves().Any();
+        }
+      }
     }
     #endregion
   }

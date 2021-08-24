@@ -4,6 +4,7 @@ using System.Text;
 // ReSharper disable MemberCanBePrivate.Global
 // ReSharper disable UnusedMethodReturnValue.Global
 // ReSharper disable UnusedMember.Global
+// ReSharper disable VirtualMemberNeverOverridden.Global
 
 namespace Mattjes
 {
@@ -144,6 +145,19 @@ namespace Mattjes
     /// </summary>
     /// <returns>64-Bit Prüfsumme</returns>
     public abstract ulong GetChecksum();
+    #endregion
+
+    #region # // --- optional Methods ---
+    /// <summary>
+    /// gibt an, ob irgend ein Zug möglich ist
+    /// </summary>
+    public virtual bool HasMoves
+    {
+      get
+      {
+        return GetMoves().Any();
+      }
+    }
     #endregion
 
     #region # // --- Helper Methods ---

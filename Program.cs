@@ -263,7 +263,7 @@ namespace Mattjes
       {
         //int moveCount = b.GetMoves().Count();
         //return moveCount == 0 ? EndCheck(b, depth) : PiecePoints(b) + moveCount;
-        return b.GetMoves().Any() ? PiecePoints(b) : EndCheck(b, depth);
+        return b.HasMoves ? PiecePoints(b) : EndCheck(b, depth);
       }
 
       depth--;
@@ -299,7 +299,7 @@ namespace Mattjes
       {
         //int moveCount = b.GetMoves().Count();
         //return moveCount == 0 ? EndCheck(b, depth) : PiecePoints(b) - moveCount;
-        return b.GetMoves().Any() ? PiecePoints(b) : EndCheck(b, depth);
+        return b.HasMoves ? PiecePoints(b) : EndCheck(b, depth);
       }
 
       depth--;
@@ -1112,6 +1112,15 @@ namespace Mattjes
     // [5]  1.995,3 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -93 (1.336.683 nps)
     // [6] 20.423,6 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, 100 (1.671.984 nps)
 
+    // --- BoardKingOptimized2 ---
+    // [0]      0,0 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   4 (559.949 nps)
+    // [1]      0,2 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   0 (855.815 nps)
+    // [2]      1,1 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   4 (1.157.782 nps)
+    // [3]      6,6 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   0 (1.271.790 nps)
+    // [4]    149,5 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,  97 (1.621.389 nps)
+    // [5]  1.371,7 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -93 (1.574.257 nps)
+    // [6] 14.790,8 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, 100 (1.718.552 nps)
+
     static void Main(string[] args)
     {
       Console.WriteLine();
@@ -1124,7 +1133,7 @@ namespace Mattjes
 
       //b.SetFEN("r1bqk1nr/pppp3p/2nb1p2/6p1/2B1P3/4QN2/PPP2PPP/RNB2RK1 b kq - 1 7");
 
-      b.SetFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"); // Startaufstellung
+      b.SetFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"); // --- Startaufstellung ---
       //b.SetFEN("r3k2r/p2ppp1p/8/4Q3/8/2BB4/PPPPPPPP/R3K2R w KQkq - 0 1"); // Rochaden-Test: alle erlaubt
       //b.SetFEN("r3k1r1/p2ppp1p/8/B7/8/4P3/PPPP1P1P/RN2K2R b KQq - 0 1"); // Rochaden-Test: keine erlaubt
 
