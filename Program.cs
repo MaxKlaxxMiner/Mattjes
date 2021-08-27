@@ -468,11 +468,11 @@ namespace Mattjes
           nodeCounter++;
 
           int point;
-          //if (move.capturePiece != Piece.None)
-          //{
-          //  point = ScanMovePointsMinInternalDynamic(b, depth, points, beta);
-          //}
-          //else
+          if (move.capturePiece != Piece.None)
+          {
+            point = ScanMovePointsMinInternalDynamic(b, 0, points, beta);
+          }
+          else
           {
             point = b.HasMoves ? PiecePoints(b) : EndCheck(b, 0);
           }
@@ -522,11 +522,11 @@ namespace Mattjes
           nodeCounter++;
 
           int point;
-          //if (move.capturePiece != Piece.None)
-          //{
-          //  point = ScanMovePointsMaxInternalDynamic(b, depth, alpha, points);
-          //}
-          //else
+          if (move.capturePiece != Piece.None)
+          {
+            point = ScanMovePointsMaxInternalDynamic(b, 0, alpha, points);
+          }
+          else
           {
             point = b.HasMoves ? PiecePoints(b) : EndCheck(b, 0);
           }
@@ -1164,8 +1164,8 @@ namespace Mattjes
           var time = Stopwatch.StartNew();
           nodeCounter = 0;
           //var points = ScanMovePointsAlphaBeta(b, moves, maxDepth);
-          var points = ScanMovePointsAlphaBetaShort(b, moves, maxDepth);
-          //var points = ScanMovePointsAlphaBetaShortDynamic(b, moves, maxDepth);
+          //var points = ScanMovePointsAlphaBetaShort(b, moves, maxDepth);
+          var points = ScanMovePointsAlphaBetaShortDynamic(b, moves, maxDepth);
           //var points = ScanMovePointsAlphaBetaMoveCacheDynamic(b, moves, maxDepth);
           //HashTable.Clear();
           //var points = ScanMovePointsHashed(b, moves, maxDepth);
@@ -1220,7 +1220,8 @@ namespace Mattjes
           for (; maxDepth < 100; maxDepth++)
           {
             Console.Write("    scan depth " + maxDepth + " ...");
-            pointsList.Add(ScanMovePointsAlphaBetaShort(b, moves, maxDepth));
+            //pointsList.Add(ScanMovePointsAlphaBetaShort(b, moves, maxDepth));
+            pointsList.Add(ScanMovePointsAlphaBetaShortDynamic(b, moves, maxDepth));
             //pointsList.Add(ScanMovePointsAlphaBetaMoveCacheDynamic(b, moves, maxDepth));
             int duration = Environment.TickCount - time;
             Console.WriteLine(" " + duration.ToString("N0") + " ms");
@@ -1384,8 +1385,8 @@ namespace Mattjes
       //b.SetFEN("8/8/4k3/3bn3/8/4Q3/8/K7 w - - 0 1"); // Dame gegen Läufer + Springer Mattsuche (Matt in 39)
       //b.SetFEN("5k2/5P1P/4P3/pP6/P6q/3P2P1/2P5/K7 w - a6 0 1"); // Bauern-Test (Matt in 6)
 
-      //LolGame(b);
-      SpeedCheck(b);
+      LolGame(b);
+      //SpeedCheck(b);
 
       //Console.WriteLine();
       //foreach (var move in b.GetMoves())
