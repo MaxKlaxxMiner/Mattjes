@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Runtime.CompilerServices;
+using Mattjes.Bitboards;
 // ReSharper disable UnusedMember.Local
 
 namespace Mattjes
@@ -1360,18 +1362,18 @@ namespace Mattjes
 
     static void Main(string[] args)
     {
-      Console.WriteLine();
-      Console.WriteLine();
+      //Console.WriteLine();
+      //Console.WriteLine();
 
       //IBoard b = new BoardReference();
       //IBoard b = new BoardIndexed();
       //IBoard b = new BoardKingOptimized();
       //IBoard b = new BoardKingOptimized2();
-      IBoard b = new BoardKingOptimized3();
+      //IBoard b = new BoardKingOptimized3();
 
       //b.SetFEN("r1bqk1nr/pppp3p/2nb1p2/6p1/2B1P3/4QN2/PPP2PPP/RNB2RK1 b kq - 1 7");
 
-      b.SetFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"); // --- Startaufstellung ---
+      //b.SetFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"); // --- Startaufstellung ---
       //b.SetFEN("r3k2r/p2ppp1p/8/4Q3/8/2BB4/PPPPPPPP/R3K2R w KQkq - 0 1"); // Rochaden-Test: alle erlaubt
       //b.SetFEN("r3k1r1/p2ppp1p/8/B7/8/4P3/PPPP1P1P/RN2K2R b KQq - 0 1"); // Rochaden-Test: keine erlaubt
 
@@ -1385,7 +1387,7 @@ namespace Mattjes
       //b.SetFEN("8/8/4k3/3bn3/8/4Q3/8/K7 w - - 0 1"); // Dame gegen Läufer + Springer Mattsuche (Matt in 39)
       //b.SetFEN("5k2/5P1P/4P3/pP6/P6q/3P2P1/2P5/K7 w - a6 0 1"); // Bauern-Test (Matt in 6)
 
-      LolGame(b);
+      //LolGame(b);
       //SpeedCheck(b);
 
       //Console.WriteLine();
@@ -1397,9 +1399,9 @@ namespace Mattjes
       //  Console.WriteLine();
       //}
 
-      Console.WriteLine();
-      Console.WriteLine("    " + b.GetFEN());
-      Console.WriteLine();
+      //Console.WriteLine();
+      //Console.WriteLine("    " + b.GetFEN());
+      //Console.WriteLine();
     }
   }
 }

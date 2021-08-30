@@ -45,14 +45,18 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="Bitboards\Bitboard.cs" />
-    <Compile Include="Bitboards\Direction.cs" />
+    <Compile Include="Bitboards\BoardBitboard.cs" />
+    <Compile Include="Bitboards\Color.cs" />
+    <Compile Include="Bitboards\ExtMove.cs" />
+    <Compile Include="Bitboards\Move.cs" />
+    <Compile Include="Bitboards\MoveGen.cs" />
+    <Compile Include="Bitboards\MoveType.cs" />
     <Compile Include="Bitboards\Piece.cs" />
     <Compile Include="Bitboards\PieceType.cs" />
-    <Compile Include="Bitboards\Rank.cs" />
-    <Compile Include="Bitboards\File.cs" />
-    <Compile Include="Bitboards\Move.cs" />
+    <Compile Include="Bitboards\Position.cs" />
     <Compile Include="Bitboards\Square.cs" />
+    <Compile Include="Bitboards\Stack.cs" />
+    <Compile Include="Bitboards\Static.cs" />
     <Compile Include="BoardInfo.cs" />
     <Compile Include="BoardKingOptimized3.cs" />
     <Compile Include="BoardKingOptimized2.cs" />

@@ -5,8 +5,11 @@ namespace Mattjes.Bitboards
 {
   public enum PieceType
   {
-    None, Pawn, Knight, Bishop, Rook, Queen, King,
-    AllPieces = 0,
-    NB = 8
+    Pawn = 1,
+    Knight,
+    Bishop,
+    Rook,
+    Queen,
+    King
   }
 }

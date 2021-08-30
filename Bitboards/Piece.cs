@@ -1,13 +1,22 @@
-﻿// ReSharper disable UnusedType.Global
-// ReSharper disable UnusedMember.Global
+﻿// ReSharper disable UnusedMember.Global
+// ReSharper disable UnusedType.Global
 
 namespace Mattjes.Bitboards
 {
   public enum Piece
   {
-    None,
-    W_Pawn = PieceType.Pawn, W_Knight, W_Bishop, W_Rook, W_Queen, W_King,
-    B_Pawn = PieceType.Pawn + 8, B_Knight, B_Bishop, B_Rook, B_Queen, B_King,
-    NB = 16
+    None = 0,
+    WhitePawn = 1,
+    WhiteKnight,
+    WhiteBishop,
+    WhiteRook,
+    WhiteQueen,
+    WhiteKing,
+    BlackPawn = 9,
+    BlackKnight,
+    BlackBishop,
+    BlackRook,
+    BlackQueen,
+    BlackKing
   }
 }
