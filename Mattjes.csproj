@@ -45,14 +45,14 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="Bitboard\Bitboard.cs" />
-    <Compile Include="Bitboard\Direction.cs" />
-    <Compile Include="Bitboard\Piece.cs" />
-    <Compile Include="Bitboard\PieceType.cs" />
-    <Compile Include="Bitboard\Rank.cs" />
-    <Compile Include="Bitboard\File.cs" />
-    <Compile Include="Bitboard\Move.cs" />
-    <Compile Include="Bitboard\Square.cs" />
+    <Compile Include="Bitboards\Bitboard.cs" />
+    <Compile Include="Bitboards\Direction.cs" />
+    <Compile Include="Bitboards\Piece.cs" />
+    <Compile Include="Bitboards\PieceType.cs" />
+    <Compile Include="Bitboards\Rank.cs" />
+    <Compile Include="Bitboards\File.cs" />
+    <Compile Include="Bitboards\Move.cs" />
+    <Compile Include="Bitboards\Square.cs" />
     <Compile Include="BoardInfo.cs" />
     <Compile Include="BoardKingOptimized3.cs" />
     <Compile Include="BoardKingOptimized2.cs" />

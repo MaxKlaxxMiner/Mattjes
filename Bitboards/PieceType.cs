@@ -1,7 +1,7 @@
 ﻿// ReSharper disable UnusedType.Global
 // ReSharper disable UnusedMember.Global
 
-namespace Mattjes.Bitboard
+namespace Mattjes.Bitboards
 {
   public enum PieceType
   {

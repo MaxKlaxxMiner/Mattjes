@@ -3,7 +3,7 @@
 // ReSharper disable UnusedMember.Global
 // ReSharper disable ShiftExpressionZeroLeftOperand
 
-namespace Mattjes.Bitboard
+namespace Mattjes.Bitboards
 {
   /// <summary>
   /// ein kompakter 16-Bit Zug (Bit-Identisch mit Stockfish)

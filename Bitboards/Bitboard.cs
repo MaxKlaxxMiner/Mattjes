@@ -2,7 +2,7 @@
 // ReSharper disable UnusedMember.Global
 // ReSharper disable UnusedType.Global
 
-namespace Mattjes.Bitboard
+namespace Mattjes.Bitboards
 {
   public static class Bitboard
   {
@@ -31,5 +31,12 @@ namespace Mattjes.Bitboard
     public const ulong CenterFiles = FileC | FileD | FileE | FileF;
     public const ulong KingSide = FileE | FileF | FileG | FileH;
     public const ulong Center = (FileD | FileE) & (Rank4 | Rank5);
+
+    public static readonly ulong[] KingFlank =
+    {
+      QueenSide ^ FileD, QueenSide, QueenSide,
+      CenterFiles, CenterFiles,
+      KingSide, KingSide, KingSide ^ FileE
+    };
   }
 }
