@@ -2,7 +2,7 @@
 
 namespace Mattjes.Bitboards
 {
-  public enum Square : uint
+  public enum Square : byte
   {
     Null = 0,
     A1, B1, C1, D1, E1, F1, G1, H1,

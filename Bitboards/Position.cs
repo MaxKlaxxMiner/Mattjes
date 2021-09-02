@@ -3,6 +3,7 @@ using System.Text;
 // ReSharper disable UnusedMember.Global
 // ReSharper disable UnassignedField.Global
 // ReSharper disable NotAccessedField.Global
+// ReSharper disable MemberCanBePrivate.Global
 #pragma warning disable 649
 
 namespace Mattjes.Bitboards
@@ -112,7 +113,6 @@ namespace Mattjes.Bitboards
 
     public static void PosSet(Position* pos, string fen)
     {
-      byte col, row, token;
       var sq = Square.A8;
 
       for (int i = 0; i < 7; i++) pos->byTypeBB[i] = 0;
@@ -127,71 +127,98 @@ namespace Mattjes.Bitboards
       pos->gamePly = 0;
       pos->hasRepeated = false;
 
-      //memset(st, 0, StateSize);
-      //for (int i = 0; i < 16; i++)
-      //  pos->pieceCount[i] = 0;
+      pos->st->ClearBase();
 
-      //// Piece placement
-      //while ((token = *fen++) && token != ' ') {
-      //  if (token >= '0' && token <= '9')
-      //    sq += token - '0'; // Advance the given number of files
-      //  else if (token == '/')
-      //    sq -= 16;
-      //  else {
-      //    for (int piece = 0; piece < 16; piece++)
-      //      if (PieceToChar[piece] == token) {
-      //        put_piece(pos, color_of(piece), piece, sq++);
-      //        pos->pieceCount[piece]++;
-      //        break;
-      //      }
-      //  }
-      //}
+      // Piece placement
+      int fenPos = 0;
+      char token;
+      while (fenPos < fen.Length)
+      {
+        token = fen[fenPos++];
+        if (token == ' ') break;
+        if (token >= '0' && token <= '9')
+        {
+          sq = (Square)((int)sq + (token - '0')); // Advance the given number of files
+        }
+        else if (token == '/')
+        {
+          sq -= 16;
+        }
+        else
+        {
+          for (int piece = 0; piece < 16; piece++)
+          {
+            if (PieceToChar[piece] == token)
+            {
+              Static.PutPiece(pos, Static.ColorOf((Piece)piece), (Piece)piece, sq++);
+              pos->pieceCount[piece]++;
+              break;
+            }
+          }
+        }
+      }
 
-      //// Active color
-      //token = *fen++;
-      //pos->sideToMove = token == 'w' ? WHITE : BLACK;
-      //token = *fen++;
+      // Active color
+      token = fen[fenPos++];
+      pos->sideToMove = token == 'w' ? Color.White : Color.Black;
+      token = fen[fenPos++];
 
-      //// Castling availability. Compatible with 3 standards: Normal FEN
-      //// standard, Shredder-FEN that uses the letters of the columns on which
-      //// the rooks began the game instead of KQkq and also X-FEN standard
-      //// that, in case of Chess960, // if an inner rook is associated with
-      //// the castling right, the castling tag is replaced by the file letter
-      //// of the involved rook, as for the Shredder-FEN.
-      //while ((token = *fen++) && !isspace(token)) {
-      //  Square rsq;
-      //  int c = islower(token) ? BLACK : WHITE;
-      //  Piece rook = make_piece(c, ROOK);
+      // Castling availability. Compatible with 3 standards: Normal FEN
+      // standard, Shredder-FEN that uses the letters of the columns on which
+      // the rooks began the game instead of KQkq and also X-FEN standard
+      // that, in case of Chess960, // if an inner rook is associated with
+      // the castling right, the castling tag is replaced by the file letter
+      // of the involved rook, as for the Shredder-FEN.
+      while (fenPos < fen.Length)
+      {
+        token = fen[fenPos++];
+        if (token == '-') token = fen[fenPos++];
+        if (token == ' ') break;
+        Square rsq;
+        var c = char.IsLower(token) ? Color.Black : Color.White;
+        var rook = Static.MakePiece(c, PieceType.Rook);
 
-      //  token = toupper(token);
+        token = char.ToUpper(token);
 
-      //  if (token == 'K')
-      //    for (rsq = relative_square(c, SQ_H1); piece_on(rsq) != rook; --rsq);
-      //  else if (token == 'Q')
-      //    for (rsq = relative_square(c, SQ_A1); piece_on(rsq) != rook; ++rsq);
-      //  else if (token >= 'A' && token <= 'H')
-      //    rsq = make_square(token - 'A', relative_rank(c, RANK_1));
-      //  else
-      //    continue;
+        if (token == 'K')
+        {
+          for (rsq = Static.RelativeSquare(c, Square.H1); Static.PieceOn(pos, rsq) != rook; --rsq) { }
+        }
+        else if (token == 'Q')
+        {
+          for (rsq = Static.RelativeSquare(c, Square.A1); Static.PieceOn(pos, rsq) != rook; ++rsq) { }
+        }
+        else if (token >= 'A' && token <= 'H')
+        {
+          rsq = Static.MakeSquare(token - 'A', Static.RelativeRank(c, Rank.R1));
+        }
+        else
+        {
+          continue;
+        }
 
-      //  set_castling_right(pos, c, rsq);
-      //}
+        Static.SetCastlingRight(pos, c, rsq);
+      }
 
-      //// En passant square. Ignore if no pawn capture is possible.
-      //if (   ((col = *fen++) && (col >= 'a' && col <= 'h'))
-      //    && ((row = *fen++) && (row == (stm() == WHITE ? '6' : '3'))))
-      //{
-      //  st->epSquare = make_square(col - 'a', row - '1');
+      // En passant square. Ignore if no pawn capture is possible.
+      char col, row;
+      if ((col = fen[fenPos++]) != ' ' && (col >= 'a' && col <= 'h') && (row = fen[fenPos++]) != ' ' && row == (Static.Stm(pos) == Color.White ? '6' : '3'))
+      {
+        pos->st->epSquare = Static.MakeSquare(col - 'a', (Rank)(row - '1'));
 
-      //  // We assume a legal FEN, i.e. if epSquare is present, then the previous
-      //  // move was a legal double pawn push.
-      //  if (!(attackers_to(st->epSquare) & pieces_cp(stm(), PAWN)))
-      //    st->epSquare = 0;
-      //}
-      //else
-      //  st->epSquare = 0;
+        // We assume a legal FEN, i.e. if epSquare is present, then the previous
+        // move was a legal double pawn push.
+        if ((Static.AttackersTo(pos, pos->st->epSquare) & Static.PiecesCp(pos, Static.Stm(pos), PieceType.Pawn)) == 0)
+        {
+          pos->st->epSquare = 0;
+        }
+      }
+      else
+      {
+        pos->st->epSquare = 0;
+      }
 
-      //// Halfmove clock and fullmove number
+      // Halfmove clock and fullmove number
       //st->rule50 = strtol(fen, &fen, 10);
       //pos->gamePly = strtol(fen, NULL, 10);
 

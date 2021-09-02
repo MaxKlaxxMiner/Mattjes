@@ -55,6 +55,7 @@
     <Compile Include="Bitboards\Piece.cs" />
     <Compile Include="Bitboards\PieceType.cs" />
     <Compile Include="Bitboards\Position.cs" />
+    <Compile Include="Bitboards\Rank.cs" />
     <Compile Include="Bitboards\Square.cs" />
     <Compile Include="Bitboards\Stack.cs" />
     <Compile Include="Bitboards\Static.cs" />

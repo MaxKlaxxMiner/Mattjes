@@ -12,6 +12,10 @@ namespace Mattjes.Bitboards
     WhiteOOO = 2,
     BlackOO = 4,
     BlackOOO = 8,
-    AnyCastling = 15
+    KingSide = WhiteOO | BlackOO,
+    QueenSide = WhiteOOO | BlackOOO,
+    WhiteCastling = WhiteOO | WhiteOOO,
+    BlackCastling = BlackOO | BlackOOO,
+    AnyCastling = WhiteCastling | BlackCastling
   }
 }

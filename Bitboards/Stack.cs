@@ -28,9 +28,17 @@ namespace Mattjes.Bitboards
 
     //      // Not copied when making a move
     //      uint8_t capturedPiece;
-    public byte epSquare;
+    public Square epSquare;
     //      Key key;
     public ulong checkersBB;
+
+    public void ClearBase()
+    {
+      rule50 = 0;
+      castlingRights = Castling.NoCastling;
+      epSquare = 0;
+      checkersBB = 0;
+    }
 
     //      // Original search stack data
     //      Move* pv;

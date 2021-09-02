@@ -90,6 +90,31 @@ namespace Mattjes.Bitboards
       return (MoveType)((uint)m >> 14);
     }
 
+    public static PieceType TypeOfP(Piece p)
+    {
+      return (PieceType)((int)p & 7);
+    }
+
+    public static Color ColorOf(Piece p)
+    {
+      return (Color)((int)p >> 3);
+    }
+
+    public static Piece MakePiece(Color c, PieceType pt)
+    {
+      return (Piece)(((int)c << 3) + pt);
+    }
+
+    public static Square MakeSquare(int f, Rank r)
+    {
+      return (Square)(((int)r << 3) + f);
+    }
+
+    public static Rank RelativeRank(Color c, Rank r)
+    {
+      return (Rank)((int)r ^ ((int)c * 7));
+    }
+
     public static bool IsLegal(Position* pos, Move m)
     {
       throw new NotImplementedException();
@@ -146,14 +171,83 @@ namespace Mattjes.Bitboards
       //      ||  aligned(m, square_of(us, KING));
     }
 
+    // attackers_to() computes a bitboard of all pieces which attack a given
+    // square. Slider attacks use the occupied bitboard to indicate occupancy.
+
+    public static ulong Pieces(Position* pos)
+    {
+      return pos->byTypeBB[0];
+    }
+
+    public static ulong AttackersToOcc(Position* pos, Square s, ulong occupied)
+    {
+      throw new NotImplementedException();
+      //return (attacks_from_pawn(s, BLACK) & pieces_cp(WHITE, PAWN))
+      //        | (attacks_from_pawn(s, WHITE) & pieces_cp(BLACK, PAWN))
+      //        | (attacks_from_knight(s) & pieces_p(KNIGHT))
+      //        | (attacks_bb_rook(s, occupied) & pieces_pp(ROOK, QUEEN))
+      //        | (attacks_bb_bishop(s, occupied) & pieces_pp(BISHOP, QUEEN))
+      //        | (attacks_from_king(s) & pieces_p(KING));
+    }
+
+    public static ulong AttackersTo(Position* pos, Square s)
+    {
+      return AttackersToOcc(pos, s, Pieces(pos));
+    }
+
+    public static void SetCastlingRight(Position* pos, Color c, Square rfrom)
+    {
+      var kfrom = SquareOf(pos, c, PieceType.King);
+      var cs = kfrom < rfrom ? Castling.KingSide : Castling.QueenSide;
+      var cr = (Castling)((int)Castling.WhiteOO << ((cs == Castling.QueenSide ? 1 : 0) + 2 * (int)c));
+
+      var kto = RelativeSquare(c, cs == Castling.KingSide ? Square.G1 : Square.C1);
+      var rto = RelativeSquare(c, cs == Castling.KingSide ? Square.F1 : Square.D1);
+
+      pos->st->castlingRights |= cr;
+
+      pos->castlingRightsMask[(int)kfrom] |= (byte)cr;
+      pos->castlingRightsMask[(int)rfrom] |= (byte)cr;
+      pos->castlingRookSquare[(int)cr] = (byte)rfrom;
+
+      for (var s = (Square)Math.Min((int)rfrom, (int)rto); s <= (Square)Math.Max((int)rfrom, (int)rto); s++)
+      {
+        if (s != kfrom && s != rfrom)
+        {
+          pos->castlingPath[(int)cr] |= SqBb(s);
+        }
+      }
+
+      for (var s = (Square)Math.Min((int)kfrom, (int)kto); s <= (Square)Math.Max((int)kfrom, (int)kto); s++)
+      {
+        if (s != kfrom && s != rfrom)
+        {
+          pos->castlingPath[(int)cr] |= SqBb(s);
+        }
+      }
+    }
+
     public static Piece PieceOn(Position* pos, Square s)
     {
       return (Piece)pos->board[(int)s];
     }
 
+    public static void PutPiece(Position* pos, Color c, Piece piece, Square s)
+    {
+      pos->board[(int)s] = (byte)piece;
+      pos->byTypeBB[0] |= SqBb(s);
+      pos->byTypeBB[(int)TypeOfP(piece)] |= SqBb(s);
+      pos->byColorBB[(int)c] |= SqBb(s);
+    }
+
     public static Square EpSquare(Position* pos)
     {
       return (Square)pos->st->epSquare;
+    }
+
+    public static Square RelativeSquare(Color c, Square s)
+    {
+      return (Square)((int)s ^ (int)c * 56);
     }
 
     public static int FileOf(Square s)
