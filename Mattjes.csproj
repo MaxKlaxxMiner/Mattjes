@@ -46,6 +46,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Bitboards\BoardBitboard.cs" />
+    <Compile Include="Bitboards\Castling.cs" />
     <Compile Include="Bitboards\Color.cs" />
     <Compile Include="Bitboards\ExtMove.cs" />
     <Compile Include="Bitboards\Move.cs" />

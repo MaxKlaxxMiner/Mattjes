@@ -20,15 +20,15 @@ namespace Mattjes.Bitboards
     //      union {
     //        struct {
     //          uint8_t pliesFromNull;
-    //          uint8_t rule50;
+    public byte rule50;
     //        };
     //        uint16_t plyCounters;
     //      };
-    //      uint8_t castlingRights;
+    public Castling castlingRights;
 
     //      // Not copied when making a move
     //      uint8_t capturedPiece;
-    //      uint8_t epSquare;
+    public byte epSquare;
     //      Key key;
     public ulong checkersBB;
 

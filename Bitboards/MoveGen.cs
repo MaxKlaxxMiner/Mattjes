@@ -1,7 +1,5 @@
-﻿
-using System;
-using System.Diagnostics;
-// ReSharper disable UnusedMember.Global
+﻿// ReSharper disable UnusedMember.Global
+// ReSharper disable UnusedType.Global
 
 namespace Mattjes.Bitboards
 {

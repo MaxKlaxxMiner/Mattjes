@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Diagnostics;
 // ReSharper disable MemberCanBePrivate.Global
+// ReSharper disable UnusedMember.Global
 
 namespace Mattjes.Bitboards
 {
@@ -148,6 +149,31 @@ namespace Mattjes.Bitboards
     public static Piece PieceOn(Position* pos, Square s)
     {
       return (Piece)pos->board[(int)s];
+    }
+
+    public static Square EpSquare(Position* pos)
+    {
+      return (Square)pos->st->epSquare;
+    }
+
+    public static int FileOf(Square s)
+    {
+      return (int)s & 7;
+    }
+
+    public static int RankOf(Square s)
+    {
+      return (int)s >> 3;
+    }
+
+    public static int Rule50Count(Position* pos)
+    {
+      return pos->st->rule50;
+    }
+
+    public static int GamePly(Position* pos)
+    {
+      return pos->gamePly;
     }
   }
 }
