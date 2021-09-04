@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using Mattjes.Bitboards;
 // ReSharper disable UnusedMember.Local
 
@@ -1360,8 +1361,26 @@ namespace Mattjes
     // [5]    346,9 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, -93 (1.140.168 nps)
     // [6]  1.892,2 ms     -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -,   -, 100 (1.259.911 nps)
 
+    static unsafe void BitboardTest()
+    {
+      var pos = stackalloc Position[1];
+      pos->stackAllocation = Marshal.AllocHGlobal(63 + 215 * sizeof(Stack));
+      pos->stack = (Stack*)(((ulong)pos->stackAllocation + 0x3f) & ~0x3fUL);
+      pos->moveList = (ExtMove*)Marshal.AllocHGlobal(1000 * sizeof(ExtMove));
+      pos->st = pos->stack + 100;
+      pos->st[-1].endMoves = pos->moveList;
+
+      Position.PosSet(pos, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+      pos->rootKeyFlip = pos->st->key;
+
+      Marshal.FreeHGlobal(pos->stackAllocation);
+      Marshal.FreeHGlobal((IntPtr)pos->moveList);
+    }
+
     static void Main(string[] args)
     {
+      BitboardTest();
+
       //Console.WriteLine();
       //Console.WriteLine();
 

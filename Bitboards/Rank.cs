@@ -5,7 +5,7 @@ namespace Mattjes.Bitboards
 {
   public enum Rank
   {
-    R1,
+    R1 = 0,
     R2,
     R3,
     R4,

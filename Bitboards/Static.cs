@@ -39,6 +39,13 @@ namespace Mattjes.Bitboards
       return (Square)CountTrailingZeros(b);
     }
 
+    public static Square PopLsb(ref ulong b)
+    {
+      var s = Lsb(b);
+      b &= b - 1;
+      return s;
+    }
+
     public static ulong PiecesP(Position* pos, PieceType p)
     {
       return pos->byTypeBB[(int)p];
@@ -242,7 +249,7 @@ namespace Mattjes.Bitboards
 
     public static Square EpSquare(Position* pos)
     {
-      return (Square)pos->st->epSquare;
+      return pos->st->epSquare;
     }
 
     public static Square RelativeSquare(Color c, Square s)
@@ -268,6 +275,37 @@ namespace Mattjes.Bitboards
     public static int GamePly(Position* pos)
     {
       return pos->gamePly;
+    }
+
+    public static void SetCheckInfo(Position* pos)
+    {
+      throw new NotImplementedException();
+    }
+
+    public static void SetState(Position* pos, Stack* st)
+    {
+      throw new NotImplementedException();
+
+      //st->key = st->materialKey = 0;
+      ////#ifndef NNUE_PURE
+      ////      st->pawnKey = zob.noPawns;
+      ////      st->psq = 0;
+      ////#endif
+      //st->nonPawn = 0;
+
+      //st->checkersBB = AttackersTo(pos, SquareOf(pos, Stm(pos), PieceType.King)) & PiecesC(pos, Stm(pos) == Color.White ? Color.Black : Color.White);
+
+      //SetCheckInfo(pos);
+
+      //for (ulong b = Pieces(pos); b != 0; )
+      //{
+      //  Square s = PopLsb(ref b);
+      //  var pc = PieceOn(pos, s);
+      //  st->key ^= zob.psq[pc][s];
+      //  //#ifndef NNUE_PURE
+      //  //        st->psq += psqt.psq[pc][s];
+      //  //#endif
+      //}
     }
   }
 }

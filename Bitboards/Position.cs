@@ -24,11 +24,11 @@ namespace Mattjes.Bitboards
     public ushort gamePly;
     public bool hasRepeated;
 
-    //    ExtMove *moveList;
+    public ExtMove *moveList;
 
     //    // Relevant mainly to the search of the root position.
     //    RootMoves *rootMoves;
-    //public Stack* stack;
+    public Stack* stack;
     //    uint64_t nodes;
     //    uint64_t tbHits;
     //    uint64_t ttHitAverage;
@@ -63,7 +63,7 @@ namespace Mattjes.Bitboards
     //    HANDLE nativeThread;
     //    HANDLE startEvent, stopEvent;
     //#endif
-    //    void *stackAllocation;
+    public IntPtr stackAllocation;
 
     static readonly string PieceToChar = " PNBRQK  pnbrqk";
 
@@ -219,15 +219,18 @@ namespace Mattjes.Bitboards
       }
 
       // Halfmove clock and fullmove number
-      //st->rule50 = strtol(fen, &fen, 10);
-      //pos->gamePly = strtol(fen, NULL, 10);
+      string tmp = fen.Remove(0,fenPos);
+      tmp = tmp.Substring(0, tmp.IndexOf(' '));
+      pos->st->rule50 = byte.Parse(tmp);
+      fenPos += tmp.Length + 1;
+      tmp = fen.Remove(0, fenPos);
+      pos->gamePly = ushort.Parse(tmp);
 
-      //// Convert from fullmove starting from 1 to ply starting from 0,
-      //// handle also common incorrect FEN with fullmove = 0.
-      //pos->gamePly = max(2 * (pos->gamePly - 1), 0) + (stm() == BLACK);
+      // Convert from fullmove starting from 1 to ply starting from 0,
+      // handle also common incorrect FEN with fullmove = 0.
+      pos->gamePly = (ushort)(Math.Max(2 * (pos->gamePly - 1), 0) + (int)Static.Stm(pos));
 
-      //pos->chess960 = isChess960;
-      //set_state(pos, st);
+      Static.SetState(pos, pos->st);
 
       //assert(pos_is_ok(pos, &failed_step));
     }

@@ -1,5 +1,7 @@
 ﻿// ReSharper disable UnassignedField.Global
 // ReSharper disable UnusedMember.Global
+// ReSharper disable NotAccessedField.Global
+// ReSharper disable MemberCanBePrivate.Global
 
 namespace Mattjes.Bitboards
 {
@@ -9,13 +11,13 @@ namespace Mattjes.Bitboards
     //#ifndef NNUE_PURE
     //      Key pawnKey;
     //#endif
-    //      Key materialKey;
+    public ulong materialKey;
     //#ifndef NNUE_PURE
     //      Score psq;
     //#endif
     //      union {
     //        uint16_t nonPawnMaterial[2];
-    //        uint32_t nonPawn;
+    public uint nonPawn;
     //      };
     //      union {
     //        struct {
@@ -29,14 +31,17 @@ namespace Mattjes.Bitboards
     //      // Not copied when making a move
     //      uint8_t capturedPiece;
     public Square epSquare;
-    //      Key key;
+    public ulong key;
     public ulong checkersBB;
 
     public void ClearBase()
     {
+      materialKey = 0;
+      nonPawn = 0;
       rule50 = 0;
       castlingRights = Castling.NoCastling;
       epSquare = 0;
+      key = 0;
       checkersBB = 0;
     }
 
@@ -62,7 +67,7 @@ namespace Mattjes.Bitboards
     //      Move ttMove;
     //      Value threshold;
     //      Move mpKillers[2];
-    //      ExtMove *cur, *endMoves, *endBadCaptures;
+    public ExtMove* cur, endMoves, endBadCaptures;
 
     //      // CheckInfo data
     public fixed ulong blockersForKing[2];
