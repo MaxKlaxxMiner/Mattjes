@@ -1379,7 +1379,8 @@ namespace Mattjes
 
     static void Main(string[] args)
     {
-      BitboardTest();
+      //BitboardTest();
+      Tests.MateReverse();
 
       //Console.WriteLine();
       //Console.WriteLine();
