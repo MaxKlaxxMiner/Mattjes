@@ -159,5 +159,15 @@ namespace Mattjes
         }
       }
     }
+
+    /// <summary>
+    /// gibt an, ob es sich um ein weißes Feld handelt (z.B. für Läufer wichtig)
+    /// </summary>
+    /// <param name="pos">Position, welche geprüft werden soll</param>
+    /// <returns>true, wenn das Feld weiß ist, sonst false = schwarz</returns>
+    public static bool IsWhiteField(int pos)
+    {
+      return (pos % IBoard.Width + pos / IBoard.Width) % 2 == 0;
+    }
   }
 }
