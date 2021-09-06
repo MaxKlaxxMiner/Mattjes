@@ -169,95 +169,6 @@ namespace Mattjes
     }
     #endregion
 
-    #region # // --- Helper Methods ---
-    /// <summary>
-    /// gibt das passende ASCII-Zeichen zu einer Spielerfigur zurück
-    /// </summary>
-    /// <param name="piece">Spielefigur, welche abgefragt werden soll</param>
-    /// <returns>passende Zeichen für die Spielerfigur</returns>
-    public static char PieceChar(Piece piece)
-    {
-      bool w = (piece & Piece.White) == Piece.White;
-      switch (piece & Piece.BasicPieces)
-      {
-        case Piece.King: return w ? 'K' : 'k';
-        case Piece.Queen: return w ? 'Q' : 'q';
-        case Piece.Rook: return w ? 'R' : 'r';
-        case Piece.Bishop: return w ? 'B' : 'b';
-        case Piece.Knight: return w ? 'N' : 'n';
-        case Piece.Pawn: return w ? 'P' : 'p';
-        default: return w ? '/' : '.';
-      }
-    }
-
-    /// <summary>
-    /// wandelt ein ASCII-Zeichen zu einer Spielfigur um
-    /// </summary>
-    /// <param name="c">Zeichen, welches eingelesen werden soll</param>
-    /// <returns>fertige Spielfigur oder <see cref="Piece.Blocked"/> wenn ungültig</returns>
-    public static Piece PieceFromChar(char c)
-    {
-      switch (c)
-      {
-        case '1':
-        case '2':
-        case '3':
-        case '4':
-        case '5':
-        case '6':
-        case '7':
-        case '8': return Piece.None;
-        case 'K': return Piece.WhiteKing;
-        case 'k': return Piece.BlackKing;
-        case 'Q': return Piece.WhiteQueen;
-        case 'q': return Piece.BlackQueen;
-        case 'R': return Piece.WhiteRook;
-        case 'r': return Piece.BlackRook;
-        case 'B': return Piece.WhiteBishop;
-        case 'b': return Piece.BlackBishop;
-        case 'N': return Piece.WhiteKnight;
-        case 'n': return Piece.BlackKnight;
-        case 'P': return Piece.WhitePawn;
-        case 'p': return Piece.BlackPawn;
-        default: return Piece.Blocked;
-      }
-    }
-
-    /// <summary>
-    /// gibt die Position als zweistellige FEN-Schreibweise zurück (z.B. "e4")
-    /// </summary>
-    /// <param name="pos">Position auf dem Schachbrett</param>
-    /// <returns>Position als zweistellige FEN-Schreibweise</returns>
-    public static string PosChars(int pos)
-    {
-      return PosChars(pos % Width, pos / Width);
-    }
-
-    /// <summary>
-    /// gibt die Position als zweistellige FEN-Schreibweise zurück (z.B. "e4")
-    /// </summary>
-    /// <param name="x">X-Position auf dem Schachbrett</param>
-    /// <param name="y">Y-Position auf dem Schachbrett</param>
-    /// <returns>Position als zweistellige FEN-Schreibweise</returns>
-    public static string PosChars(int x, int y)
-    {
-      return ((char)(x + 'a')).ToString() + (Height - y);
-    }
-
-    /// <summary>
-    /// liest eine Position anhand einer zweistelligen FEN-Schreibweise ein (z.B. "e4")
-    /// </summary>
-    /// <param name="str">Zeichenfolge, welche eingelesen werden soll</param>
-    /// <returns>absolute Position auf dem Spielfeld</returns>
-    public static int PosFromChars(string str)
-    {
-      if (str.Length != 2) return -1; // nur zweistellige Positionen erlaubt
-      if (str[0] < 'a' || str[0] - 'a' >= Width) return -1; // ungültige Spaltenangabe ("a"-"h" erwartet)
-      if (str[1] < '1' || str[1] - '1' >= Height) return -1; // ungültige Zeilenangabe ("1"-"8" erwartet)
-      return str[0] - 'a' + (Height + '0' - str[1]) * Width;
-    }
-    #endregion
-
     #region # // --- FEN ---
     /// <summary>
     /// gibt die aktuelle Spielfigur auf dem Schachbrett zurück
@@ -278,7 +189,7 @@ namespace Mattjes
     /// <returns>FEN</returns>
     public string GetFEN()
     {
-      return new string(Enumerable.Range(0, Height).SelectMany(y => Enumerable.Range(-1, Width + 1).Select(x => PieceChar(GetField(x, y)))).ToArray()).TrimStart('/')
+      return new string(Enumerable.Range(0, Height).SelectMany(y => Enumerable.Range(-1, Width + 1).Select(x => BoardTools.PieceChar(GetField(x, y)))).ToArray()).TrimStart('/')
         .Replace('.', '1').Replace("11", "2").Replace("22", "4").Replace("44", "8").Replace("42", "6").Replace("61", "7").Replace("41", "5").Replace("21", "3")
         + (WhiteMove ? " w" : " b") + " "
         + (WhiteCanCastleKingside ? "K" : "")
@@ -286,7 +197,7 @@ namespace Mattjes
         + (BlackCanCastleKingside ? "k" : "")
         + (BlackCanCastleQueenside ? "q" : "")
         + (!WhiteCanCastleKingside && !WhiteCanCastleQueenside && !BlackCanCastleKingside && !BlackCanCastleQueenside ? "-" : "") + " "
-        + (EnPassantPos == -1 ? "-" : PosChars(EnPassantPos)) + " "
+        + (EnPassantPos == -1 ? "-" : BoardTools.PosChars(EnPassantPos)) + " "
         + HalfmoveClock + " "
         + MoveNumber
         ;
@@ -312,7 +223,7 @@ namespace Mattjes
         int x = 0;
         foreach (char c in lines[y])
         {
-          var p = PieceFromChar(c);
+          var p = BoardTools.PieceFromChar(c);
           if (p == Piece.Blocked) return false; // ungültiges Zeichen als Spielerfigur erkannt
           if (p == Piece.None) // leere Felder?
           {
@@ -356,7 +267,7 @@ namespace Mattjes
       }
 
       // --- "en passant" einlesen (4 / 6) ---
-      EnPassantPos = PosFromChars(splits[3]);
+      EnPassantPos = BoardTools.PosFromChars(splits[3]);
       if (EnPassantPos == -1)
       {
         if (splits[3] != "-") return false; // ungültige Angabe
@@ -394,7 +305,7 @@ namespace Mattjes
         sb.Append("    ");
         for (int x = 0; x < Width; x++)
         {
-          sb.Append(PieceChar(GetField(x + y * Width)));
+          sb.Append(BoardTools.PieceChar(GetField(x + y * Width)));
         }
         sb.AppendLine();
       }
@@ -418,11 +329,11 @@ namespace Mattjes
         {
           if (marker.Contains(x + y * Width))
           {
-            sb.Append((char)(PieceChar(GetField(x + y * Width)) ^ markerBit));
+            sb.Append((char)(BoardTools.PieceChar(GetField(x + y * Width)) ^ markerBit));
           }
           else
           {
-            sb.Append(PieceChar(GetField(x + y * Width)));
+            sb.Append(BoardTools.PieceChar(GetField(x + y * Width)));
           }
         }
         sb.AppendLine();

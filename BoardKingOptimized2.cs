@@ -1087,15 +1087,40 @@ namespace Mattjes
         if (WhiteMove)
         {
           int posX = whiteKingPos % Width;
-          if (posX > 0 && (fs[whiteKingPos - 1] & Piece.White) == Piece.None && !IsChecked(whiteKingPos - 1, Piece.Black)) return true;
-          if (posX < 7 && (fs[whiteKingPos + 1] & Piece.White) == Piece.None && !IsChecked(whiteKingPos + 1, Piece.Black)) return true;
+          fs[whiteKingPos] = Piece.None;
+
+          if (posX > 0 && (fs[whiteKingPos - 1] & Piece.White) == Piece.None && !IsChecked(whiteKingPos - 1, Piece.Black))
+          {
+            fs[whiteKingPos] = Piece.WhiteKing;
+            return true;
+          }
+
+          if (posX < 7 && (fs[whiteKingPos + 1] & Piece.White) == Piece.None && !IsChecked(whiteKingPos + 1, Piece.Black))
+          {
+            fs[whiteKingPos] = Piece.WhiteKing;
+            return true;
+          }
+
+          fs[whiteKingPos] = Piece.WhiteKing;
           return GetWhiteMoves().Any();
         }
         else
         {
           int posX = blackKingPos % Width;
-          if (posX > 0 && (fs[blackKingPos - 1] & Piece.Black) == Piece.None && !IsChecked(blackKingPos - 1, Piece.White)) return true;
-          if (posX < 7 && (fs[blackKingPos + 1] & Piece.Black) == Piece.None && !IsChecked(blackKingPos + 1, Piece.White)) return true;
+          fs[blackKingPos] = Piece.None;
+
+          if (posX > 0 && (fs[blackKingPos - 1] & Piece.Black) == Piece.None && !IsChecked(blackKingPos - 1, Piece.White))
+          {
+            fs[blackKingPos] = Piece.BlackKing;
+            return true;
+          }
+          if (posX < 7 && (fs[blackKingPos + 1] & Piece.Black) == Piece.None && !IsChecked(blackKingPos + 1, Piece.White))
+          {
+            fs[blackKingPos] = Piece.BlackKing;
+            return true;
+          }
+
+          fs[blackKingPos] = Piece.BlackKing;
           return GetBlackMoves().Any();
         }
       }

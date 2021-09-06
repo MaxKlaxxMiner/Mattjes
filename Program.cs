@@ -12,35 +12,6 @@ namespace Mattjes
   class Program
   {
     #region # // --- base functions ---
-    static void PrintMarkedBoard(IBoard b, IEnumerable<int> marker)
-    {
-      var tmp = b.ToString(marker, (char)0x1000);
-      bool last = false;
-      foreach (char c in tmp)
-      {
-        if ((c & 0x1000) != 0)
-        {
-          if (!last)
-          {
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.BackgroundColor = ConsoleColor.DarkGray;
-          }
-          Console.Write((char)(c & 0xff));
-          last = true;
-        }
-        else
-        {
-          if (last)
-          {
-            Console.ForegroundColor = ConsoleColor.Gray;
-            Console.BackgroundColor = ConsoleColor.Black;
-          }
-          Console.Write(c);
-          last = false;
-        }
-      }
-    }
-
     //static int PiecePoints(IBoard b)
     //{
     //  int r = 0;
@@ -1292,14 +1263,14 @@ namespace Mattjes
         if (!b.DoMove(moves[next])) throw new Exception("invalid move?");
       loop:
         Console.WriteLine();
-        PrintMarkedBoard(b, first ? new int[] { } : new[] { (int)moves[next].fromPos, moves[next].toPos });
+        BoardTools.PrintBoard(b, first ? new int[] { } : new[] { (int)moves[next].fromPos, moves[next].toPos });
         string fixMove = Console.ReadLine();
         if (fixMove.Length > 0)
         {
           if (fixMove.Length == 4)
           {
-            int fromPos = IBoard.PosFromChars(fixMove.Substring(0, 2));
-            int toPos = IBoard.PosFromChars(fixMove.Substring(2, 2));
+            int fromPos = BoardTools.PosFromChars(fixMove.Substring(0, 2));
+            int toPos = BoardTools.PosFromChars(fixMove.Substring(2, 2));
             var m = b.GetMoves().FirstOrDefault(x => x.fromPos == fromPos && x.toPos == toPos);
             if (m.fromPos == fromPos && m.toPos == toPos)
             {

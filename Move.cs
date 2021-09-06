@@ -50,7 +50,7 @@ namespace Mattjes
     /// <returns>lesbare Zeichenkette</returns>
     public override string ToString()
     {
-      return IBoard.PosChars(fromPos) + "-" + IBoard.PosChars(toPos) + (promoPiece != Piece.None ? IBoard.PieceChar(promoPiece).ToString() : "");
+      return BoardTools.PosChars(fromPos) + "-" + BoardTools.PosChars(toPos) + (promoPiece != Piece.None ? BoardTools.PieceChar(promoPiece).ToString() : "");
     }
 
     /// <summary>
