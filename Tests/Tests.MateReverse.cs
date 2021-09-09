@@ -50,6 +50,45 @@ namespace Mattjes
       }
     }
 
+    static void MateReverseInternal2(IBoard b, Piece[] pieces, Func<IBoard, bool> validPosition)
+    {
+      Debug.Assert(pieces.Length > 0);
+
+      foreach (var piece in new HashSet<Piece>(pieces.Where(p => (p & Piece.Colors) == Piece.White)))
+      {
+        var otherPiecesTmp = pieces.ToList();
+        otherPiecesTmp.RemoveAt(otherPiecesTmp.IndexOf(piece));
+        var otherPieces = otherPiecesTmp.ToArray();
+
+        for (int pos = 0; pos < IBoard.Width * IBoard.Height; pos++)
+        {
+          if (b.GetField(pos) != Piece.None) continue; // Feld schon besetzt?
+
+          b.SetField(pos, piece);
+
+          if (b.IsChecked(b.GetKingPos(Piece.Black), Piece.White)) // Schachgebot vorhanden? (nur dann kann es auch ein theoretisches Matt sein)
+          {
+            if (BoardTools.IsMate(b) && validPosition(b))
+            {
+              counter++;
+              if (mateHashes.Add(b.GetChecksum()))
+              {
+                //BoardTools.PrintBoard(b);
+                //PrintMateCounter();
+                //Console.ReadLine();
+              }
+            }
+            if (otherPieces.Length > 0) // mit weiteren Figuren-Varianten suchen?
+            {
+              MateReverseInternal(b, otherPieces, 0, validPosition);
+            }
+          }
+
+          b.SetField(pos, Piece.None);
+        }
+      }
+    }
+
     static void PrintMateCounter()
     {
       Console.WriteLine();
@@ -107,7 +146,8 @@ namespace Mattjes
         b.SetField(kingPairs[i].Key, Piece.BlackKing);
         b.SetField(kingPairs[i].Value, Piece.WhiteKing);
 
-        MateReverseInternal(b, pieces, 0, validPosition);
+        //MateReverseInternal(b, pieces, 0, validPosition);
+        MateReverseInternal2(b, pieces, validPosition);
 
         b.SetField(kingPairs[i].Key, Piece.None);
         b.SetField(kingPairs[i].Value, Piece.None);
