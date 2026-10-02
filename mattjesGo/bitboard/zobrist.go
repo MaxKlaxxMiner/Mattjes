@@ -80,6 +80,33 @@ func (b *Board) finishKey() {
 	}
 }
 
+// ZobristFingerprint identifies the Zobrist constants. Persistent tables store it
+// so that a file written with other constants (different seed or layout) is
+// rejected instead of producing silent false hits. Go and Rust compute the same
+// value, which makes their table files interchangeable.
+func ZobristFingerprint() uint64 {
+	var f uint64
+	mix := func(k *Key) {
+		for _, w := range k {
+			f = (f ^ w) * 0x9E3779B97F4A7C15
+			f ^= f >> 32
+		}
+	}
+	for p := range zPiece {
+		for sq := range zPiece[p] {
+			mix(&zPiece[p][sq])
+		}
+	}
+	for c := range zCastle {
+		mix(&zCastle[c])
+	}
+	for e := range zEnPassant {
+		mix(&zEnPassant[e])
+	}
+	mix(&zSide)
+	return f
+}
+
 // ZobristFull recomputes the key from scratch. Used to verify the incremental updates.
 func (b *Board) ZobristFull() Key {
 	var k Key

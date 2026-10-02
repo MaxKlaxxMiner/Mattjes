@@ -65,7 +65,12 @@ test framework at this stage; that is intentional while the fundamentals are exp
 2. **Hash keys** (done): incremental 128-bit Zobrist keys, compared against CRC64,
    truncated keys and an exact 32-byte key; the distinct-position counts match
    OEIS A083276.
-3. **Transposition tables** with different key sizes and optional persistence.
+3. **Transposition tables** (done): 16-byte entries that keep the full 128-bit key
+   (the slot index bits are implied by the position and hold the value instead), as
+   a lossy cache table (direct-mapped and 4-way buckets) and as an exact fixed-size
+   store; both persist to disk with a Zobrist fingerprint, and a table saved by the
+   Go build loads in the Rust build. Perft with the table runs 4-5x faster; the
+   measurements show why 16- or 32-bit check words are not enough for mate proofs.
 4. **Mate and draw search**, possibly two-staged: a fast pre-search for likely results,
    then an exact search for the optimal move count.
 5. **Endgame tablebases** (Syzygy), preferably a native implementation rather than a library.

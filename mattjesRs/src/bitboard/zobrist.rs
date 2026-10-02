@@ -51,6 +51,38 @@ impl Zobrist {
         z.side = fill();
         z
     }
+
+    /// Identifies the Zobrist constants. Persistent tables store it so that a file
+    /// written with other constants (different seed or layout) is rejected instead
+    /// of producing silent false hits. Go computes the same value, which makes the
+    /// table files of both languages interchangeable.
+    pub fn fingerprint(&self) -> u64 {
+        fn mix(f: &mut u64, k: &Key) {
+            for &w in k {
+                *f = (*f ^ w).wrapping_mul(0x9E3779B97F4A7C15);
+                *f ^= *f >> 32;
+            }
+        }
+        let mut f = 0u64;
+        for p in &self.piece {
+            for k in p {
+                mix(&mut f, k);
+            }
+        }
+        for k in &self.castle {
+            mix(&mut f, k);
+        }
+        for k in &self.en_passant {
+            mix(&mut f, k);
+        }
+        mix(&mut f, &self.side);
+        f
+    }
+}
+
+/// `Zobrist::fingerprint` of the global tables.
+pub fn zobrist_fingerprint() -> u64 {
+    super::tables::TABLES.zobrist.fingerprint()
 }
 
 #[inline(always)]

@@ -19,11 +19,18 @@ package main
 import (
 	"fmt"
 	"runtime"
+	"runtime/debug"
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 )
 
 func main() {
+	// The GC normally lets the heap grow to twice the live size before it runs.
+	// With a 256 MB (or larger) transposition table that would be 256 MB of
+	// reserve for nothing; 1 % keeps the headroom small. The hot paths do not
+	// allocate, so the more frequent GC cycles cost nothing there.
+	debug.SetGCPercent(1)
+
 	fmt.Printf("Mattjes (Go) %s on %s/%s, %d CPUs\n\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU())
 
 	// --- milestone 1: move generator + perft (enable one at a time) ---
@@ -39,5 +46,13 @@ func main() {
 	// --- milestone 2: hash keys ---
 	// bitboardHashVerify(5_000_000)
 	// bitboardUniquePositions(chess.StartFEN, 6, 40_000_000)
+
+	// --- milestone 3: transposition tables ---
+	// bitboardPerftTT(4_000_000_000, 256, false)
+	// bitboardPerftTT(4_000_000_000, 256, true)
+	// bitboardPerftTTPersist(chess.StartFEN, 7, 256)
+	// bitboardPerftTTLoad(chess.StartFEN, 7) // also reads the file written by the Rust build
+	// bitboardUniquePositionsHashed(chess.StartFEN, 6, 40_000_000)
+	// bitboardStoreRoundtrip()
 	_ = chess.StartFEN // keep the import for the commented experiments above
 }

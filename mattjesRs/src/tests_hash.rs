@@ -51,12 +51,12 @@ pub fn bitboard_hash_verify(max_nodes: u64) {
 
 /// Distinct positions after n plies from the start position
 /// (OEIS A083276, en passant only counted when a legal capture exists).
-const UNIQUE_REFERENCE: [usize; 7] = [20, 400, 5362, 72078, 822518, 9417681, 96400068];
+pub const UNIQUE_REFERENCE: [usize; 7] = [20, 400, 5362, 72078, 822518, 9417681, 96400068];
 
-type Record = [u8; PackedFixed::MAX_BYTES];
+pub type Record = [u8; PackedFixed::MAX_BYTES];
 
 /// The exact identity of a position: its PackedFixed record with the move counters zeroed.
-fn position_record(b: &Board) -> Record {
+pub fn position_record(b: &Board) -> Record {
     let mut c = *b;
     c.halfmove_clock = 0;
     c.move_number = 0;
@@ -128,7 +128,7 @@ pub fn bitboard_unique_positions(fen: &str, max_depth: u32, max_children: usize)
     println!("    {}\n", if ok { "[all ok]" } else { "[FAILURES]" });
 }
 
-fn group(n: u64) -> String {
+pub fn group(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, c) in s.chars().enumerate() {
@@ -140,7 +140,7 @@ fn group(n: u64) -> String {
     out
 }
 
-fn fmt_ms(d: Duration) -> String {
+pub fn fmt_ms(d: Duration) -> String {
     if d < Duration::from_secs(1) {
         format!("{:.0} ms", d.as_micros() as f64 / 1000.0)
     } else {
@@ -148,7 +148,7 @@ fn fmt_ms(d: Duration) -> String {
     }
 }
 
-fn fmt_mb(bytes: usize) -> String {
+pub fn fmt_mb(bytes: usize) -> String {
     if bytes < 1 << 20 {
         format!("{:.1} KB", bytes as f64 / 1024.0)
     } else {

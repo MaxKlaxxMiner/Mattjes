@@ -25,4 +25,4 @@ pub use perft::{perft_breadth, perft_breadth_encoded, perft_divide, perft_iterat
 #[allow(unused_imports)]
 pub use tables::{init_duration, TABLES};
 #[allow(unused_imports)]
-pub use zobrist::{Key, KEY_WORDS};
+pub use zobrist::{zobrist_fingerprint, Key, KEY_WORDS};

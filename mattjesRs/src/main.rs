@@ -22,6 +22,9 @@ mod chess;
 mod perft;
 mod tests_hash;
 mod tests_perft;
+mod tests_tt;
+mod tt;
+mod ttstore;
 
 fn main() {
     println!(
@@ -44,4 +47,12 @@ fn main() {
     // --- milestone 2: hash keys ---
     // tests_hash::bitboard_hash_verify(5_000_000);
     // tests_hash::bitboard_unique_positions(chess::START_FEN, 6, 40_000_000);
+
+    // --- milestone 3: transposition tables ---
+    // tests_tt::bitboard_perft_tt(4_000_000_000, 256, false);
+    // tests_tt::bitboard_perft_tt(4_000_000_000, 256, true);
+    // tests_tt::bitboard_perft_tt_persist(chess::START_FEN, 7, 256);
+    // tests_tt::bitboard_perft_tt_load(chess::START_FEN, 7); // also reads the file written by the Go build
+    // tests_tt::bitboard_unique_positions_hashed(chess::START_FEN, 6, 40_000_000);
+    // tests_tt::bitboard_store_roundtrip();
 }
