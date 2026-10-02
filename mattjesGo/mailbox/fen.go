@@ -52,6 +52,9 @@ func (b *Board) SetFEN(fen string) error {
 			if x >= chess.Width {
 				return fmt.Errorf("invalid FEN: rank %d too long", chess.Height-y)
 			}
+			if p.Is(chess.Pawn) && (y == 0 || y == chess.Height-1) {
+				return fmt.Errorf("invalid FEN: pawn on rank %d", chess.Height-y) // the move generator relies on this
+			}
 			b.SetField(chess.PosFromXY(x, y), p)
 			x++
 		}

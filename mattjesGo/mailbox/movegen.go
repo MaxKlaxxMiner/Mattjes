@@ -31,7 +31,7 @@ func (b *Board) GenMoves(buf *MoveBuffer) int {
 
 		switch p.Type() {
 		case chess.Pawn:
-			y := sq.Y()
+			y := sq.Y() // never 0 or 7, SetFEN rejects pawns on the back ranks
 			// single and double push
 			if to := sq + fwd; b.Fields[to] == chess.None {
 				m := Move{From: sq, To: to}

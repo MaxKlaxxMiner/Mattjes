@@ -15,6 +15,7 @@ Neustart nach ca. 5 Jahren Pause (Oktober 2026). Der Autor (20+ Jahre Entwickler
 - **Ein Package/Modul pro Ansatz.** Jeder Generator-, Hash- oder Such-Ansatz bekommt sein eigenes Package, damit er später leicht komplett verworfen werden kann.
 - **Performance nur mit Zahlen.** Jede Optimierungsbehauptung wird per Benchmark belegt (Nodes/s, Speicherverbrauch), so wie in der alten Commit-Historie.
 - **Korrektheit und Benchmark trennen.** Korrektheitsläufe (Perft-Zahlen stimmen) kann Claude jederzeit selbst starten. Benchmarks dagegen nur auf Ansage des Autors, weil auf der Maschine oft andere Engines (z. B. Stockfish) nebenher laufen und die Werte verzerren. Zwischenmessungen immer mit diesem Vorbehalt kennzeichnen.
+- **Mikro-Änderungen per A/B-Wechsellauf messen.** Beide Varianten als getrennte Binaries bauen (ins Scratchpad kopieren), dann abwechselnd A B A B A B laufen lassen und nur die Differenz innerhalb eines Laufs werten. Absolute Mn/s schwanken zwischen Sitzungen um einige Prozent (thermisch), Tabellen aus verschiedenen Sitzungen sind nicht direkt vergleichbar. Code-Layout-Effekte können auch "weniger Code" langsamer machen, daher nie ohne Messung annehmen.
 - **Alle Dev-Tools laufen unter MSYS2/ucrt64**, ohne Abhängigkeit zum nativen Windows. Go 1.26 (cgo via ucrt64-gcc möglich), Rust 1.95 aus pacman (`mingw-w64-ucrt-x86_64-rust`, Target `x86_64-pc-windows-gnu`, kein rustup, kein MSVC). JetBrains-IDEs (GoLand, RustRover) sind optional und bringen ggf. eigene Toolchains mit. C# wird nicht verwendet.
 
 ## Milestones
@@ -54,6 +55,10 @@ Claude committet nicht selbst. Bei sinnvollen Abständen einen **Commit-Vorschla
 - `docs/` – Messwerte und Erkenntnisse pro Milestone (z. B. `m1-mailbox-perft.md`). Neue Benchmarks dort eintragen, nicht in Commit-Messages.
 
 Neue Generator-Ansätze bekommen ein eigenes Package neben `mailbox/` und hängen sich über `perft.Run` ein.
+
+## Code-Struktur (mattjesRs)
+
+Spiegelt mattjesGo eins zu eins: `src/chess/`, `src/mailbox/`, `src/perft/`, `src/tests_perft.rs`, `src/main.rs`. Gleiche Modulnamen, gleiche Funktionsnamen in snake_case (`gen_moves`, `do_move`, `perft_recursive`). Wer eine Änderung in einer Sprache macht, zieht sie in der anderen nach, damit die Gegenprüfung erhalten bleibt. Besonderheiten: `Piece`/`Pos` sind Newtypes mit Operator-Impls, Tabellen sind `const fn`, `perft/alloc_stats.rs` ersetzt den globalen Allokator zum Zählen der Allokationen. `#![allow(dead_code)]` im Crate-Root ist Absicht, weil immer nur ein Experiment aktiv ist.
 
 ## Referenzcode
 

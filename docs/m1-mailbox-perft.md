@@ -87,6 +87,83 @@ Farbverzweigungen, die der kompakte Generator pro Zug ausführt. Der Preis ist
 Codegröße: ca. 1.200 Zeilen gegenüber ca. 350. Der yacboard-Lauf liegt als
 Wegwerf-Programm im Scratchpad und ist nicht Teil des Repos.
 
+## Rust-Port (`mattjesRs/src/mailbox`)
+
+Eins-zu-eins-Port desselben Algorithmus: gleiche Module, gleiche Tabellen,
+gleiche Zugreihenfolge, gleiche Datengrößen (Board 74 Byte, Frame 1120 Byte).
+Alle sieben Stellungen stimmen in allen vier Varianten. Rust 1.95, Release-Profil
+mit `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`.
+
+| Stellung | Tiefe | Knoten | Go rekursiv | Rust rekursiv | Rust iterativ | Rust breadth | Faktor Rust/Go |
+|---|---|---|---|---|---|---|---|
+| Start | 6 | 119.060.324 | 27,9 Mn/s | 40,6 Mn/s | 40,6 Mn/s | 39,0 Mn/s | 1,46 |
+| Kiwipete | 5 | 193.690.690 | 29,3 Mn/s | 46,1 Mn/s | 45,1 Mn/s | 43,9 Mn/s | 1,57 |
+| Pos 3 | 7 | 178.633.661 | 22,1 Mn/s | 32,1 Mn/s | 32,9 Mn/s | 31,2 Mn/s | 1,45 |
+| Pos 4 | 5 | 15.833.292 | 28,6 Mn/s | 46,7 Mn/s | 44,9 Mn/s | 43,4 Mn/s | 1,63 |
+| Pos 4 gespiegelt | 5 | 15.833.292 | 29,2 Mn/s | 44,7 Mn/s | 44,2 Mn/s | 43,4 Mn/s | 1,53 |
+| Pos 5 | 5 | 89.941.194 | 26,3 Mn/s | 39,7 Mn/s | 38,7 Mn/s | 37,7 Mn/s | 1,51 |
+| Pos 6 | 5 | 164.075.551 | 31,5 Mn/s | 53,3 Mn/s | 51,6 Mn/s | 49,8 Mn/s | 1,69 |
+| **gesamt** | | 805 Mio. | **27,0 Mn/s** | **41,3 Mn/s** | **41,0 Mn/s** | **39,4 Mn/s** | **1,53** |
+
+Parallel, 12 Worker: **176,1 Mn/s** (Go: 132,4 Mn/s), Faktor 4,3 gegenüber dem
+Rust-Einzelthread. Die Allokationen sind in beiden Sprachen identisch (z. B. 829 MB
+für Pos 3 Tiefe 7 in der Breitensuche), was bestätigt, dass dieselben Datenstrukturen
+entstehen.
+
+Rust ist bei identischem Algorithmus durchgehend um Faktor 1,45 bis 1,69 schneller
+und schlägt damit auch yacboards ausgerollte Go-Version (34,1 Mn/s). Die
+wahrscheinlichsten Gründe: LLVM mit Fat-LTO inlined `is_legal`, `is_attacked` und
+die Tabellenzugriffe aggressiver als der Go-Compiler, Bounds-Checks werden häufiger
+wegoptimiert, und es gibt keinen Write-Barrier- oder GC-Overhead (auch wenn Go hier
+kaum allokiert). Der Rust-Code ist dabei nicht "unsafe" und enthält keine manuellen
+Optimierungen.
+
+Sprachliche Besonderheiten des Ports, die für Rust-Einsteiger interessant sind:
+
+- `Piece` und `Pos` sind **Newtypes** (`struct Piece(u8)`), nicht Aliase. Dadurch
+  lassen sich `|`, `&`, `+` und `Display` gezielt definieren, und ein `Piece` kann
+  nicht versehentlich als Zahl verwendet werden. Go erlaubt das über benannte Typen
+  ebenfalls, aber ohne Operator-Überladung.
+- Die Tabellen entstehen per **`const fn`** zur Compile-Zeit und liegen als Daten im
+  Binary. Go baut sie in `init()` beim Programmstart.
+- `Board` ist `Copy`, Copy-Make ist also `let mut child = parent;`.
+- `gen_moves` braucht `&mut self`, obwohl das Brett danach unverändert ist, weil
+  `is_legal` den Zug kurz ausführt. Der Compiler erzwingt diese Ehrlichkeit.
+- Im iterativen Perft dürfen Eltern- und Kind-Frame nicht gleichzeitig als `&mut`
+  aus demselben `Vec` geholt werden; **`split_at_mut`** teilt den Vec in zwei
+  disjunkte Hälften. Zwei Felder desselben Structs gleichzeitig mutabel zu
+  borgen ist dagegen erlaubt (`f.board.gen_moves(&mut f.moves)`).
+- `perft_parallel` nutzt **`thread::scope`**: Die Threads dürfen `root` und die
+  Zugliste per Referenz borgen, weil der Scope garantiert, dass alle Threads vor
+  dem Rücksprung beendet sind. Kein `Arc`, kein `clone`.
+- Ein eigener **`#[global_allocator]`** zählt die Allokationen, weil Rust kein
+  Äquivalent zu `runtime.MemStats` mitbringt.
+
+## A/B-Test: Bauern-Randreihen-Check im Generator oder in SetFEN
+
+Frage: Kostet ein `if y == 0 || y == 7 { continue }` pro Bauer im Generator
+etwas, oder kann das Entfernen durch verändertes Code-Layout sogar schaden?
+Methode: beide Varianten als getrennte Binaries, abwechselnd A B A B A B über
+die volle 805-Mio.-Knoten-Suite, Maschine ohne Hintergrundlast.
+
+| Runde | Go mit Check (A) | Go ohne (B) | Rust mit Check (A) | Rust ohne (B) |
+|---|---|---|---|---|
+| 1 | 25,2 | 25,4 | 39,6 | 40,1 |
+| 2 | 25,3 | 25,4 | 40,0 | 40,3 |
+| 3 | 25,3 | 25,4 | 39,9 | 40,1 |
+
+Ohne Check ist in jeder Runde und in beiden Sprachen minimal schneller
+(Go +0,5 %, Rust +0,8 %). Kein negativer Layout-Effekt. Die Prüfung liegt
+jetzt in `SetFEN`, der Generator setzt die Invariante voraus. Das Muster gilt
+allgemein: `SetFEN` ist der einzige Ort, der Eingaben misstraut; `DoMove`
+erhält alle Invarianten automatisch.
+
+Nebenbefund: Das absolute Niveau lag in diesem Lauf etwas unter dem der
+Haupttabellen (25,4 statt 27,0 bzw. 40,1 statt 41,3 Mn/s) bei identischem
+B-Code. Die Maschine schwankt also auch ohne Last um einige Prozent zwischen
+Sitzungen, vermutlich thermisch. Vergleiche sind nur innerhalb eines
+Wechsellaufs belastbar, nicht zwischen Tabellen aus verschiedenen Sitzungen.
+
 ## Erkenntnisse
 
 1. **Copy-Make kostet nichts.** Ein 74-Byte-Brett zu kopieren ist so schnell wie
@@ -109,8 +186,13 @@ Wegwerf-Programm im Scratchpad und ist nicht Teil des Repos.
 5. **Benchmarks nur auf leerer Maschine.** Die verfälschte erste yacboard-Messung
    hätte ohne Wiederholung eine falsche Design-Entscheidung gestützt.
 
+6. **Rust ist bei gleichem Code 1,5-mal schneller als Go.** Das ist der erste harte
+   Datenpunkt für die Sprachentscheidung. Er betrifft reinen Rechen-Code mit
+   kleinen Arrays; wie sich beide bei großen Hashtabellen (Milestone 2/3) und
+   Multithreading mit geteiltem Zustand verhalten, ist eine eigene Messung.
+
 ## Offene Punkte für spätere Schritte
 
 - `HasMoves()` mit Early-Exit (für `IsMate`) fehlt noch, kommt mit Milestone 4.
-- Rust-Port desselben Algorithmus und Gegenprüfung.
-- Bitboard-Generator als zweites Package, dann Vergleich aller drei.
+- Bitboard-Generator als zweites Package in beiden Sprachen, dann Vergleich.
+- Pin-Masken und Checker-Erkennung statt Make/Check/Unmake pro Zug.
