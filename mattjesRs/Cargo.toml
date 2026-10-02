@@ -7,11 +7,6 @@ description = "Mattjes - a chess engine specialized in mate and draw search"
 
 [dependencies]
 
-# Zobrist key width experiments (milestone 2); default is 128 bit.
-[features]
-keywords0 = []
-keywords1 = []
-
 [profile.release]
 opt-level = 3
 lto = "fat"

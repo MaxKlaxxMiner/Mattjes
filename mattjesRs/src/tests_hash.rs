@@ -1,18 +1,15 @@
-//! Milestone 2: hash key experiments. Mirrors `mattjesGo/tests_hash.go`.
+//! Milestone 2: hash key regression tests. The comparison experiments (CRC64,
+//! truncated keys, index distribution) are documented in docs/m2-hash-keys.md.
 
 use std::time::{Duration, Instant};
 
-use crate::bitboard::{self, Board, ExactKey, Key};
+use crate::bitboard::{self, packed_fixed_record, Board, Codec, Key, PackedFixed};
 use crate::chess::{new_buffer, START_FEN};
 use crate::perft;
 
 /// Walks all reference positions and compares the incremental Zobrist key with a
-/// full recomputation at every node.
+/// full recomputation at every node, forwards and backwards.
 pub fn bitboard_hash_verify(max_nodes: u64) {
-    println!("zobrist key words: {} ({} bit)", bitboard::KEY_WORDS, bitboard::KEY_WORDS * 64);
-    let t = &*bitboard::TABLES;
-    let mut mismatches = 0u64;
-
     fn walk(b: &mut Board, depth: u32, mismatches: &mut u64) {
         let t = &*bitboard::TABLES;
         if b.key != b.zobrist_full(t) {
@@ -34,14 +31,14 @@ pub fn bitboard_hash_verify(max_nodes: u64) {
         }
     }
 
-    let mismatch_cell = std::cell::Cell::new(0u64);
+    let total = std::cell::Cell::new(0u64);
     perft::run(
         "bitboard / zobrist incremental == full recompute at every node",
         |fen, depth| {
             let mut b = Board::from_fen(fen)?;
             let mut mm = 0u64;
             walk(&mut b, depth - 1, &mut mm);
-            mismatch_cell.set(mismatch_cell.get() + mm);
+            total.set(total.get() + mm);
             if mm != 0 {
                 return Err(format!("{} key mismatches", mm));
             }
@@ -49,86 +46,54 @@ pub fn bitboard_hash_verify(max_nodes: u64) {
         },
         max_nodes,
     );
-    mismatches += mismatch_cell.get();
-    let _ = t;
-    println!("total key mismatches: {}\n", mismatches);
+    println!("total key mismatches: {}\n", total.get());
 }
 
-/// Measures what computing a key from scratch at every node costs, compared with
-/// the plain perft (which already maintains the incremental key).
-pub fn bitboard_perft_key_cost(max_nodes: u64) {
-    fn run_variant(name: &str, max_nodes: u64, key: fn(&Board) -> u64) -> u64 {
-        fn walk(b: &mut Board, depth: u32, key: fn(&Board) -> u64, sink: &mut u64) -> u64 {
-            *sink ^= key(b);
-            let mut buf = new_buffer();
-            let n = b.gen_moves(&mut buf);
-            if depth <= 1 {
-                return n as u64;
-            }
-            let mut total = 0;
-            let s = b.state();
-            for &m in &buf[..n] {
-                b.do_move(m);
-                total += walk(b, depth - 1, key, sink);
-                b.undo_move(m, s);
-            }
-            total
-        }
-        let sink = std::cell::Cell::new(0u64);
-        perft::run(
-            &format!("bitboard / perft + {} per node", name),
-            |fen, depth| {
-                let mut b = Board::from_fen(fen)?;
-                let mut s = 0u64;
-                let nodes = walk(&mut b, depth, key, &mut s);
-                sink.set(sink.get() ^ s);
-                Ok(nodes)
-            },
-            max_nodes,
-        );
-        sink.get()
-    }
-    let t = &*bitboard::TABLES;
-    let _ = t;
-    let mut sink = 0u64;
-    sink ^= run_variant("crc64 recompute (yacboard style)", max_nodes, |b| b.crc64());
-    sink ^= run_variant("zobrist full recompute", max_nodes, |b| bitboard::key_lo(&b.zobrist_full(&bitboard::TABLES)));
-    sink ^= run_variant("exact 32-byte key + fold", max_nodes, |b| bitboard::exact_hash(&b.exact_key()));
-    sink ^= run_variant("incremental key read (baseline)", max_nodes, |b| bitboard::key_lo(&b.key));
-    println!("(sink {:x})\n", sink);
+/// Distinct positions after n plies from the start position
+/// (OEIS A083276, en passant only counted when a legal capture exists).
+const UNIQUE_REFERENCE: [usize; 7] = [20, 400, 5362, 72078, 822518, 9417681, 96400068];
+
+type Record = [u8; PackedFixed::MAX_BYTES];
+
+/// The exact identity of a position: its PackedFixed record with the move counters zeroed.
+fn position_record(b: &Board) -> Record {
+    let mut c = *b;
+    c.halfmove_clock = 0;
+    c.move_number = 0;
+    packed_fixed_record(&c)
 }
 
-/// Breadth-first search keeping only distinct positions per ply (exact 32-byte key),
-/// then counts how many distinct keys the shorter key types produce for the same set.
-/// The difference is the number of collisions. Returns the last ply's unique positions.
-pub fn bitboard_unique_positions(fen: &str, max_depth: u32, max_children: usize) -> Vec<ExactKey> {
+/// Breadth-first search keeping only distinct positions per ply (exact record),
+/// compares the counts with OEIS A083276 for the start position and reports
+/// Zobrist collisions among the distinct positions. This is the prototype of the
+/// list-based search with deduplication.
+pub fn bitboard_unique_positions(fen: &str, max_depth: u32, max_children: usize) {
     let root = Board::from_fen(fen).expect("valid FEN");
+    let is_start = fen == START_FEN;
     println!("=== unique positions per ply ===\n    {}", fen);
-    println!(
-        "    {:>4} {:>14} {:>12} {:>8} {:>9} | collisions: {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
-        "ply", "children", "unique", "time", "memory", "zob64", "zob128", "crc64", "zob32", "crc32lo", "crc32hi"
-    );
+    println!("    {:>4} {:>14} {:>12} {:>10} {:>8} {:>9} {:>10}", "ply", "children", "unique", "reference", "time", "memory", "zobrist");
 
-    let mut level: Vec<ExactKey> = vec![root.exact_key()];
+    let mut ok = true;
+    let mut level: Vec<Record> = vec![position_record(&root)];
     let mut buf = new_buffer();
-    for ply in 1..=max_depth {
+    for ply in 1..=max_depth as usize {
         let start = Instant::now();
         let mut child_count = 0usize;
         for k in &level {
-            child_count += Board::from_exact_key(k).gen_moves(&mut buf);
+            child_count += PackedFixed::decode(k).0.gen_moves(&mut buf);
         }
         if child_count > max_children {
             println!("    {:>4} {:>14}   (limit {} children)", ply, group(child_count as u64), max_children);
             break;
         }
-        let mut children: Vec<ExactKey> = Vec::with_capacity(child_count);
+        let mut children: Vec<Record> = Vec::with_capacity(child_count);
         for k in &level {
-            let b = Board::from_exact_key(k);
+            let b = PackedFixed::decode(k).0;
             let n = b.gen_moves(&mut buf);
             for &m in &buf[..n] {
                 let mut child = b;
                 child.do_move(m);
-                children.push(child.exact_key());
+                children.push(position_record(&child));
             }
         }
         children.sort_unstable();
@@ -136,99 +101,31 @@ pub fn bitboard_unique_positions(fen: &str, max_depth: u32, max_children: usize)
         level = children;
         let unique = level.len();
 
-        let mut z64: Vec<u64> = Vec::with_capacity(unique);
-        let mut z128: Vec<Key> = Vec::with_capacity(unique);
-        let mut crc: Vec<u64> = Vec::with_capacity(unique);
-        for k in &level {
-            let b = Board::from_exact_key(k);
-            z128.push(b.key);
-            z64.push(bitboard::key_lo(&b.key));
-            crc.push(b.crc64());
-        }
-        fn collisions<T: Ord>(mut keys: Vec<T>) -> usize {
-            let n = keys.len();
-            keys.sort_unstable();
-            keys.dedup();
-            n - keys.len()
-        }
-        let c_zob32 = collisions(z64.iter().map(|k| k & 0xffff_ffff).collect());
-        let c_crc32lo = collisions(crc.iter().map(|k| k & 0xffff_ffff).collect());
-        let c_crc32hi = collisions(crc.iter().map(|k| k >> 32).collect());
-        let c_zob128 = collisions(z128);
-        let c_zob64 = collisions(z64);
-        let c_crc64 = collisions(crc);
+        let mut keys: Vec<Key> = level.iter().map(|k| PackedFixed::decode(k).0.key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        let collisions = unique - keys.len();
 
+        let mut reference = "-".to_string();
+        if is_start && ply - 1 < UNIQUE_REFERENCE.len() {
+            reference = group(UNIQUE_REFERENCE[ply - 1] as u64);
+            if UNIQUE_REFERENCE[ply - 1] != unique {
+                reference += " FAIL";
+                ok = false;
+            }
+        }
         println!(
-            "    {:>4} {:>14} {:>12} {:>8} {:>9} | {:>19} {:>8} {:>8} {:>8} {:>8} {:>8}",
+            "    {:>4} {:>14} {:>12} {:>10} {:>8} {:>9} {:>10}",
             ply,
             group(child_count as u64),
             group(unique as u64),
+            reference,
             fmt_ms(start.elapsed()),
-            fmt_mb(unique * std::mem::size_of::<ExactKey>()),
-            c_zob64,
-            c_zob128,
-            c_crc64,
-            c_zob32,
-            c_crc32lo,
-            c_crc32hi
-        );
-        let n = unique as f64;
-        println!(
-            "         expected collisions for {} unique keys: 64 bit {:.2e}, 32 bit {:.1}",
-            group(unique as u64),
-            n * (n - 1.0) / 2.0 / 2f64.powi(64),
-            n * (n - 1.0) / 2.0 / 2f64.powi(32)
+            fmt_mb(unique * PackedFixed::MAX_BYTES),
+            collisions
         );
     }
-    println!();
-    level
-}
-
-/// Checks how evenly the low bits of each key type spread the given positions over
-/// a table of 2^bits slots, compared with a uniform random hash.
-pub fn bitboard_key_distribution(level: &[ExactKey], bits: u32) {
-    let slots = 1usize << bits;
-    let mask = (slots - 1) as u64;
-    let n = level.len();
-    let lambda = n as f64 / slots as f64;
-    println!("=== index distribution: {} positions into 2^{} slots (load {:.2}) ===", group(n as u64), bits, lambda);
-    println!("    {:<28} {:>10} {:>10} {:>8} {:>8}", "key -> index", "empty", "expected", "max", "z-score");
-
-    type IndexFn = Box<dyn Fn(&Board) -> u64>;
-    let variants: [(&str, IndexFn); 7] = [
-        ("zobrist64 low bits", Box::new(move |b| bitboard::key_lo(&b.key) & mask)),
-        ("zobrist64 high bits", Box::new(move |b| bitboard::key_lo(&b.key) >> (64 - bits))),
-        ("crc64 low bits", Box::new(move |b| b.crc64() & mask)),
-        ("crc64 high bits", Box::new(move |b| b.crc64() >> (64 - bits))),
-        ("mix64(crc64) low bits", Box::new(move |b| bitboard::mix64(b.crc64()) & mask)),
-        ("occupancy low bits (naive)", Box::new(move |b| (b.by_color[0] | b.by_color[1]) & mask)),
-        ("exact key fold low bits", Box::new(move |b| bitboard::exact_hash(&b.exact_key()) & mask)),
-    ];
-    let mut counts = vec![0u32; slots];
-    for (name, idx) in &variants {
-        counts.fill(0);
-        for k in level {
-            let b = Board::from_exact_key(k);
-            counts[idx(&b) as usize] += 1;
-        }
-        let (mut empty, mut max_load, mut chi2) = (0usize, 0u32, 0f64);
-        for &c in &counts {
-            if c == 0 {
-                empty += 1;
-            }
-            max_load = max_load.max(c);
-            let d = c as f64 - lambda;
-            chi2 += d * d / lambda;
-        }
-        let df = (slots - 1) as f64;
-        let z = (chi2 - df) / (2.0 * df).sqrt();
-        println!("    {:<28} {:>10} {:>10.0} {:>8} {:>8.1}", name, empty, slots as f64 * (-lambda).exp(), max_load, z);
-    }
-    println!("    (z-score near 0 = indistinguishable from uniform random; large = clustered)\n");
-}
-
-pub fn start_fen() -> &'static str {
-    START_FEN
+    println!("    {}\n", if ok { "[all ok]" } else { "[FAILURES]" });
 }
 
 fn group(n: u64) -> String {

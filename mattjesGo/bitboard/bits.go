@@ -2,9 +2,9 @@
 // color, magic bitboards for sliders and fully legal generation via pin and
 // check masks (no make/check/unmake per move).
 //
-// Bit layout: bit i is square chess.Pos(i), so a8 = bit 0 and h1 = bit 63, the
-// same numbering as the mailbox board. Consequently "north" (towards rank 8)
-// is a right shift, unlike in most engines where a1 is bit 0.
+// Bit layout: bit i is square chess.Pos(i), so a8 = bit 0 and h1 = bit 63 (the
+// numbering of chess.Pos). Consequently "north" (towards rank 8) is a right
+// shift, unlike in most engines where a1 is bit 0.
 package bitboard
 
 import (

@@ -29,9 +29,12 @@ The project is deliberately developed in **Go and Rust in parallel**:
 | `mattjesGo/` | Go       | Primary implementation, algorithms are prototyped here      |
 | `mattjesRs/` | Rust     | Port of the same algorithms, cross-checked against the Go version for correctness (perft) and speed |
 | `old/`       | C#       | The original 2019-2021 prototype, kept for reference only (test positions, ideas). Not maintained, not buildable. |
+| `docs/`      |          | Measurements and conclusions per milestone, including experiments whose code was removed again |
 
 Every move generator, hash scheme or search approach lives in its own package so
-that experiments can be dropped again without touching the rest.
+that experiments can be dropped again without touching the rest. Losers are
+removed (they stay in the git history and in `docs/`), so the tree only contains
+what the engine actually builds on.
 
 ## Building
 
@@ -53,12 +56,15 @@ test framework at this stage; that is intentional while the fundamentals are exp
 
 ## Roadmap
 
-1. **Move generators** in Go and Rust, verified with perft on the standard reference
-   positions: a minimalistic mailbox design (based on the author's earlier
-   [yacboard](https://github.com/MaxKlaxxMiner/huschiBoard)) and a magic-bitboard
-   generator with pin/check masks. Each in recursive, list-based and parallel perft
-   variants, measured for speed and memory. Results are in `docs/`.
-2. **Hash keys**: CRC64, Zobrist, 128-bit keys and full 256-bit collision-free keys compared.
+1. **Move generator** (done): a magic-bitboard generator with pin/check masks in Go
+   and Rust, verified with perft on the standard reference positions, in recursive,
+   list-based and parallel variants. A minimalistic mailbox design (based on the
+   author's earlier [yacboard](https://github.com/MaxKlaxxMiner/huschiBoard)) served
+   as the first step and reference and was removed after the bitboards proved 7-9x
+   faster. Results are in `docs/`.
+2. **Hash keys** (done): incremental 128-bit Zobrist keys, compared against CRC64,
+   truncated keys and an exact 32-byte key; the distinct-position counts match
+   OEIS A083276.
 3. **Transposition tables** with different key sizes and optional persistence.
 4. **Mate and draw search**, possibly two-staged: a fast pre-search for likely results,
    then an exact search for the optimal move count.

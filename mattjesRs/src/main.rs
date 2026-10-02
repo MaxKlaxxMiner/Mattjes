@@ -19,7 +19,6 @@
 
 mod bitboard;
 mod chess;
-mod mailbox;
 mod perft;
 mod tests_hash;
 mod tests_perft;
@@ -33,25 +32,16 @@ fn main() {
     );
 
     // --- milestone 1: move generator + perft (enable one at a time) ---
-    // tests_perft::mailbox_perft_recursive(200_000_000);
-    // tests_perft::mailbox_perft_iterative(200_000_000);
-    // tests_perft::mailbox_perft_breadth(200_000_000, 2048);
-    // tests_perft::mailbox_perft_parallel(1_000_000_000, 0);
-    // tests_perft::mailbox_divide(chess::START_FEN, 3);
-
     tests_perft::bitboard_perft_recursive(200_000_000);
     // tests_perft::bitboard_perft_iterative(200_000_000);
     // tests_perft::bitboard_perft_breadth(200_000_000, 2048);
-    // tests_perft::bitboard_perft_parallel(4_000_000_000, 0);
-    // tests_perft::bitboard_encode_roundtrip();
-    // tests_perft::bitboard_perft_breadth_encoded::<bitboard::FastFen>(200_000_000, 2048);
     // tests_perft::bitboard_perft_breadth_encoded::<bitboard::Packed>(200_000_000, 2048);
     // tests_perft::bitboard_perft_breadth_encoded::<bitboard::PackedFixed>(200_000_000, 2048);
+    // tests_perft::bitboard_perft_parallel(4_000_000_000, 0);
+    // tests_perft::bitboard_encode_roundtrip();
+    // tests_perft::bitboard_divide(chess::START_FEN, 3);
 
     // --- milestone 2: hash keys ---
     // tests_hash::bitboard_hash_verify(5_000_000);
-    // tests_hash::bitboard_perft_key_cost(20_000_000);
-    // let level = tests_hash::bitboard_unique_positions(tests_hash::start_fen(), 6, 40_000_000);
-    // tests_hash::bitboard_key_distribution(&level, 22);
-    // tests_perft::bitboard_divide(chess::START_FEN, 3);
+    // tests_hash::bitboard_unique_positions(chess::START_FEN, 6, 40_000_000);
 }

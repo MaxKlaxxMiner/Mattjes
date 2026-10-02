@@ -9,26 +9,15 @@ use super::magic::Rng;
 use super::tables::Tables;
 use crate::chess::{Castling, Piece, Pos, FIELD_COUNT};
 
-/// Key width in 64-bit words: 0 = no hashing (`Board.key` is a zero-size array,
-/// all updates compile away), 1 = 64 bit, 2 = 128 bit (two independent sets).
-/// Chosen with Cargo features: `cargo build --release --features keywords0` or
-/// `keywords1`; the default is 2.
-#[cfg(feature = "keywords0")]
-pub const KEY_WORDS: usize = 0;
-#[cfg(feature = "keywords1")]
-pub const KEY_WORDS: usize = 1;
-#[cfg(not(any(feature = "keywords0", feature = "keywords1")))]
+/// The key is 128 bit (two independent 64-bit sets). Milestone 2 showed that
+/// 64 bit is collision-free for millions of positions, but a mate proof must
+/// never rely on a false hit, so the wider key is the standard. It costs nothing
+/// measurable in Rust compared with 64 bit (the two XORs vectorize).
 pub const KEY_WORDS: usize = 2;
 
 /// The Zobrist key of a position (pieces, side to move, castling, en passant;
 /// halfmove clock and move number are not part of the identity).
 pub type Key = [u64; KEY_WORDS];
-
-/// The first word of a key, or 0 when hashing is disabled.
-#[inline(always)]
-pub fn key_lo(k: &Key) -> u64 {
-    k.first().copied().unwrap_or(0)
-}
 
 pub struct Zobrist {
     pub piece: [[Key; FIELD_COUNT]; 12], // [color_idx*6+kind_idx][sq]

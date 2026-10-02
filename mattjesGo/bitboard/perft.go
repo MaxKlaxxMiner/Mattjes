@@ -9,8 +9,9 @@ import (
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 )
 
-// The perft variants mirror package mailbox exactly, see there for the descriptions.
-
+// PerftRecursive is the classic recursive perft with make/unmake on a single board.
+// Leaf nodes are bulk-counted: at depth 1 the number of legal moves is returned
+// without playing them.
 func PerftRecursive(b *Board, depth int) uint64 {
 	var buf chess.MoveBuffer
 	n := b.GenMoves(&buf)
@@ -34,9 +35,13 @@ type frame struct {
 	next  int
 }
 
+// FrameSize is the memory per ply of PerftIterative, BoardSize the memory per stored position.
 const FrameSize = int(unsafe.Sizeof(frame{}))
 const BoardSize = int(unsafe.Sizeof(Board{}))
 
+// PerftIterative is a list-based depth-first perft without recursion and without
+// UndoMove: every ply owns a copy of the board ("copy-make"). Measured as fast as
+// or faster than make/unmake, see docs.
 func PerftIterative(root *Board, depth int) uint64 {
 	stack := make([]frame, depth)
 	stack[0].board = *root
@@ -72,6 +77,8 @@ func PerftIterative(root *Board, depth int) uint64 {
 	}
 }
 
+// PerftBreadth is a breadth-first perft: every ply is a complete list of all
+// positions of that ply (200-byte boards). It refuses to exceed maxBytes.
 func PerftBreadth(root *Board, depth int, maxBytes int) (uint64, error) {
 	level := []Board{*root}
 	var buf chess.MoveBuffer
@@ -107,11 +114,10 @@ func PerftBreadth(root *Board, depth int, maxBytes int) (uint64, error) {
 type Codec struct {
 	Name     string
 	MaxBytes int
-	Append   func(b Board, dst []byte) []byte // by value, see AppendFastFen
+	Append   func(b Board, dst []byte) []byte // by value, see AppendPacked
 	Decode   func(src []byte) (Board, int)
 }
 
-var FastFenCodec = Codec{"fastfen", MaxFastFenBytes, Board.AppendFastFen, DecodeFastFen}
 var PackedCodec = Codec{"packed", MaxPackedBytes, Board.AppendPacked, DecodePacked}
 var PackedFixedCodec = Codec{"packed-fixed", PackedFixedBytes, Board.AppendPackedFixed, DecodePackedFixed}
 
@@ -169,6 +175,8 @@ func PerftBreadthEncoded(root *Board, depth int, maxBytes int, codec Codec) (uin
 	return total, nil
 }
 
+// PerftParallel splits the root moves over `workers` goroutines, each running
+// PerftRecursive on its own board copy.
 func PerftParallel(root *Board, depth int, workers int) uint64 {
 	var buf chess.MoveBuffer
 	n := root.GenMoves(&buf)
@@ -203,6 +211,8 @@ func PerftParallel(root *Board, depth int, workers int) uint64 {
 	return total.Load()
 }
 
+// PerftDivide prints the node count below every root move, the standard tool to
+// locate move generator bugs by comparing with another engine.
 func PerftDivide(b *Board, depth int) uint64 {
 	var buf chess.MoveBuffer
 	n := b.GenMoves(&buf)

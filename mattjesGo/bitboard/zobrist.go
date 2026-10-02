@@ -7,13 +7,11 @@ import "github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 // of a position is the XOR of all applicable numbers, which makes it incremental:
 // moving a piece XORs out its old square and XORs in the new one.
 //
-// KeyWords selects the key width: 0 = no hashing (Board.Key is a zero-size array,
-// all updates compile away), 1 = 64 bit, 2 = 128 bit (two independent sets).
-// It is defined in zobrist_words*.go and chosen with build tags:
-//
-//	go build .                    # default (see zobrist_words_default.go)
-//	go build -tags keywords0 .    # no hashing
-//	go build -tags keywords1 .    # 64 bit
+// The key is 128 bit (two independent 64-bit sets). Milestone 2 showed that
+// 64 bit is collision-free for millions of positions, but a mate proof must
+// never rely on a false hit, so the wider key is the standard. It costs about
+// 2 % in Go and nothing measurable in Rust compared with 64 bit.
+const KeyWords = 2
 
 // Key is the Zobrist key of a position (pieces, side to move, castling, en passant;
 // halfmove clock and move number are not part of the identity).
@@ -43,15 +41,6 @@ func init() {
 		fill(&zEnPassant[f])
 	}
 	fill(&zSide)
-}
-
-// Lo returns the first 64-bit word (0 if hashing is disabled). Written so that it
-// compiles for KeyWords == 0, where k[0] would be a constant index out of range.
-func (k Key) Lo() uint64 {
-	if s := k[:]; len(s) > 0 {
-		return s[0]
-	}
-	return 0
 }
 
 func epIdx(ep chess.Pos) int {

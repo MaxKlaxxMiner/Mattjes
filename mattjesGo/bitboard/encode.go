@@ -2,73 +2,38 @@ package bitboard
 
 import "github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 
-// Compact position encodings for storing many positions (position lists,
-// later hash/persistence experiments). Both are variable-length and end with
-// the same 6 flag bytes: side+castling, en passant, halfmove clock, move number.
-
-// FastFen is the run-length encoding from the old C# code (GetFastFen): one byte
-// per piece (always >= 0x41) and one count byte (< 64) per gap of empty squares.
-// Start position 39 bytes, typical middlegame ~50, late endgame ~20.
-const MaxFastFenBytes = chess.FieldCount + flagBytes
-
-// Packed is the usual bitboard encoding: the 8-byte occupancy followed by one
-// nibble (color*6 + kind, 0..11) per occupied square in bit order.
-// At most 32 pieces = 16 nibble bytes, so the start position (30 bytes) is the
-// maximum; 6 pieces take 17 bytes.
-const MaxPackedBytes = 8 + maxPieces/2 + flagBytes
-
-const maxPieces = 32
+// Compact position encoding for storing many positions (position lists, later
+// hash/persistence experiments): the 8-byte occupancy followed by one nibble
+// (color*6 + kind, 0..11) per occupied square in bit order, then 6 flag bytes
+// (side+castling, en passant, halfmove clock, move number).
+//
+// Packed is variable-length (19 bytes for 6 pieces, 30 for the start position,
+// which is the maximum because at most 32 pieces = 16 nibble bytes exist).
+// PackedFixed pads the same data to a constant 32-byte record for index-based
+// access. Milestone 1 measured variable as ~10 % faster for sequential streams.
 
 const flagBytes = 6
+const maxPieces = 32
 
-// AppendFastFen appends the run-length encoding of b to dst.
-//
-// Value receiver on purpose: the Append functions are called through Codec
-// function values (indirect calls), and a *Board passed to an indirect call
-// escapes to the heap in Go's escape analysis. Passing 184 bytes by value is
-// cheaper than a heap allocation per position.
-func (b Board) AppendFastFen(dst []byte) []byte {
-	gap := byte(0)
-	for _, p := range b.Squares {
-		if p == chess.None {
-			gap++
-			continue
-		}
-		if gap > 0 {
-			dst = append(dst, gap)
-			gap = 0
-		}
-		dst = append(dst, byte(p))
-	}
-	if gap > 0 {
-		dst = append(dst, gap)
-	}
-	return b.appendFlags(dst)
-}
+// MaxPackedBytes is the largest Packed record (start position).
+const MaxPackedBytes = 8 + maxPieces/2 + flagBytes
 
-// DecodeFastFen reads one position from src and returns it with the number of bytes consumed.
-func DecodeFastFen(src []byte) (Board, int) {
-	var b Board
-	i := 0
-	for sq := chess.Pos(0); sq < chess.FieldCount; {
-		c := src[i]
-		i++
-		if c < 64 {
-			sq += chess.Pos(c)
-			continue
-		}
-		b.put(sq, chess.Piece(c))
-		sq++
-	}
-	return b, i + b.readFlags(src[i:])
-}
+// PackedFixedBytes is the constant PackedFixed record size: two per 64-byte cache line.
+const PackedFixedBytes = 32
+
+const fixedFlagsOffset = 8 + maxPieces/2
 
 var nibblePiece = [12]chess.Piece{
 	chess.WhiteKing, chess.WhiteQueen, chess.WhiteRook, chess.WhiteBishop, chess.WhiteKnight, chess.WhitePawn,
 	chess.BlackKing, chess.BlackQueen, chess.BlackRook, chess.BlackBishop, chess.BlackKnight, chess.BlackPawn,
 }
 
-// AppendPacked appends the occupancy + nibble encoding of b to dst (value receiver, see AppendFastFen).
+// AppendPacked appends the variable-length encoding of b to dst.
+//
+// Value receiver on purpose: the Append functions are called through Codec
+// function values (indirect calls), and a *Board passed to an indirect call
+// escapes to the heap in Go's escape analysis. Passing 184 bytes by value is
+// cheaper than a heap allocation per position.
 func (b Board) AppendPacked(dst []byte) []byte {
 	occ := b.occupied()
 	dst = append(dst, byte(occ), byte(occ>>8), byte(occ>>16), byte(occ>>24), byte(occ>>32), byte(occ>>40), byte(occ>>48), byte(occ>>56))
@@ -108,15 +73,8 @@ func DecodePacked(src []byte) (Board, int) {
 	return b, i + b.readFlags(src[i:])
 }
 
-// PackedFixedBytes is the packed encoding in a constant 32-byte record: 8 bytes
-// occupancy, 16 nibble bytes (zero padded), 6 flag bytes, 2 bytes padding.
-// Two records per 64-byte cache line; records can be addressed by index.
-const PackedFixedBytes = 32
-
-const fixedFlagsOffset = 8 + maxPieces/2
-
-// AppendPackedFixed writes one PackedFixedBytes record directly.
-func (b Board) AppendPackedFixed(dst []byte) []byte {
+// PackedFixedRecord returns the constant 32-byte record of b.
+func (b Board) PackedFixedRecord() [PackedFixedBytes]byte {
 	var rec [PackedFixedBytes]byte
 	occ := b.occupied()
 	rec[0], rec[1], rec[2], rec[3] = byte(occ), byte(occ>>8), byte(occ>>16), byte(occ>>24)
@@ -137,6 +95,12 @@ func (b Board) AppendPackedFixed(dst []byte) []byte {
 		f[0] |= 1
 	}
 	f[1], f[2], f[3], f[4], f[5] = byte(b.EnPassant), byte(b.HalfmoveClock), byte(b.HalfmoveClock>>8), byte(b.MoveNumber), byte(b.MoveNumber>>8)
+	return rec
+}
+
+// AppendPackedFixed appends one PackedFixedBytes record.
+func (b Board) AppendPackedFixed(dst []byte) []byte {
+	rec := b.PackedFixedRecord()
 	return append(dst, rec[:]...)
 }
 

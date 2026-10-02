@@ -4,8 +4,8 @@ use super::board::Board;
 use super::encode::Codec;
 use crate::chess::{new_buffer, Move, MoveBuffer};
 
-// The perft variants mirror module mailbox exactly, see there for the descriptions.
-
+/// Classic recursive perft with make/unmake on a single board. Leaf nodes are
+/// bulk-counted: at depth 1 the number of legal moves is returned without playing them.
 pub fn perft_recursive(b: &mut Board, depth: u32) -> u64 {
     let mut buf = new_buffer();
     let n = b.gen_moves(&mut buf);
@@ -33,6 +33,9 @@ struct Frame {
 pub const FRAME_SIZE: usize = std::mem::size_of::<Frame>();
 pub const BOARD_SIZE: usize = std::mem::size_of::<Board>();
 
+/// List-based depth-first perft without recursion and without `undo_move`: every
+/// ply owns a copy of the board ("copy-make"). Measured as fast as or faster than
+/// make/unmake, see docs.
 pub fn perft_iterative(root: &Board, depth: u32) -> u64 {
     let depth = depth as usize;
     let mut stack = vec![Frame { board: *root, moves: new_buffer(), count: 0, next: 0 }; depth.max(1)];
@@ -72,6 +75,8 @@ pub fn perft_iterative(root: &Board, depth: u32) -> u64 {
     }
 }
 
+/// Breadth-first perft: every ply is a complete list of all positions of that ply
+/// (200-byte boards). Refuses to exceed `max_bytes`.
 pub fn perft_breadth(root: &Board, depth: u32, max_bytes: usize) -> Result<u64, String> {
     let mut level = vec![*root];
     let mut buf = new_buffer();
@@ -176,6 +181,9 @@ pub fn perft_breadth_encoded<C: Codec>(root: &Board, depth: u32, max_bytes: usiz
     Ok(total)
 }
 
+/// Splits the root moves over `workers` threads, each running `perft_recursive` on
+/// its own board copy. `thread::scope` lets the threads borrow `root` and the move
+/// list without `Arc`.
 pub fn perft_parallel(root: &Board, depth: u32, workers: usize) -> u64 {
     let mut buf = new_buffer();
     let n = root.gen_moves(&mut buf);
@@ -207,6 +215,8 @@ pub fn perft_parallel(root: &Board, depth: u32, workers: usize) -> u64 {
     total.load(Relaxed)
 }
 
+/// Prints the node count below every root move, the standard tool to locate move
+/// generator bugs by comparing with another engine.
 pub fn perft_divide(b: &mut Board, depth: u32) -> u64 {
     let mut buf = new_buffer();
     let n = b.gen_moves(&mut buf);

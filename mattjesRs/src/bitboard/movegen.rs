@@ -6,8 +6,9 @@ use crate::chess::{Move, MoveBuffer, Piece, Pos, BLACK_KINGSIDE, BLACK_QUEENSIDE
 impl Board {
     /// Writes all legal moves of the side to move into `buf` and returns their count.
     ///
-    /// Unlike the mailbox generator no move is ever made and taken back, so this
-    /// only needs `&self`. Legality comes from three bit sets computed once per position:
+    /// No move is ever made and taken back to test legality (the classic mailbox
+    /// approach), so this only needs `&self`. Legality comes from three bit sets
+    /// computed once per position:
     ///   - danger: every square the opponent attacks (with our king removed, so a
     ///     slider's attack continues "through" the king). King moves avoid it.
     ///   - checkers: opponent pieces attacking our king. Double check allows only

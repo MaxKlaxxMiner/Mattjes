@@ -1,13 +1,21 @@
-//! Compact position encodings for storing many positions (position lists,
-//! later hash/persistence experiments). Both are variable-length and end with
-//! the same 6 flag bytes: side+castling, en passant, halfmove clock, move number.
+//! Compact position encoding for storing many positions (position lists, later
+//! hash/persistence experiments): the 8-byte occupancy followed by one nibble
+//! (color*6 + kind, 0..11) per occupied square in bit order, then 6 flag bytes
+//! (side+castling, en passant, halfmove clock, move number).
+//!
+//! `Packed` is variable-length (19 bytes for 6 pieces, 30 for the start position,
+//! which is the maximum because at most 32 pieces = 16 nibble bytes exist).
+//! `PackedFixed` pads the same data to a constant 32-byte record for index-based
+//! access. Milestone 1 measured variable as ~10 % faster for sequential streams.
 
 use super::bits::*;
 use super::board::Board;
 use super::tables::{Tables, TABLES};
-use crate::chess::{Castling, Piece, Pos, ALL_CASTLING, FIELD_COUNT};
+use crate::chess::{Castling, Piece, Pos, ALL_CASTLING};
 
 const FLAG_BYTES: usize = 6;
+const MAX_PIECES: usize = 32;
+const FIXED_FLAGS_OFFSET: usize = 8 + MAX_PIECES / 2;
 
 /// A compact encoding, selected at compile time (monomorphized) by `perft_breadth_encoded`.
 pub trait Codec {
@@ -18,62 +26,6 @@ pub trait Codec {
     /// Reads one position from the start of `src` and returns it with the bytes consumed.
     fn decode(src: &[u8]) -> (Board, usize);
 }
-
-/// The run-length encoding from the old C# code (GetFastFen): one byte per piece
-/// (always >= 0x41) and one count byte (< 64) per gap of empty squares.
-/// Start position 39 bytes, typical middlegame ~50, late endgame ~20.
-pub struct FastFen;
-
-impl Codec for FastFen {
-    const NAME: &'static str = "fastfen";
-    const MAX_BYTES: usize = FIELD_COUNT + FLAG_BYTES;
-
-    fn append(b: &Board, dst: &mut Vec<u8>) {
-        let mut gap = 0u8;
-        for &p in &b.squares {
-            if p == Piece::NONE {
-                gap += 1;
-                continue;
-            }
-            if gap > 0 {
-                dst.push(gap);
-                gap = 0;
-            }
-            dst.push(p.0);
-        }
-        if gap > 0 {
-            dst.push(gap);
-        }
-        append_flags(b, dst);
-    }
-
-    fn decode(src: &[u8]) -> (Board, usize) {
-        let t: &Tables = &TABLES;
-        let mut b = Board::empty();
-        let mut i = 0;
-        let mut sq = 0usize;
-        while sq < FIELD_COUNT {
-            let c = src[i];
-            i += 1;
-            if c < 64 {
-                sq += c as usize;
-                continue;
-            }
-            b.put(t, Pos(sq as i8), Piece(c));
-            sq += 1;
-        }
-        i += read_flags(t, &mut b, &src[i..]);
-        (b, i)
-    }
-}
-
-/// The usual bitboard encoding: the 8-byte occupancy followed by one nibble
-/// (color*6 + kind, 0..11) per occupied square in bit order.
-/// At most 32 pieces = 16 nibble bytes, so the start position (30 bytes) is the
-/// maximum; 6 pieces take 17 bytes.
-pub struct Packed;
-
-const MAX_PIECES: usize = 32;
 
 const NIBBLE_PIECE: [Piece; 12] = [
     Piece::WHITE_KING,
@@ -112,6 +64,9 @@ fn decode_packed_pieces(t: &Tables, src: &[u8]) -> (Board, usize) {
     (b, i)
 }
 
+/// Variable-length packed encoding.
+pub struct Packed;
+
 impl Codec for Packed {
     const NAME: &'static str = "packed";
     const MAX_BYTES: usize = 8 + MAX_PIECES / 2 + FLAG_BYTES;
@@ -142,8 +97,6 @@ impl Codec for Packed {
 /// bytes (zero padded), 6 flag bytes, 2 bytes padding. Two records per 64-byte
 /// cache line; records can be addressed by index.
 pub struct PackedFixed;
-
-const FIXED_FLAGS_OFFSET: usize = 8 + MAX_PIECES / 2;
 
 /// One PackedFixed record as a stack array (no allocation).
 pub fn packed_fixed_record(b: &Board) -> [u8; PackedFixed::MAX_BYTES] {

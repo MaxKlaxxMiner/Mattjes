@@ -6,7 +6,6 @@ import (
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
-	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mailbox"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/perft"
 )
 
@@ -17,65 +16,9 @@ func workersOrCPUs(workers int) int {
 	return workers
 }
 
-// --- mailbox generator ---
-
-func mailboxPerftRecursive(maxNodes uint64) {
-	perft.Run("mailbox / recursive (make-unmake)", func(fen string, depth int) (uint64, error) {
-		b, err := mailbox.FromFEN(fen)
-		if err != nil {
-			return 0, err
-		}
-		return mailbox.PerftRecursive(&b, depth), nil
-	}, maxNodes)
-}
-
-func mailboxPerftIterative(maxNodes uint64) {
-	fmt.Printf("frame size per ply: %d bytes (board %d bytes)\n", mailbox.FrameSize, mailbox.BoardSize)
-	perft.Run("mailbox / iterative (explicit stack, copy-make)", func(fen string, depth int) (uint64, error) {
-		b, err := mailbox.FromFEN(fen)
-		if err != nil {
-			return 0, err
-		}
-		return mailbox.PerftIterative(&b, depth), nil
-	}, maxNodes)
-}
-
-func mailboxPerftBreadth(maxNodes uint64, maxMB int) {
-	fmt.Printf("board size: %d bytes, memory limit: %d MB\n", mailbox.BoardSize, maxMB)
-	perft.Run("mailbox / breadth-first (full position lists per ply)", func(fen string, depth int) (uint64, error) {
-		b, err := mailbox.FromFEN(fen)
-		if err != nil {
-			return 0, err
-		}
-		return mailbox.PerftBreadth(&b, depth, maxMB<<20)
-	}, maxNodes)
-}
-
-func mailboxPerftParallel(maxNodes uint64, workers int) {
-	workers = workersOrCPUs(workers)
-	perft.Run(fmt.Sprintf("mailbox / parallel root split (%d workers)", workers), func(fen string, depth int) (uint64, error) {
-		b, err := mailbox.FromFEN(fen)
-		if err != nil {
-			return 0, err
-		}
-		return mailbox.PerftParallel(&b, depth, workers), nil
-	}, maxNodes)
-}
-
-func mailboxDivide(fen string, depth int) {
-	b, err := mailbox.FromFEN(fen)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(b.String())
-	fmt.Printf("\ndivide depth %d:\n", depth)
-	mailbox.PerftDivide(&b, depth)
-}
-
-// --- bitboard generator ---
-
 func bitboardInfo() {
-	fmt.Printf("bitboard tables: %d magic entries (%d KB), init %s\n", bitboard.AttackTableSize, bitboard.AttackTableSize*8>>10, bitboard.InitDuration)
+	fmt.Printf("bitboard tables: %d magic entries (%d KB), init %s, zobrist %d bit, board %d bytes\n",
+		bitboard.AttackTableSize, bitboard.AttackTableSize*8>>10, bitboard.InitDuration, bitboard.KeyWords*64, bitboard.BoardSize)
 }
 
 func bitboardPerftRecursive(maxNodes uint64) {
@@ -91,7 +34,7 @@ func bitboardPerftRecursive(maxNodes uint64) {
 
 func bitboardPerftIterative(maxNodes uint64) {
 	bitboardInfo()
-	fmt.Printf("frame size per ply: %d bytes (board %d bytes)\n", bitboard.FrameSize, bitboard.BoardSize)
+	fmt.Printf("frame size per ply: %d bytes\n", bitboard.FrameSize)
 	perft.Run("bitboard / iterative (explicit stack, copy-make)", func(fen string, depth int) (uint64, error) {
 		b, err := bitboard.FromFEN(fen)
 		if err != nil {
@@ -103,7 +46,7 @@ func bitboardPerftIterative(maxNodes uint64) {
 
 func bitboardPerftBreadth(maxNodes uint64, maxMB int) {
 	bitboardInfo()
-	fmt.Printf("board size: %d bytes, memory limit: %d MB\n", bitboard.BoardSize, maxMB)
+	fmt.Printf("memory limit: %d MB\n", maxMB)
 	perft.Run("bitboard / breadth-first (full position lists per ply)", func(fen string, depth int) (uint64, error) {
 		b, err := bitboard.FromFEN(fen)
 		if err != nil {
@@ -125,10 +68,6 @@ func bitboardPerftBreadthEncoded(maxNodes uint64, maxMB int, codec bitboard.Code
 	}, maxNodes)
 }
 
-func bitboardPerftBreadthFastFen(maxNodes uint64, maxMB int) {
-	bitboardPerftBreadthEncoded(maxNodes, maxMB, bitboard.FastFenCodec)
-}
-
 func bitboardPerftBreadthPacked(maxNodes uint64, maxMB int) {
 	bitboardPerftBreadthEncoded(maxNodes, maxMB, bitboard.PackedCodec)
 }
@@ -137,7 +76,8 @@ func bitboardPerftBreadthPackedFixed(maxNodes uint64, maxMB int) {
 	bitboardPerftBreadthEncoded(maxNodes, maxMB, bitboard.PackedFixedCodec)
 }
 
-// bitboardEncodeRoundtrip checks both codecs on all reference positions one move deep.
+// bitboardEncodeRoundtrip checks both codecs (including the Zobrist key) on all
+// reference positions one move deep.
 func bitboardEncodeRoundtrip() {
 	for _, p := range chess.PerftPositions {
 		root, err := bitboard.FromFEN(p.FEN)
@@ -147,7 +87,7 @@ func bitboardEncodeRoundtrip() {
 		for _, m := range root.Moves() {
 			b := root
 			b.DoMove(m)
-			for _, codec := range []bitboard.Codec{bitboard.FastFenCodec, bitboard.PackedCodec, bitboard.PackedFixedCodec} {
+			for _, codec := range []bitboard.Codec{bitboard.PackedCodec, bitboard.PackedFixedCodec} {
 				enc := codec.Append(b, nil)
 				dec, n := codec.Decode(enc)
 				if n != len(enc) || dec != b {
@@ -155,8 +95,7 @@ func bitboardEncodeRoundtrip() {
 				}
 			}
 		}
-		enc := root.AppendFastFen(nil)
-		fmt.Printf("%-36s fastfen %2d bytes, packed %2d bytes\n", p.Name, len(enc), len(root.AppendPacked(nil)))
+		fmt.Printf("%-36s packed %2d bytes\n", p.Name, len(root.AppendPacked(nil)))
 	}
 	fmt.Println("roundtrip ok")
 }

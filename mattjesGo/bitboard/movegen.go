@@ -4,8 +4,8 @@ import "github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 
 // GenMoves writes all legal moves of the side to move into buf and returns their count.
 //
-// Unlike the mailbox generator no move is ever made and taken back. Legality
-// comes from three bit sets computed once per position:
+// No move is ever made and taken back to test legality (the classic mailbox
+// approach). Legality comes from three bit sets computed once per position:
 //   - danger: every square the opponent attacks (with our king removed, so a
 //     slider's attack continues "through" the king). King moves avoid it.
 //   - checkers: opponent pieces attacking our king. Double check allows only

@@ -1,5 +1,10 @@
 # Milestone 1: Mailbox-Generator in Go, Perft-Ergebnisse
 
+> **Historisch.** Das Mailbox-Package wurde nach Abschluss von Milestone 2 aus
+> beiden Sprachen entfernt (Faktor 7 bis 9 langsamer als der Bitboard-Generator,
+> siehe `m1-bitboard-perft.md`). Der Code liegt in der Git-Historie vor dem
+> Aufräum-Commit.
+
 Stand: 2026-10-02, Go 1.26.3, Windows/amd64, 12 logische CPUs, Maschine ohne
 Hintergrundlast. (Eine erste Messreihe lief versehentlich parallel zu einer
 Stockfish-Engine; die yacboard-Baseline war dadurch um ca. 40 % zu niedrig und

@@ -1,5 +1,12 @@
 # Milestone 2: Hash-Keys
 
+> **Teilweise historisch.** Nach der Auswertung wurden CRC64, der exakte
+> 32-Byte-Key als eigener Typ, die gekürzten Keys und die Key-Breiten-Schalter
+> (Build-Tags/Features) wieder entfernt. Geblieben sind der feste 128-Bit-Zobrist
+> und zwei Regressionstests: `bitboardHashVerify` (inkrementell gegen
+> Vollberechnung) und `bitboardUniquePositions` (OEIS-Werte, Zobrist-Kollisionen
+> unter den eindeutigen Stellungen). Der Vergleichscode liegt in der Git-Historie.
+
 Stand: 2026-10-02, Go 1.26.3, Rust 1.95, Windows/amd64, 12 logische CPUs,
 Maschine ohne Hintergrundlast. Alle Experimente auf dem Bitboard-Generator.
 
@@ -149,10 +156,9 @@ Kollisionen, Verteilung) sind in beiden Sprachen byteidentisch.
 
 ## Entscheidung für Milestone 3
 
-- **Zobrist 64 Bit inkrementell** als Arbeitsschlüssel und Index-Quelle.
-- **128 Bit** als Option behalten (Compile-Zeit-Schalter), um in der TT die
-  Falsch-Positiv-Rate gegen 64 Bit zu messen. Praktisch misst man dort den
-  Unterschied zwischen "sehr selten" und "nie".
-- **Exakter 32-Byte-Key** als Verifikation in der TT: Wo Korrektheit zählt
-  (Mattbeweis), wird der Eintrag mit dem vollen Key verglichen, nicht nur mit
-  dem Hash. Kostet 32 statt 8 Byte pro Eintrag, dafür keine falschen Treffer.
+- **Zobrist 128 Bit inkrementell, fest.** Index aus dem ersten Wort, Verifikation
+  über beide Wörter. Der 32-Byte-Vollkey ist für die Praxis zu teuer pro Eintrag
+  und bringt gegenüber 128 Bit nichts Messbares; kürzen auf 64 Bit kann man
+  später immer noch, wenn Tabellenspeicher knapp wird.
+- Speedcheck nach dem Aufräumen (nur noch Bitboard, 128-Bit-Key, kanonisches EP):
+  Go 189,2 Mn/s, Rust 267,5 Mn/s auf der 805-Mio.-Knoten-Suite.
