@@ -10,6 +10,13 @@ use crate::chess::PERFT_POSITIONS;
 /// Verifies `f` against all reference positions, skipping depths whose expected
 /// node count exceeds `max_nodes`. Returns false if any count was wrong.
 pub fn run(title: &str, f: impl Fn(&str, u32) -> Result<u64, String>, max_nodes: u64) -> bool {
+    run_prepared(title, || {}, f, max_nodes)
+}
+
+/// `run` with a hook that runs before every (position, depth) outside the measured
+/// time, e.g. to clear a transposition table (a 1 GB memset would otherwise show
+/// up as perft time).
+pub fn run_prepared(title: &str, prepare: impl Fn(), f: impl Fn(&str, u32) -> Result<u64, String>, max_nodes: u64) -> bool {
     println!("=== {} ===", title);
     let mut ok = true;
     let mut total_nodes = 0u64;
@@ -21,6 +28,7 @@ pub fn run(title: &str, f: impl Fn(&str, u32) -> Result<u64, String>, max_nodes:
             if expected > max_nodes {
                 break;
             }
+            prepare();
 
             let alloc_before = alloc_stats::total_allocated();
             let start = Instant::now();

@@ -62,9 +62,10 @@ pub fn perft_tt<T: TransTable>(b: &mut Board, depth: u32, t: &mut T) -> u64 {
 }
 
 /// Runs the reference perft suite with a transposition table of the given size and
-/// layout. The table is cleared before every (position, depth), so the speedup
-/// comes only from transpositions inside one run. Prints hit rate, replacements
-/// and the near-miss statistics for the key-size question.
+/// layout. The table is cleared before every (position, depth) outside the
+/// measured time, so the speedup comes only from transpositions inside one run.
+/// Prints hit rate, replacements and the near-miss statistics for the key-size
+/// question.
 pub fn bitboard_perft_tt(max_nodes: u64, size_mb: usize, bucketed: bool) {
     if bucketed {
         run_perft_tt("4-way bucket", tt::Buckets::new(size_mb), max_nodes, size_mb);
@@ -74,16 +75,16 @@ pub fn bitboard_perft_tt(max_nodes: u64, size_mb: usize, bucketed: bool) {
 }
 
 fn run_perft_tt<T: TransTable>(name: &str, t: T, max_nodes: u64, size_mb: usize) {
+    bitboard::init_duration(); // build the lazy tables before the first timed run
     let slots = t.slots();
     let value_bits = t.value_bits();
     let table = RefCell::new(t);
-    perft::run(
+    perft::run_prepared(
         &format!("bitboard / perft with {} TT, {} MB = {} entries, {} value bits", name, size_mb, group(slots as u64), value_bits),
+        || table.borrow_mut().clear(),
         |fen, depth| {
             let mut b = Board::from_fen(fen)?;
-            let mut t = table.borrow_mut();
-            t.clear();
-            Ok(perft_tt(&mut b, depth, &mut *t))
+            Ok(perft_tt(&mut b, depth, &mut *table.borrow_mut()))
         },
         max_nodes,
     );

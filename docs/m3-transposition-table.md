@@ -82,29 +82,33 @@ N Blätter":
   nur die 20 Kinder der Wurzel (je über 100 Mio.) und die Wurzel selbst.
 - Blätter werden weiter per Bulk-Counting gezählt, Einträge beginnen bei Tiefe 2.
 - Die Tabelle wird vor jedem (Stellung, Tiefe)-Lauf geleert, der Gewinn stammt
-  nur aus Transpositionen innerhalb eines Laufs.
+  nur aus Transpositionen innerhalb eines Laufs. Das Leeren läuft über den
+  Vorbereitungs-Hook des Runners (`perft.RunPrepared` / `perft::run_prepared`)
+  **außerhalb** der gemessenen Zeit. In einer ersten Fassung lag es innerhalb,
+  und 40 Läufe mit einer 1-GB-Tabelle waren 40 GB `memset`, rund 3 s, die der
+  Tabelle als Perft-Zeit angelastet wurden.
 
 Gesamte Referenz-Suite bis 4 Mrd. Knoten pro Stellung (8,42 Mrd. Knoten):
 
 | Variante | Value-Bits | Go | Rust | Trefferquote | Ersetzungen |
 |---|---|---|---|---|---|
 | ohne TT (rekursiv, make/unmake) | | 49,72 s = 169 Mn/s | 36,88 s = 228 Mn/s | | |
-| `Table` 16 MB (1 Mi Einträge) | 20 | 12,97 s = 649 Mn/s | 9,59 s = 878 Mn/s | 52,4 % | 1.071.289 |
-| `Buckets` 16 MB | 18 | 11,91 s = 707 Mn/s | 8,81 s = 956 Mn/s | 52,1 % | 320.156 |
-| `Table` 256 MB (16 Mi Einträge) | 24 | 12,40 s = 679 Mn/s | 9,35 s = 901 Mn/s | 52,5 % | 68.346 |
-| `Buckets` 256 MB | 22 | 12,40 s = 679 Mn/s | 9,39 s = 898 Mn/s | 52,5 % | 36 |
-| `Buckets` 1 GB (64 Mi Einträge) | 24 | 13,92 s = 605 Mn/s | 10,70 s = 788 Mn/s | 52,5 % | 0 |
+| `Table` 16 MB (1 Mi Einträge) | 20 | 12,90 s = 653 Mn/s | 9,14 s = 922 Mn/s | 52,4 % | 1.071.289 |
+| `Buckets` 16 MB | 18 | 11,75 s = 717 Mn/s | 8,80 s = 957 Mn/s | 52,1 % | 320.156 |
+| `Table` 256 MB (16 Mi Einträge) | 24 | 11,90 s = 708 Mn/s | 9,14 s = 922 Mn/s | 52,5 % | 68.346 |
+| `Buckets` 256 MB | 22 | 11,87 s = 710 Mn/s | 9,03 s = 933 Mn/s | 52,5 % | 36 |
+| `Table` 1 GB (64 Mi Einträge) | 26 | 12,18 s = 692 Mn/s | 9,24 s = 912 Mn/s | 52,5 % | 17.293 |
+| `Buckets` 1 GB | 24 | 12,20 s = 691 Mn/s | 9,35 s = 900 Mn/s | 52,5 % | 0 |
 
 "Mn/s" ist hier die **effektive** Rate (gezählte Blätter pro Sekunde), nicht die
-Zahl besuchter Knoten. perft(7) der Grundstellung fällt von 19,0 s auf 4,1 s
+Zahl besuchter Knoten. perft(7) der Grundstellung fällt von 19,0 s auf 3,9 s
 (Go) bzw. von 13,3 s auf 3,0 s (Rust), also Faktor 4 bis 5 bei nur 52 %
 Trefferquote, weil jeder Treffer einen ganzen Teilbaum spart.
 
-Die 1-GB-Tabelle ist in der Suite *langsamer*, obwohl sie nichts mehr ersetzen
-muss: Das Leeren vor jedem der 40 Läufe sind 40 GB `memset`, rund 1,5 s. In
-einer Suche wird nie geleert, dort zählt nur die perft(7)-Zeile (4,17 s gegen
-4,07 s, also im Rauschen). Lehre: Eine Tabelle, die größer ist als nötig,
-bringt nichts, und ihr Leeren hat einen Preis.
+Die 1-GB-Tabellen sind trotz null Ersetzungen 2 bis 3 % langsamer als 256 MB.
+Das ist der Preis zufälliger Zugriffe auf einen viermal größeren Speicherbereich
+(TLB-Fehlzugriffe), den die wenigen vermiedenen Ersetzungen nicht aufwiegen.
+Lehre: Eine Tabelle, die größer ist als nötig, bringt nichts und kostet etwas.
 
 Die Zähler (Probes, Treffer, Stores, Ersetzungen, Fremdvergleiche) sind in Go und
 Rust **bis auf die letzte Stelle identisch**, der Port ist also exakt.
@@ -112,8 +116,8 @@ Rust **bis auf die letzte Stelle identisch**, der Port ist also exakt.
 ### Direkt gegen Buckets
 
 Bei knapper Tabelle (16 MB für bis zu 3,1 Mio. Stores pro Lauf) fallen die
-Ersetzungen mit Buckets von 1,07 Mio. auf 320 Tsd., die Suite wird 8 bis 9 %
-schneller, obwohl die Buckets zwei Value-Bits weniger haben und deshalb einige
+Ersetzungen mit Buckets von 1,07 Mio. auf 320 Tsd., die Suite wird 4 % (Rust)
+bis 9 % (Go) schneller, obwohl die Buckets zwei Value-Bits weniger haben und deshalb einige
 größere Teilbäume nicht speichern können. Ist die Tabelle groß genug (256 MB,
 Füllgrad unter 20 %), sind beide Layouts gleich schnell, der Scan über vier
 Einträge kostet nichts Messbares. Für die Suche, deren Tabelle immer zu klein
@@ -238,7 +242,8 @@ durchsuchen muss.
   falschen Treffer, 24 Value-Bits bei 16 Mi Slots. Die Keygrößen-Messung zeigt,
   dass 16 oder 32 Prüfbits für Beweise messbar nicht reichen.
 - Buckets zahlen sich aus, sobald die Tabelle zu klein ist, und kosten sonst nichts.
-- Eine zu große Tabelle bringt nichts und ihr Leeren hat einen Preis.
+- Eine zu große Tabelle bringt nichts und kostet 2 bis 3 % (TLB). Ihr Leeren
+  gehört nicht in die Messung, dafür hat der Runner einen Vorbereitungs-Hook.
 - Persistenz ist mit Rohdump trivial und schnell; der Fingerprint ist Pflicht.
 - Für Deduplizierung schlägt das exakte Hash-Set das Sortieren, in Go deutlich.
 - Go gegen Rust bei identischem Code: Rust 1,3- bis 1,4-mal schneller, die

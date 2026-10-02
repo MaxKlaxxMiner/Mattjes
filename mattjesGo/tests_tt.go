@@ -71,9 +71,10 @@ func perftTT(b *bitboard.Board, depth int, t transTable) uint64 {
 }
 
 // bitboardPerftTT runs the reference perft suite with a transposition table of the
-// given size and layout. The table is cleared before every (position, depth), so
-// the speedup comes only from transpositions inside one run. Prints hit rate,
-// replacements and the near-miss statistics for the key-size question.
+// given size and layout. The table is cleared before every (position, depth)
+// outside the measured time, so the speedup comes only from transpositions inside
+// one run. Prints hit rate, replacements and the near-miss statistics for the
+// key-size question.
 func bitboardPerftTT(maxNodes uint64, sizeMB int, bucketed bool) {
 	var t transTable
 	name := "direct-mapped"
@@ -83,12 +84,11 @@ func bitboardPerftTT(maxNodes uint64, sizeMB int, bucketed bool) {
 	} else {
 		t = tt.New(sizeMB)
 	}
-	perft.Run(fmt.Sprintf("bitboard / perft with %s TT, %d MB = %s entries, %d value bits", name, sizeMB, perftGroup(uint64(t.Slots())), bits.Len64(t.MaxValue())), func(fen string, depth int) (uint64, error) {
+	perft.RunPrepared(fmt.Sprintf("bitboard / perft with %s TT, %d MB = %s entries, %d value bits", name, sizeMB, perftGroup(uint64(t.Slots())), bits.Len64(t.MaxValue())), t.Clear, func(fen string, depth int) (uint64, error) {
 		b, err := bitboard.FromFEN(fen)
 		if err != nil {
 			return 0, err
 		}
-		t.Clear()
 		return perftTT(&b, depth, t), nil
 	}, maxNodes)
 	printTTStats(t.Counters(), t.Used(), t.Slots())

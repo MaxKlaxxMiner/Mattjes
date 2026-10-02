@@ -18,6 +18,13 @@ type Func func(fen string, depth int) (uint64, error)
 // Run verifies fn against all reference positions, skipping depths whose
 // expected node count exceeds maxNodes. It returns false if any count was wrong.
 func Run(title string, fn Func, maxNodes uint64) bool {
+	return RunPrepared(title, nil, fn, maxNodes)
+}
+
+// RunPrepared is Run with a hook that runs before every (position, depth) outside
+// the measured time, e.g. to clear a transposition table (a 1 GB memset would
+// otherwise show up as perft time).
+func RunPrepared(title string, prepare func(), fn Func, maxNodes uint64) bool {
 	fmt.Printf("=== %s ===\n", title)
 	ok := true
 	var totalNodes uint64
@@ -29,6 +36,9 @@ func Run(title string, fn Func, maxNodes uint64) bool {
 			expected := p.Nodes[depth-1]
 			if expected > maxNodes {
 				break
+			}
+			if prepare != nil {
+				prepare()
 			}
 
 			var before, after runtime.MemStats
