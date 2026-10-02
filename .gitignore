@@ -1,0 +1,20 @@
+# build outputs
+runMattjesGo.exe
+runMattjesRs.exe
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+mattjesRs/target/
+
+# IDE
+.idea/
+.vs/
+*.iml
+
+# profiling / benchmark dumps
+*.prof
+*.pprof
+*.trace

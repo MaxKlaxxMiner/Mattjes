@@ -1,0 +1,15 @@
+[package]
+name = "mattjes"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Mattjes - a chess engine specialized in mate and draw search"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = true
