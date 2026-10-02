@@ -144,10 +144,10 @@ func (b *Board) addPromotions(buf *MoveBuffer, n int, m Move, us chess.Piece) in
 // addCastling adds legal castling moves. The king may not be in check, pass through
 // or land on an attacked square, and the squares between king and rook must be empty.
 func (b *Board) addCastling(buf *MoveBuffer, n int, us, them chess.Piece) int {
-	kingside, queenside := WhiteKingside, WhiteQueenside
+	kingside, queenside := chess.WhiteKingside, chess.WhiteQueenside
 	king := chess.Pos(60)
 	if us == chess.Black {
-		kingside, queenside = BlackKingside, BlackQueenside
+		kingside, queenside = chess.BlackKingside, chess.BlackQueenside
 		king = 4
 	}
 	if b.Castling&(kingside|queenside) == 0 || b.IsAttacked(king, them) {

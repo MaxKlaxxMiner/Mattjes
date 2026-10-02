@@ -24,7 +24,7 @@ var knightTargets [chess.FieldCount][]chess.Pos
 var kingTargets [chess.FieldCount][]chess.Pos
 
 // castleClear[sq] holds the castling rights that are lost when a piece moves from or to sq.
-var castleClear [chess.FieldCount]Castling
+var castleClear [chess.FieldCount]chess.Castling
 
 func init() {
 	min := func(a, b int) int {
@@ -52,10 +52,10 @@ func init() {
 		}
 	}
 
-	castleClear[0] = BlackQueenside
-	castleClear[4] = BlackKingside | BlackQueenside
-	castleClear[7] = BlackKingside
-	castleClear[56] = WhiteQueenside
-	castleClear[60] = WhiteKingside | WhiteQueenside
-	castleClear[63] = WhiteKingside
+	castleClear[0] = chess.BlackQueenside
+	castleClear[4] = chess.BlackKingside | chess.BlackQueenside
+	castleClear[7] = chess.BlackKingside
+	castleClear[56] = chess.WhiteQueenside
+	castleClear[60] = chess.WhiteKingside | chess.WhiteQueenside
+	castleClear[63] = chess.WhiteKingside
 }

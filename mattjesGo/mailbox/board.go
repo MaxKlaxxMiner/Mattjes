@@ -4,20 +4,7 @@
 package mailbox
 
 import (
-	"strings"
-
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
-)
-
-// Castling rights as a bit set.
-type Castling uint8
-
-const (
-	WhiteKingside Castling = 1 << iota
-	WhiteQueenside
-	BlackKingside
-	BlackQueenside
-	AllCastling = WhiteKingside | WhiteQueenside | BlackKingside | BlackQueenside
 )
 
 // Board is a complete position. It is a plain value and can be copied freely.
@@ -26,7 +13,7 @@ type Board struct {
 	WhiteKing     chess.Pos
 	BlackKing     chess.Pos
 	EnPassant     chess.Pos // target square of a possible en passant capture, or NoPos
-	Castling      Castling
+	Castling      chess.Castling
 	WhiteMove     bool
 	HalfmoveClock uint16
 	MoveNumber    uint16
@@ -42,8 +29,64 @@ func (b *Board) State() State {
 
 func (b *Board) restoreState(s State) {
 	b.EnPassant = chess.Pos(int8(uint8(s)))
-	b.Castling = Castling(s>>8) & AllCastling
+	b.Castling = chess.Castling(s>>8) & chess.AllCastling
 	b.HalfmoveClock = uint16(s >> 16)
+}
+
+// New returns the start position.
+func New() Board {
+	b, _ := FromFEN(chess.StartFEN)
+	return b
+}
+
+// FromFEN parses a FEN string via chess.ParseFEN.
+func FromFEN(fen string) (Board, error) {
+	s, err := chess.ParseFEN(fen)
+	if err != nil {
+		return Board{}, err
+	}
+	return FromSetup(&s), nil
+}
+
+// FromSetup builds a board from a validated setup.
+func FromSetup(s *chess.Setup) Board {
+	var b Board
+	b.Clear()
+	for pos := chess.Pos(0); pos < chess.FieldCount; pos++ {
+		if p := s.Squares[pos]; p != chess.None {
+			b.SetField(pos, p)
+		}
+	}
+	b.WhiteMove = s.WhiteMove
+	b.Castling = s.Castling
+	b.EnPassant = s.EnPassant
+	b.HalfmoveClock = s.HalfmoveClock
+	b.MoveNumber = s.MoveNumber
+	return b
+}
+
+// Setup converts the board back to the representation-independent form.
+func (b *Board) Setup() chess.Setup {
+	return chess.Setup{
+		Squares:       b.Fields,
+		WhiteMove:     b.WhiteMove,
+		Castling:      b.Castling,
+		EnPassant:     b.EnPassant,
+		HalfmoveClock: b.HalfmoveClock,
+		MoveNumber:    b.MoveNumber,
+	}
+}
+
+// FEN returns the position as FEN string.
+func (b *Board) FEN() string {
+	s := b.Setup()
+	return s.FEN()
+}
+
+// String renders the board as ASCII diagram followed by the FEN.
+func (b *Board) String() string {
+	s := b.Setup()
+	return s.String()
 }
 
 // Clear empties the board. White to move, no castling, no en passant.
@@ -76,19 +119,4 @@ func (b *Board) KingPos(color chess.Piece) chess.Pos {
 		return b.WhiteKing
 	}
 	return b.BlackKing
-}
-
-// String renders the board as ASCII diagram followed by the FEN.
-func (b *Board) String() string {
-	var sb strings.Builder
-	for y := 0; y < chess.Height; y++ {
-		sb.WriteString("    ")
-		for x := 0; x < chess.Width; x++ {
-			sb.WriteByte(b.Fields[chess.PosFromXY(x, y)].Char())
-		}
-		sb.WriteByte('\n')
-	}
-	sb.WriteString("\nFEN: ")
-	sb.WriteString(b.FEN())
-	return sb.String()
 }

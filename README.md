@@ -53,10 +53,11 @@ test framework at this stage; that is intentional while the fundamentals are exp
 
 ## Roadmap
 
-1. **Move generator** in Go (minimalistic mailbox design, based on the author's
-   earlier [yacboard](https://github.com/MaxKlaxxMiner/huschiBoard) generator), verified
-   with perft. Both a classic recursive and a list-based variant, measured for speed
-   and memory. Then a Rust port, then bitboard-based generators as alternatives.
+1. **Move generators** in Go and Rust, verified with perft on the standard reference
+   positions: a minimalistic mailbox design (based on the author's earlier
+   [yacboard](https://github.com/MaxKlaxxMiner/huschiBoard)) and a magic-bitboard
+   generator with pin/check masks. Each in recursive, list-based and parallel perft
+   variants, measured for speed and memory. Results are in `docs/`.
 2. **Hash keys**: CRC64, Zobrist, 128-bit keys and full 256-bit collision-free keys compared.
 3. **Transposition tables** with different key sizes and optional persistence.
 4. **Mate and draw search**, possibly two-staged: a fast pre-search for likely results,

@@ -1,53 +1,7 @@
-use std::fmt;
-
 use super::board::*;
 use super::tables::*;
-use crate::chess::{Piece, Pos, FIELD_COUNT, WIDTH};
-
-/// A compact 4-byte move. Castling is a king move of two squares,
-/// en passant is a diagonal pawn move with `capture == NONE`.
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-pub struct Move {
-    pub from: Pos,
-    pub to: Pos,
-    /// Promotion piece (with color) or NONE.
-    pub promo: Piece,
-    /// Captured piece or NONE (also NONE for en passant).
-    pub capture: Piece,
-}
-
-impl Move {
-    pub const NONE: Move = Move { from: Pos::NONE, to: Pos::NONE, promo: Piece::NONE, capture: Piece::NONE };
-
-    const fn new(from: Pos, to: Pos, capture: Piece) -> Move {
-        Move { from, to, promo: Piece::NONE, capture }
-    }
-
-    /// The move in UCI notation like "e2e4" or "e7e8q".
-    pub fn uci(&self) -> String {
-        let mut s = format!("{}{}", self.from, self.to);
-        if self.promo != Piece::NONE {
-            s.push(self.promo.kind().to_char() as char);
-        }
-        s
-    }
-}
-
-impl fmt::Display for Move {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.uci())
-    }
-}
-
-/// Capacity of a move buffer. No legal position has more than 218 moves.
-pub const MAX_MOVES: usize = 256;
-
-/// A fixed-size, allocation-free move list.
-pub type MoveBuffer = [Move; MAX_MOVES];
-
-pub fn new_buffer() -> MoveBuffer {
-    [Move::NONE; MAX_MOVES]
-}
+use crate::chess::{new_buffer, Move, MoveBuffer, Piece, Pos, FIELD_COUNT, WIDTH};
+use crate::chess::{BLACK_KINGSIDE, BLACK_QUEENSIDE, WHITE_KINGSIDE, WHITE_QUEENSIDE};
 
 impl Board {
     /// Writes all legal moves of the side to move into `buf` and returns their count.

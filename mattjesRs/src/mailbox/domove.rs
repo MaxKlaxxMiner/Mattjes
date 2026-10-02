@@ -1,7 +1,6 @@
 use super::board::*;
-use super::movegen::Move;
 use super::tables::CASTLE_CLEAR;
-use crate::chess::{Piece, Pos, WIDTH};
+use crate::chess::{Move, Piece, Pos, WIDTH};
 
 impl Board {
     /// Plays a legal move. Save `state()` beforehand if you want to `undo_move`.

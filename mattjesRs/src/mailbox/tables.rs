@@ -2,8 +2,8 @@
 //! functions once during compilation, so the tables are plain static data in the
 //! binary and cost nothing at startup (Go builds the same tables in `init()`).
 
-use super::board::*;
 use crate::chess::{Pos, FIELD_COUNT, HEIGHT, WIDTH};
+use crate::chess::{BLACK_KINGSIDE, BLACK_QUEENSIDE, WHITE_KINGSIDE, WHITE_QUEENSIDE};
 
 /// Directions. The first four are orthogonal (rook), the last four diagonal (bishop).
 pub const DIR_N: usize = 0; // towards rank 8 (smaller index)

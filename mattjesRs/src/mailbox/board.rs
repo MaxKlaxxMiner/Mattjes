@@ -1,13 +1,6 @@
 use std::fmt;
 
-use crate::chess::{Piece, Pos, FIELD_COUNT, HEIGHT, WIDTH};
-
-/// Castling rights as a bit set.
-pub const WHITE_KINGSIDE: u8 = 1;
-pub const WHITE_QUEENSIDE: u8 = 2;
-pub const BLACK_KINGSIDE: u8 = 4;
-pub const BLACK_QUEENSIDE: u8 = 8;
-pub const ALL_CASTLING: u8 = 15;
+use crate::chess::{Castling, Piece, Pos, Setup, ALL_CASTLING, FIELD_COUNT, START_FEN};
 
 /// A complete position. `Copy` makes "copy-make" a plain assignment.
 #[derive(Clone, Copy, Debug)]
@@ -17,7 +10,7 @@ pub struct Board {
     pub black_king: Pos,
     /// Target square of a possible en passant capture, or `Pos::NONE`.
     pub en_passant: Pos,
-    pub castling: u8,
+    pub castling: Castling,
     pub white_move: bool,
     pub halfmove_clock: u16,
     pub move_number: u16,
@@ -40,6 +33,48 @@ impl Board {
             halfmove_clock: 0,
             move_number: 1,
         }
+    }
+
+    /// The start position.
+    pub fn new() -> Board {
+        Board::from_fen(START_FEN).expect("start FEN is valid")
+    }
+
+    /// Parses a FEN string via `Setup::parse`.
+    pub fn from_fen(fen: &str) -> Result<Board, String> {
+        Ok(Board::from_setup(&Setup::parse(fen)?))
+    }
+
+    /// Builds a board from a validated setup.
+    pub fn from_setup(s: &Setup) -> Board {
+        let mut b = Board::empty();
+        for (i, &p) in s.squares.iter().enumerate() {
+            if p != Piece::NONE {
+                b.set_field(Pos(i as i8), p);
+            }
+        }
+        b.white_move = s.white_move;
+        b.castling = s.castling;
+        b.en_passant = s.en_passant;
+        b.halfmove_clock = s.halfmove_clock;
+        b.move_number = s.move_number;
+        b
+    }
+
+    /// Converts the board back to the representation-independent form.
+    pub fn setup(&self) -> Setup {
+        Setup {
+            squares: self.fields,
+            white_move: self.white_move,
+            castling: self.castling,
+            en_passant: self.en_passant,
+            halfmove_clock: self.halfmove_clock,
+            move_number: self.move_number,
+        }
+    }
+
+    pub fn fen(&self) -> String {
+        self.setup().fen()
     }
 
     pub fn state(&self) -> State {
@@ -81,16 +116,15 @@ impl Board {
     }
 }
 
-/// Renders the board as ASCII diagram followed by the FEN.
+impl Default for Board {
+    fn default() -> Board {
+        Board::new()
+    }
+}
+
+/// ASCII diagram followed by the FEN.
 impl fmt::Display for Board {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for y in 0..HEIGHT as i32 {
-            write!(f, "    ")?;
-            for x in 0..WIDTH as i32 {
-                write!(f, "{}", self.fields[Pos::from_xy(x, y).idx()])?;
-            }
-            writeln!(f)?;
-        }
-        write!(f, "\nFEN: {}", self.fen())
+        write!(f, "{}", self.setup())
     }
 }

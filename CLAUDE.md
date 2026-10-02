@@ -48,8 +48,9 @@ Claude committet nicht selbst. Bei sinnvollen Abständen einen **Commit-Vorschla
 
 ## Code-Struktur (mattjesGo)
 
-- `chess/` – generator-unabhängiges Vokabular: `Piece`, `Pos`, Perft-Referenzstellungen. Wird von allen Brett-Darstellungen geteilt.
-- `mailbox/` – erster Generator (Milestone 1): 8x8-Mailbox mit Tabellen (`edgeDist`, `knightTargets`, …), `GenMoves` liefert legale Züge via Make/Check/Unmake, `DoMove`/`UndoMove(State)`, FEN, vier Perft-Varianten (`PerftRecursive`, `PerftIterative` copy-make, `PerftBreadth`, `PerftParallel`) und `PerftDivide` zum Debuggen.
+- `chess/` – generator-unabhängiges Vokabular: `Piece`, `Pos`, `Move`/`MoveBuffer`, `Castling`-Flags, `Setup` (validiertes FEN-Parsing, einzige Stelle, die Eingaben misstraut) und Perft-Referenzstellungen. Jedes Brett konvertiert per `FromSetup`/`Setup()`.
+- `mailbox/` – erster Generator (Milestone 1): 8x8-Mailbox mit Tabellen (`edgeDist`, `knightTargets`, …), `GenMoves` liefert legale Züge via Make/Check/Unmake, `DoMove`/`UndoMove(State)`, vier Perft-Varianten (`PerftRecursive`, `PerftIterative` copy-make, `PerftBreadth`, `PerftParallel`) und `PerftDivide` zum Debuggen. Referenz und Lernstand, wird nicht weiter optimiert.
+- `bitboard/` – zweiter Generator (Milestone 1): `Pieces[2][6]` + `ByColor[2]` + `Squares[64]`, Bit i = `Pos(i)` (a8 = Bit 0, Nord ist `>> 8`!). Magic Bitboards, beim Start gesucht (ca. 230 ms, `InitDuration`). Legale Generierung über `danger`/`checkers`/`pinned` ohne Make/Unmake, nur En passant mit explizitem Test. Gleiche Perft-API wie mailbox. **Basis für alle weiteren Milestones.** Faktor 7 bis 9 schneller als mailbox, siehe `docs/m1-bitboard-perft.md`.
 - `perft/` – Runner: prüft eine `Func(fen, depth)` gegen die Referenzdaten und druckt Zeit, Mn/s und Allokationen.
 - `tests_perft.go` + `main.go` – die ein-/auskommentierbaren Testläufe.
 - `docs/` – Messwerte und Erkenntnisse pro Milestone (z. B. `m1-mailbox-perft.md`). Neue Benchmarks dort eintragen, nicht in Commit-Messages.
@@ -58,7 +59,7 @@ Neue Generator-Ansätze bekommen ein eigenes Package neben `mailbox/` und hänge
 
 ## Code-Struktur (mattjesRs)
 
-Spiegelt mattjesGo eins zu eins: `src/chess/`, `src/mailbox/`, `src/perft/`, `src/tests_perft.rs`, `src/main.rs`. Gleiche Modulnamen, gleiche Funktionsnamen in snake_case (`gen_moves`, `do_move`, `perft_recursive`). Wer eine Änderung in einer Sprache macht, zieht sie in der anderen nach, damit die Gegenprüfung erhalten bleibt. Besonderheiten: `Piece`/`Pos` sind Newtypes mit Operator-Impls, Tabellen sind `const fn`, `perft/alloc_stats.rs` ersetzt den globalen Allokator zum Zählen der Allokationen. `#![allow(dead_code)]` im Crate-Root ist Absicht, weil immer nur ein Experiment aktiv ist.
+Spiegelt mattjesGo eins zu eins: `src/chess/`, `src/mailbox/`, `src/bitboard/`, `src/perft/`, `src/tests_perft.rs`, `src/main.rs`. Gleiche Modulnamen, gleiche Funktionsnamen in snake_case (`gen_moves`, `do_move`, `perft_recursive`). Wer eine Änderung in einer Sprache macht, zieht sie in der anderen nach, damit die Gegenprüfung erhalten bleibt. Besonderheiten: `Piece`/`Pos` sind Newtypes mit Operator-Impls, Mailbox-Tabellen sind `const fn`, Bitboard-Tabellen liegen in einem `LazyLock<Tables>` (Magic-Suche ist zu langsam für const-eval), heiße Funktionen holen sich `&TABLES` einmal pro Aufruf. `perft/alloc_stats.rs` ersetzt den globalen Allokator zum Zählen der Allokationen. `#![allow(dead_code)]` im Crate-Root ist Absicht, weil immer nur ein Experiment aktiv ist. Clippy soll warnungsfrei bleiben (`cargo clippy --release`).
 
 ## Referenzcode
 
