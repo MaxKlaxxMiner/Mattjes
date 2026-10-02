@@ -142,6 +142,7 @@ pub fn bitboard_encode_roundtrip() {
             b.do_move(m);
             check::<bitboard::FastFen>(&b, p.fen, m);
             check::<bitboard::Packed>(&b, p.fen, m);
+            check::<bitboard::PackedFixed>(&b, p.fen, m);
         }
         let (mut ff, mut pk) = (Vec::new(), Vec::new());
         bitboard::FastFen::append(&root, &mut ff);

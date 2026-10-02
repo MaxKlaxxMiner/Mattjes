@@ -113,6 +113,7 @@ type Codec struct {
 
 var FastFenCodec = Codec{"fastfen", MaxFastFenBytes, Board.AppendFastFen, DecodeFastFen}
 var PackedCodec = Codec{"packed", MaxPackedBytes, Board.AppendPacked, DecodePacked}
+var PackedFixedCodec = Codec{"packed-fixed", PackedFixedBytes, Board.AppendPackedFixed, DecodePackedFixed}
 
 // PerftBreadthEncoded is PerftBreadth with every ply stored as one byte stream
 // of compactly encoded positions instead of a slice of 184-byte boards.

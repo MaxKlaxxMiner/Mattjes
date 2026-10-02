@@ -133,6 +133,10 @@ func bitboardPerftBreadthPacked(maxNodes uint64, maxMB int) {
 	bitboardPerftBreadthEncoded(maxNodes, maxMB, bitboard.PackedCodec)
 }
 
+func bitboardPerftBreadthPackedFixed(maxNodes uint64, maxMB int) {
+	bitboardPerftBreadthEncoded(maxNodes, maxMB, bitboard.PackedFixedCodec)
+}
+
 // bitboardEncodeRoundtrip checks both codecs on all reference positions one move deep.
 func bitboardEncodeRoundtrip() {
 	for _, p := range chess.PerftPositions {
@@ -143,7 +147,7 @@ func bitboardEncodeRoundtrip() {
 		for _, m := range root.Moves() {
 			b := root
 			b.DoMove(m)
-			for _, codec := range []bitboard.Codec{bitboard.FastFenCodec, bitboard.PackedCodec} {
+			for _, codec := range []bitboard.Codec{bitboard.FastFenCodec, bitboard.PackedCodec, bitboard.PackedFixedCodec} {
 				enc := codec.Append(b, nil)
 				dec, n := codec.Decode(enc)
 				if n != len(enc) || dec != b {

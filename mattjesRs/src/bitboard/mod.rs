@@ -18,7 +18,7 @@ mod tables;
 #[allow(unused_imports)]
 pub use board::{Board, State};
 #[allow(unused_imports)]
-pub use encode::{Codec, FastFen, Packed};
+pub use encode::{Codec, FastFen, Packed, PackedFixed};
 #[allow(unused_imports)]
 pub use perft::{perft_breadth, perft_breadth_encoded, perft_divide, perft_iterative, perft_parallel, perft_recursive, BOARD_SIZE, FRAME_SIZE};
 #[allow(unused_imports)]

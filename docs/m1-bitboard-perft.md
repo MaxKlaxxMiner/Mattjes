@@ -156,6 +156,30 @@ mit Huffman-Codes pro Figur (Bauern 1 Bit statt 4), wie es Stockfish für
 Trainingsdaten tut (~32 Byte fix für jede Stellung), das lohnt erst, wenn der
 Speicher wirklich knapp wird.
 
+**Fixe Satzlänge ist langsamer, auch cache-line-optimiert.** Als Kontrolle
+wurde `PackedFixed` als direkter Schreiber in einen konstanten 32-Byte-Satz
+gebaut (8 Belegung + 16 Nibbles mit Null-Auffüllung + 6 Flags + 2 Padding, zwei
+Sätze pro 64-Byte-Cache-Line, Flags an fester Position). Die Obergrenze für
+packed ist 30 Byte, weil höchstens 32 Figuren = 16 Nibble-Bytes möglich sind;
+die Startstellung ist damit der größtmögliche Satz. Zweimal im Wechsel gemessen:
+
+| | packed (variabel, 19 bis 30 B) | packed-fixed (32 B) |
+|---|---|---|
+| Go | 128,9 / 129,3 Mn/s | 114,4 / 114,3 Mn/s |
+| Rust | 147,8 / 148,0 Mn/s | 138,7 / 139,4 Mn/s |
+| Kiwipete Tiefe 4, größte Ebene | 116 MB (29,9 B) | 125 MB (32 B) |
+| Pos 3 Tiefe 7, größte Ebene | 200 MB (19,0 B) | 337 MB (32 B) |
+
+Die variable Länge kostet nichts, weil `Decode` die Satzlänge ohnehin als
+Nebenprodukt liefert, es gibt keinen separaten Längen-Parse. Die fixe Länge
+kostet Speicherbandbreite, sobald Figuren fehlen (Pos 3: 1,7-mal mehr Bytes),
+und selbst bei vollem Brett (Kiwipete) bringt die Cache-Line-Ausrichtung nichts
+Messbares, weil der Strom ohnehin rein sequentiell gelesen wird und der
+Prefetcher das erledigt. Eine frühere Fassung, die packed aufrief und dann
+byteweise auffüllte, war noch einmal 5 % langsamer; die Kodierarbeit selbst ist
+also nicht der Unterschied. Fix lohnt erst, wenn wahlfreier Zugriff nötig ist
+(Index-Adressierung, Sortieren, Binärsuche), dann ist 32 Byte die richtige Wahl.
+
 **Go-Lektion am Rande:** Die erste Fassung übergab das Brett per Pointer an den
 Codec, der ein Funktionswert ist (`codec.Append(&child, …)`). Bei indirekten
 Aufrufen kann Go's Escape-Analyse nicht beweisen, dass der Pointer nicht

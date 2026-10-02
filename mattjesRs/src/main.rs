@@ -45,5 +45,6 @@ fn main() {
     // tests_perft::bitboard_encode_roundtrip();
     // tests_perft::bitboard_perft_breadth_encoded::<bitboard::FastFen>(200_000_000, 2048);
     // tests_perft::bitboard_perft_breadth_encoded::<bitboard::Packed>(200_000_000, 2048);
+    // tests_perft::bitboard_perft_breadth_encoded::<bitboard::PackedFixed>(200_000_000, 2048);
     // tests_perft::bitboard_divide(chess::START_FEN, 3);
 }

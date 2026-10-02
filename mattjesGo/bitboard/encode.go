@@ -13,8 +13,11 @@ const MaxFastFenBytes = chess.FieldCount + flagBytes
 
 // Packed is the usual bitboard encoding: the 8-byte occupancy followed by one
 // nibble (color*6 + kind, 0..11) per occupied square in bit order.
-// Start position 30 bytes, 6 pieces 17 bytes.
-const MaxPackedBytes = 8 + chess.FieldCount/2 + flagBytes
+// At most 32 pieces = 16 nibble bytes, so the start position (30 bytes) is the
+// maximum; 6 pieces take 17 bytes.
+const MaxPackedBytes = 8 + maxPieces/2 + flagBytes
+
+const maxPieces = 32
 
 const flagBytes = 6
 
@@ -96,6 +99,45 @@ func DecodePacked(src []byte) (Board, int) {
 		}
 	}
 	return b, i + b.readFlags(src[i:])
+}
+
+// PackedFixedBytes is the packed encoding in a constant 32-byte record: 8 bytes
+// occupancy, 16 nibble bytes (zero padded), 6 flag bytes, 2 bytes padding.
+// Two records per 64-byte cache line; records can be addressed by index.
+const PackedFixedBytes = 32
+
+const fixedFlagsOffset = 8 + maxPieces/2
+
+// AppendPackedFixed writes one PackedFixedBytes record directly.
+func (b Board) AppendPackedFixed(dst []byte) []byte {
+	var rec [PackedFixedBytes]byte
+	occ := b.occupied()
+	rec[0], rec[1], rec[2], rec[3] = byte(occ), byte(occ>>8), byte(occ>>16), byte(occ>>24)
+	rec[4], rec[5], rec[6], rec[7] = byte(occ>>32), byte(occ>>40), byte(occ>>48), byte(occ>>56)
+	i := 8
+	for bb := occ; bb != 0; i++ {
+		p := b.Squares[popLSB(&bb)]
+		code := byte(colorIdx(p)*6 + kindIdx(p))
+		if bb != 0 {
+			q := b.Squares[popLSB(&bb)]
+			code |= byte(colorIdx(q)*6+kindIdx(q)) << 4
+		}
+		rec[i] = code
+	}
+	f := rec[fixedFlagsOffset:]
+	f[0] = byte(b.Castling) << 1
+	if b.WhiteMove {
+		f[0] |= 1
+	}
+	f[1], f[2], f[3], f[4], f[5] = byte(b.EnPassant), byte(b.HalfmoveClock), byte(b.HalfmoveClock>>8), byte(b.MoveNumber), byte(b.MoveNumber>>8)
+	return append(dst, rec[:]...)
+}
+
+// DecodePackedFixed reads one PackedFixedBytes record.
+func DecodePackedFixed(src []byte) (Board, int) {
+	b, _ := DecodePacked(src)
+	b.readFlags(src[fixedFlagsOffset:])
+	return b, PackedFixedBytes
 }
 
 func (b Board) appendFlags(dst []byte) []byte {

@@ -67,8 +67,11 @@ impl Codec for FastFen {
 
 /// The usual bitboard encoding: the 8-byte occupancy followed by one nibble
 /// (color*6 + kind, 0..11) per occupied square in bit order.
-/// Start position 30 bytes, 6 pieces 17 bytes.
+/// At most 32 pieces = 16 nibble bytes, so the start position (30 bytes) is the
+/// maximum; 6 pieces take 17 bytes.
 pub struct Packed;
+
+const MAX_PIECES: usize = 32;
 
 const NIBBLE_PIECE: [Piece; 12] = [
     Piece::WHITE_KING,
@@ -92,7 +95,7 @@ fn nibble(p: Piece) -> u8 {
 
 impl Codec for Packed {
     const NAME: &'static str = "packed";
-    const MAX_BYTES: usize = 8 + FIELD_COUNT / 2 + FLAG_BYTES;
+    const MAX_BYTES: usize = 8 + MAX_PIECES / 2 + FLAG_BYTES;
 
     fn append(b: &Board, dst: &mut Vec<u8>) {
         let occ = b.occupied();
@@ -123,6 +126,46 @@ impl Codec for Packed {
         }
         i += read_flags(&mut b, &src[i..]);
         (b, i)
+    }
+}
+
+/// The packed encoding in a constant 32-byte record: 8 bytes occupancy, 16 nibble
+/// bytes (zero padded), 6 flag bytes, 2 bytes padding. Two records per 64-byte
+/// cache line; records can be addressed by index.
+pub struct PackedFixed;
+
+const FIXED_FLAGS_OFFSET: usize = 8 + MAX_PIECES / 2;
+
+impl Codec for PackedFixed {
+    const NAME: &'static str = "packed-fixed";
+    const MAX_BYTES: usize = 32;
+
+    fn append(b: &Board, dst: &mut Vec<u8>) {
+        let mut rec = [0u8; Self::MAX_BYTES];
+        let occ = b.occupied();
+        rec[..8].copy_from_slice(&occ.to_le_bytes());
+        let mut i = 8;
+        let mut bb = occ;
+        while bb != 0 {
+            let mut code = nibble(b.squares[pop_lsb(&mut bb).idx()]);
+            if bb != 0 {
+                code |= nibble(b.squares[pop_lsb(&mut bb).idx()]) << 4;
+            }
+            rec[i] = code;
+            i += 1;
+        }
+        let f = &mut rec[FIXED_FLAGS_OFFSET..];
+        f[0] = (b.castling << 1) | b.white_move as u8;
+        f[1] = b.en_passant.0 as u8;
+        f[2..4].copy_from_slice(&b.halfmove_clock.to_le_bytes());
+        f[4..6].copy_from_slice(&b.move_number.to_le_bytes());
+        dst.extend_from_slice(&rec);
+    }
+
+    fn decode(src: &[u8]) -> (Board, usize) {
+        let (mut b, _) = Packed::decode(src);
+        read_flags(&mut b, &src[FIXED_FLAGS_OFFSET..]);
+        (b, Self::MAX_BYTES)
     }
 }
 

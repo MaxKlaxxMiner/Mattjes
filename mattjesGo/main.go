@@ -38,5 +38,6 @@ func main() {
 	// bitboardEncodeRoundtrip()
 	// bitboardPerftBreadthFastFen(200_000_000, 2048)
 	// bitboardPerftBreadthPacked(200_000_000, 2048)
+	// bitboardPerftBreadthPackedFixed(200_000_000, 2048)
 	// bitboardDivide(chess.StartFEN, 3)
 }
