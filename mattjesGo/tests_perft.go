@@ -5,6 +5,7 @@ import (
 	"runtime"
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mailbox"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/perft"
 )
@@ -110,6 +111,50 @@ func bitboardPerftBreadth(maxNodes uint64, maxMB int) {
 		}
 		return bitboard.PerftBreadth(&b, depth, maxMB<<20)
 	}, maxNodes)
+}
+
+func bitboardPerftBreadthEncoded(maxNodes uint64, maxMB int, codec bitboard.Codec) {
+	bitboardInfo()
+	fmt.Printf("codec %s: max %d bytes/position, memory limit: %d MB\n", codec.Name, codec.MaxBytes, maxMB)
+	perft.Run("bitboard / breadth-first, "+codec.Name+" encoded position streams", func(fen string, depth int) (uint64, error) {
+		b, err := bitboard.FromFEN(fen)
+		if err != nil {
+			return 0, err
+		}
+		return bitboard.PerftBreadthEncoded(&b, depth, maxMB<<20, codec)
+	}, maxNodes)
+}
+
+func bitboardPerftBreadthFastFen(maxNodes uint64, maxMB int) {
+	bitboardPerftBreadthEncoded(maxNodes, maxMB, bitboard.FastFenCodec)
+}
+
+func bitboardPerftBreadthPacked(maxNodes uint64, maxMB int) {
+	bitboardPerftBreadthEncoded(maxNodes, maxMB, bitboard.PackedCodec)
+}
+
+// bitboardEncodeRoundtrip checks both codecs on all reference positions one move deep.
+func bitboardEncodeRoundtrip() {
+	for _, p := range chess.PerftPositions {
+		root, err := bitboard.FromFEN(p.FEN)
+		if err != nil {
+			panic(err)
+		}
+		for _, m := range root.Moves() {
+			b := root
+			b.DoMove(m)
+			for _, codec := range []bitboard.Codec{bitboard.FastFenCodec, bitboard.PackedCodec} {
+				enc := codec.Append(b, nil)
+				dec, n := codec.Decode(enc)
+				if n != len(enc) || dec != b {
+					panic(fmt.Sprintf("%s roundtrip failed for %s after %s", codec.Name, p.FEN, m))
+				}
+			}
+		}
+		enc := root.AppendFastFen(nil)
+		fmt.Printf("%-36s fastfen %2d bytes, packed %2d bytes\n", p.Name, len(enc), len(root.AppendPacked(nil)))
+	}
+	fmt.Println("roundtrip ok")
 }
 
 func bitboardPerftParallel(maxNodes uint64, workers int) {

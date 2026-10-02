@@ -25,15 +25,18 @@ func main() {
 	fmt.Printf("Mattjes (Go) %s on %s/%s, %d CPUs\n\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU())
 
 	// --- milestone 1: move generator + perft (enable one at a time) ---
-	mailboxPerftRecursive(20_000_000)
+	// mailboxPerftRecursive(200_000_000)
 	// mailboxPerftIterative(200_000_000)
 	// mailboxPerftBreadth(200_000_000, 2048)
 	// mailboxPerftParallel(1_000_000_000, 0)
 	// mailboxDivide(chess.StartFEN, 3)
 
-	bitboardPerftRecursive(20_000_000)
+	bitboardPerftRecursive(200_000_000)
 	// bitboardPerftIterative(200_000_000)
 	// bitboardPerftBreadth(200_000_000, 2048)
 	// bitboardPerftParallel(4_000_000_000, 0)
+	// bitboardEncodeRoundtrip()
+	// bitboardPerftBreadthFastFen(200_000_000, 2048)
+	// bitboardPerftBreadthPacked(200_000_000, 2048)
 	// bitboardDivide(chess.StartFEN, 3)
 }

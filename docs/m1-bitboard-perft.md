@@ -118,10 +118,55 @@ schnellste.
    Konsolenläufe egal, für eine UCI-Engine (Milestone 6) aber spürbar. Dann
    die Konstanten fest einbauen.
 
+## Nachtrag: kompakte Stellungskodierung für die Breitensuche
+
+Anregung aus dem alten C#-Code (`BoardKingOptimized3.GetFastFen`): Stellungen
+als Byte-Strom variabler Länge speichern statt als 184-Byte-Brett. Zwei
+Kodierungen, beide enden mit denselben 6 Flag-Bytes (Seite + Rochade, EP,
+Halfmove-Clock, Zugnummer):
+
+| Codec | Prinzip | Start | Kiwipete | Pos 3 (Endspiel) |
+|---|---|---|---|---|
+| **fastfen** | Lauflängen-Kodierung: 1 Byte pro Figur (immer ≥ 0x41), 1 Zählbyte (< 64) pro Lücke | 39 B | 51 B | 26 B |
+| **packed** | 8 Byte Belegungs-Bitboard + 1 Nibble (Farbe·6 + Art) pro besetztem Feld | 30 B | 30 B | 19 B |
+| Brett roh | `Pieces[2][6]` + `ByColor` + `Squares` + Flags | 184 B | 184 B | 184 B |
+
+Die Breitensuche `PerftBreadthEncoded` dekodiert jede Stellung der aktuellen
+Ebene, erzeugt die Kinder und kodiert sie in den Strom der nächsten Ebene.
+Roundtrip-Test (kodieren, dekodieren, vergleichen) über alle Referenzstellungen
+einen Zug tief in beiden Sprachen bestanden; die Strom-Größen pro Ebene sind in
+Go und Rust byteidentisch.
+
+| Breitensuche, 805 Mio. Knoten | Go | Rust | größte Ebene Pos 3 T7 (11 Mio. Stellungen) |
+|---|---|---|---|
+| Brett roh (184 B) | 188,5 Mn/s | 192,9 Mn/s | 2.029 MB |
+| fastfen | 95,6 Mn/s | 111,4 Mn/s | 259 MB (24,6 B/Stellung) |
+| packed | 129,3 Mn/s | 147,2 Mn/s | 200 MB (19,0 B/Stellung) |
+
+**packed** ist in jeder Hinsicht besser als fastfen: kleiner (Endspiel 19 statt
+25 Byte, Mittelspiel 30 statt 45 bis 55) und schneller, weil Kodieren und
+Dekodieren direkt über das Belegungs-Bitboard laufen (ein `popLSB` pro Figur)
+statt über 64 Felder. Fastfen hat dafür den Vorteil, dass es auch ohne Bitboard
+funktioniert und menschenlesbar bleibt (Byte ≥ 0x41 = Figur).
+
+Gegenüber dem rohen Brett kostet packed rund 30 % Durchsatz für Faktor 6 bis 10
+weniger Speicher. Für Stellungslisten in der Mattsuche ist das der richtige
+Tausch: Die Grenze ist dort der Speicher, nicht die CPU. Noch dichter ginge es
+mit Huffman-Codes pro Figur (Bauern 1 Bit statt 4), wie es Stockfish für
+Trainingsdaten tut (~32 Byte fix für jede Stellung), das lohnt erst, wenn der
+Speicher wirklich knapp wird.
+
+**Go-Lektion am Rande:** Die erste Fassung übergab das Brett per Pointer an den
+Codec, der ein Funktionswert ist (`codec.Append(&child, …)`). Bei indirekten
+Aufrufen kann Go's Escape-Analyse nicht beweisen, dass der Pointer nicht
+entkommt, also landete jedes Kind-Brett auf dem Heap: 2,3 GB Allokationen für
+200 MB Nutzdaten und 15 bis 20 % weniger Durchsatz. Übergabe per Wert (184
+Byte Kopie) löst das. Rust hat das Problem nicht, weil `C::append` über den
+Typparameter statisch gebunden und inlined wird.
+
 ## Offene Punkte
 
 - Magics als Konstanten generieren (ein Tool, das Go- und Rust-Quelltext ausgibt).
-- Kompaktes Brettformat für Stellungslisten (Milestone 2/3 zusammen mit Hashing).
 - `HasMoves()`/`IsMate()` mit Early-Exit; beim Bitboard fast gratis, weil
   `checkers != 0 && n == 0` schon in `GenMoves` sichtbar ist.
 - Die Mailbox bleibt als Referenz und Lernstand im Repo, wird aber nicht weiter

@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
 
 use super::board::Board;
+use super::encode::Codec;
 use crate::chess::{new_buffer, Move, MoveBuffer};
 
 // The perft variants mirror module mailbox exactly, see there for the descriptions.
@@ -105,6 +106,72 @@ pub fn perft_breadth(root: &Board, depth: u32, max_bytes: usize) -> Result<u64, 
     let mut total = 0u64;
     for b in level.iter() {
         total += b.gen_moves(&mut buf) as u64;
+    }
+    Ok(total)
+}
+
+/// `perft_breadth` with every ply stored as one byte stream of compactly encoded
+/// positions instead of a `Vec` of 184-byte boards. The codec is a type
+/// parameter, so each instantiation is compiled separately with the codec inlined.
+/// Prints the size of the largest ply.
+pub fn perft_breadth_encoded<C: Codec>(root: &Board, depth: u32, max_bytes: usize) -> Result<u64, String> {
+    let mut level = Vec::new();
+    C::append(root, &mut level);
+    let mut level_count = 1usize;
+    let (mut peak_bytes, mut peak_count) = (level.len(), 1usize);
+    let mut buf = new_buffer();
+
+    for ply in 1..depth {
+        // first pass: count children, estimate the stream size from the current average record size
+        let mut child_count = 0usize;
+        let mut i = 0;
+        while i < level.len() {
+            let (b, n) = C::decode(&level[i..]);
+            i += n;
+            child_count += b.gen_moves(&mut buf);
+        }
+        let estimate = child_count * level.len() / level_count + child_count;
+        if estimate > max_bytes {
+            return Err(format!("ply {} needs {} positions ≈ {} MB, limit is {} MB", ply, child_count, estimate >> 20, max_bytes >> 20));
+        }
+        let mut next = Vec::with_capacity(estimate);
+        i = 0;
+        while i < level.len() {
+            let (b, n) = C::decode(&level[i..]);
+            i += n;
+            let moves = b.gen_moves(&mut buf);
+            for &m in &buf[..moves] {
+                let mut child = b;
+                child.do_move(m);
+                C::append(&child, &mut next);
+            }
+        }
+        if next.len() > max_bytes {
+            return Err(format!("ply {} needs {} MB, limit is {} MB", ply, next.len() >> 20, max_bytes >> 20));
+        }
+        level = next;
+        level_count = child_count;
+        if level.len() > peak_bytes {
+            peak_bytes = level.len();
+            peak_count = level_count;
+        }
+    }
+
+    let mut total = 0u64;
+    let mut i = 0;
+    while i < level.len() {
+        let (b, n) = C::decode(&level[i..]);
+        i += n;
+        total += b.gen_moves(&mut buf) as u64;
+    }
+    if peak_count > 1000 {
+        println!(
+            "             {}: largest ply {} positions in {:.1} MB = {:.1} bytes/position",
+            C::NAME,
+            peak_count,
+            peak_bytes as f64 / (1u64 << 20) as f64,
+            peak_bytes as f64 / peak_count as f64
+        );
     }
     Ok(total)
 }

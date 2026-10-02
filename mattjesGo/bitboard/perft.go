@@ -103,6 +103,71 @@ func PerftBreadth(root *Board, depth int, maxBytes int) (uint64, error) {
 	return total, nil
 }
 
+// Codec is a compact position encoding for PerftBreadthEncoded.
+type Codec struct {
+	Name     string
+	MaxBytes int
+	Append   func(b Board, dst []byte) []byte // by value, see AppendFastFen
+	Decode   func(src []byte) (Board, int)
+}
+
+var FastFenCodec = Codec{"fastfen", MaxFastFenBytes, Board.AppendFastFen, DecodeFastFen}
+var PackedCodec = Codec{"packed", MaxPackedBytes, Board.AppendPacked, DecodePacked}
+
+// PerftBreadthEncoded is PerftBreadth with every ply stored as one byte stream
+// of compactly encoded positions instead of a slice of 184-byte boards.
+// Positions are decoded, expanded and the children encoded into the next stream.
+// Prints the size of the largest ply.
+func PerftBreadthEncoded(root *Board, depth int, maxBytes int, codec Codec) (uint64, error) {
+	level := codec.Append(*root, nil)
+	levelCount := 1
+	peakBytes, peakCount := len(level), 1
+	var buf chess.MoveBuffer
+
+	for ply := 1; ply < depth; ply++ {
+		// first pass: count children, estimate the stream size from the current average record size
+		childCount := 0
+		for i := 0; i < len(level); {
+			b, n := codec.Decode(level[i:])
+			i += n
+			childCount += b.GenMoves(&buf)
+		}
+		estimate := childCount*len(level)/levelCount + childCount
+		if estimate > maxBytes {
+			return 0, fmt.Errorf("ply %d needs %d positions ≈ %d MB, limit is %d MB", ply, childCount, estimate>>20, maxBytes>>20)
+		}
+		next := make([]byte, 0, estimate)
+		for i := 0; i < len(level); {
+			b, n := codec.Decode(level[i:])
+			i += n
+			moves := b.GenMoves(&buf)
+			for j := 0; j < moves; j++ {
+				child := b
+				child.DoMove(buf[j])
+				next = codec.Append(child, next)
+			}
+		}
+		if len(next) > maxBytes {
+			return 0, fmt.Errorf("ply %d needs %d MB, limit is %d MB", ply, len(next)>>20, maxBytes>>20)
+		}
+		level, levelCount = next, childCount
+		if len(level) > peakBytes {
+			peakBytes, peakCount = len(level), levelCount
+		}
+	}
+
+	var total uint64
+	for i := 0; i < len(level); {
+		b, n := codec.Decode(level[i:])
+		i += n
+		total += uint64(b.GenMoves(&buf))
+	}
+	if peakCount > 1000 {
+		fmt.Printf("             %s: largest ply %d positions in %.1f MB = %.1f bytes/position\n", codec.Name, peakCount, float64(peakBytes)/(1<<20), float64(peakBytes)/float64(peakCount))
+	}
+	return total, nil
+}
+
 func PerftParallel(root *Board, depth int, workers int) uint64 {
 	var buf chess.MoveBuffer
 	n := root.GenMoves(&buf)

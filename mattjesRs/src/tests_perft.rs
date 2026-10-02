@@ -1,6 +1,7 @@
 //! The switchable test runs for milestone 1. Enable them in `main`.
 
-use crate::{bitboard, mailbox, perft};
+use crate::bitboard::Codec; // trait in scope for FastFen::append / Packed::append
+use crate::{bitboard, chess, mailbox, perft};
 
 fn workers_or_cpus(workers: usize) -> usize {
     if workers == 0 {
@@ -109,6 +110,45 @@ pub fn bitboard_perft_breadth(max_nodes: u64, max_mb: usize) {
         },
         max_nodes,
     );
+}
+
+pub fn bitboard_perft_breadth_encoded<C: bitboard::Codec>(max_nodes: u64, max_mb: usize) {
+    bitboard_info();
+    println!("codec {}: max {} bytes/position, memory limit: {} MB", C::NAME, C::MAX_BYTES, max_mb);
+    perft::run(
+        &format!("bitboard / breadth-first, {} encoded position streams", C::NAME),
+        |fen, depth| {
+            let b = bitboard::Board::from_fen(fen)?;
+            bitboard::perft_breadth_encoded::<C>(&b, depth, max_mb << 20)
+        },
+        max_nodes,
+    );
+}
+
+/// Checks both codecs on all reference positions one move deep.
+pub fn bitboard_encode_roundtrip() {
+    fn check<C: bitboard::Codec>(b: &bitboard::Board, fen: &str, m: chess::Move) {
+        let mut enc = Vec::new();
+        C::append(b, &mut enc);
+        let (dec, n) = C::decode(&enc);
+        if n != enc.len() || dec.setup().fen() != b.fen() || dec.pieces != b.pieces || dec.by_color != b.by_color {
+            panic!("{} roundtrip failed for {} after {}", C::NAME, fen, m);
+        }
+    }
+    for p in chess::PERFT_POSITIONS {
+        let root = bitboard::Board::from_fen(p.fen).expect("valid FEN");
+        for m in root.moves() {
+            let mut b = root;
+            b.do_move(m);
+            check::<bitboard::FastFen>(&b, p.fen, m);
+            check::<bitboard::Packed>(&b, p.fen, m);
+        }
+        let (mut ff, mut pk) = (Vec::new(), Vec::new());
+        bitboard::FastFen::append(&root, &mut ff);
+        bitboard::Packed::append(&root, &mut pk);
+        println!("{:<36} fastfen {:2} bytes, packed {:2} bytes", p.name, ff.len(), pk.len());
+    }
+    println!("roundtrip ok");
 }
 
 pub fn bitboard_perft_parallel(max_nodes: u64, workers: usize) {
