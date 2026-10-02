@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use super::bits::*;
 use super::magic::Magics;
+use super::zobrist::Zobrist;
 use crate::chess::{Castling, Pos, BLACK_KINGSIDE, BLACK_QUEENSIDE, FIELD_COUNT, WHITE_KINGSIDE, WHITE_QUEENSIDE};
 
 /// All lookup tables. Built once on first use (`LazyLock`), because the magic
@@ -21,6 +22,7 @@ pub struct Tables {
     /// Castling rights lost when a piece moves from or to sq.
     pub castle_clear: [Castling; FIELD_COUNT],
     pub magics: Magics,
+    pub zobrist: Zobrist,
     pub init_duration: Duration,
 }
 
@@ -81,6 +83,8 @@ impl Tables {
         castle_clear[60] = WHITE_KINGSIDE | WHITE_QUEENSIDE;
         castle_clear[63] = WHITE_KINGSIDE;
 
-        Tables { knight, king, pawn, between, line, castle_clear, magics, init_duration: start.elapsed() }
+        let zobrist = Zobrist::new();
+
+        Tables { knight, king, pawn, between, line, castle_clear, magics, zobrist, init_duration: start.elapsed() }
     }
 }

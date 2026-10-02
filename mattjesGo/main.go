@@ -19,6 +19,8 @@ package main
 import (
 	"fmt"
 	"runtime"
+
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 )
 
 func main() {
@@ -31,7 +33,7 @@ func main() {
 	// mailboxPerftParallel(1_000_000_000, 0)
 	// mailboxDivide(chess.StartFEN, 3)
 
-	bitboardPerftRecursive(200_000_000)
+	// bitboardPerftRecursive(200_000_000)
 	// bitboardPerftIterative(200_000_000)
 	// bitboardPerftBreadth(200_000_000, 2048)
 	// bitboardPerftParallel(4_000_000_000, 0)
@@ -39,5 +41,14 @@ func main() {
 	// bitboardPerftBreadthFastFen(200_000_000, 2048)
 	// bitboardPerftBreadthPacked(200_000_000, 2048)
 	// bitboardPerftBreadthPackedFixed(200_000_000, 2048)
+
+	// --- milestone 2: hash keys ---
+	bitboardPerftRecursive(200_000_000)
+	// bitboardHashVerify(5_000_000)
+	// bitboardPerftKeyCost(20_000_000)
+	// level := bitboardUniquePositions(chess.StartFEN, 6, 40_000_000)
+	// bitboardKeyDistribution(level, 22)
+	_ = chess.StartFEN // keep the import for the commented experiments above
+	// bitboardUniquePositions("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 5, 40_000_000)
 	// bitboardDivide(chess.StartFEN, 3)
 }

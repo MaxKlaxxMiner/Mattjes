@@ -10,10 +10,17 @@ mod bits;
 mod board;
 mod domove;
 mod encode;
+mod hash;
 mod magic;
 mod movegen;
 mod perft;
 mod tables;
+mod zobrist;
+
+#[allow(unused_imports)]
+pub use hash::{exact_hash, mix64, ExactKey};
+#[allow(unused_imports)]
+pub use zobrist::{key_lo, Key, KEY_WORDS};
 
 #[allow(unused_imports)]
 pub use board::{Board, State};

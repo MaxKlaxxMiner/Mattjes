@@ -56,7 +56,7 @@ impl Magics {
         }
         m.table = vec![0; total];
 
-        let mut rng = Rng(0x9E3779B97F4A7C15);
+        let mut rng = Rng::new(0x9E3779B97F4A7C15);
         let mut offset = 0;
         for sq in 0..FIELD_COUNT {
             offset = find_magic(&mut m.rook[sq], &mut m.table, Pos(sq as i8), &ROOK_DIRS, offset, &mut rng);
@@ -108,11 +108,16 @@ fn slider_mask(sq: Pos, dirs: &[(i32, i32); 4]) -> u64 {
     mask
 }
 
-/// xorshift64* with a fixed seed: the same magics on every run.
-struct Rng(u64);
+/// xorshift64* with a fixed seed: the same magics (and Zobrist keys) on every run.
+pub struct Rng(u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub fn new(seed: u64) -> Rng {
+        Rng(seed)
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> u64 {
         self.0 ^= self.0 >> 12;
         self.0 ^= self.0 << 25;
         self.0 ^= self.0 >> 27;

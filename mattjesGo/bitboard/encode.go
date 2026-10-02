@@ -84,8 +84,9 @@ func (b Board) AppendPacked(dst []byte) []byte {
 	return b.appendFlags(dst)
 }
 
-// DecodePacked reads one position from src and returns it with the number of bytes consumed.
-func DecodePacked(src []byte) (Board, int) {
+// decodePackedPieces reads occupancy and nibbles; returns the board (flags not yet set)
+// and the number of bytes consumed.
+func decodePackedPieces(src []byte) (Board, int) {
 	var b Board
 	occ := uint64(src[0]) | uint64(src[1])<<8 | uint64(src[2])<<16 | uint64(src[3])<<24 |
 		uint64(src[4])<<32 | uint64(src[5])<<40 | uint64(src[6])<<48 | uint64(src[7])<<56
@@ -98,6 +99,12 @@ func DecodePacked(src []byte) (Board, int) {
 			b.put(popLSB(&bb), nibblePiece[code>>4])
 		}
 	}
+	return b, i
+}
+
+// DecodePacked reads one position from src and returns it with the number of bytes consumed.
+func DecodePacked(src []byte) (Board, int) {
+	b, i := decodePackedPieces(src)
 	return b, i + b.readFlags(src[i:])
 }
 
@@ -135,7 +142,7 @@ func (b Board) AppendPackedFixed(dst []byte) []byte {
 
 // DecodePackedFixed reads one PackedFixedBytes record.
 func DecodePackedFixed(src []byte) (Board, int) {
-	b, _ := DecodePacked(src)
+	b, _ := decodePackedPieces(src)
 	b.readFlags(src[fixedFlagsOffset:])
 	return b, PackedFixedBytes
 }
@@ -148,11 +155,13 @@ func (b Board) appendFlags(dst []byte) []byte {
 	return append(dst, flags, byte(b.EnPassant), byte(b.HalfmoveClock), byte(b.HalfmoveClock>>8), byte(b.MoveNumber), byte(b.MoveNumber>>8))
 }
 
+// readFlags completes a decoded board: flags and the state part of the Zobrist key.
 func (b *Board) readFlags(src []byte) int {
 	b.WhiteMove = src[0]&1 != 0
 	b.Castling = chess.Castling(src[0]>>1) & chess.AllCastling
 	b.EnPassant = chess.Pos(int8(src[1]))
 	b.HalfmoveClock = uint16(src[2]) | uint16(src[3])<<8
 	b.MoveNumber = uint16(src[4]) | uint16(src[5])<<8
+	b.finishKey()
 	return flagBytes
 }

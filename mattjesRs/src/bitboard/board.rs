@@ -2,6 +2,7 @@ use std::fmt;
 
 use super::bits::*;
 use super::tables::{Tables, TABLES};
+use super::zobrist::{Key, KEY_WORDS};
 use crate::chess::{new_buffer, Castling, Move, Piece, Pos, Setup, ALL_CASTLING, FIELD_COUNT, START_FEN};
 
 /// A complete position. `pieces` holds one bit set per color and kind,
@@ -17,6 +18,8 @@ pub struct Board {
     pub white_move: bool,
     pub halfmove_clock: u16,
     pub move_number: u16,
+    /// Incremental Zobrist key, see zobrist.rs.
+    pub key: Key,
 }
 
 /// The irreversible part of a position for `undo_move`.
@@ -33,6 +36,7 @@ impl Board {
             white_move: true,
             halfmove_clock: 0,
             move_number: 1,
+            key: [0; KEY_WORDS],
         }
     }
 
@@ -48,10 +52,11 @@ impl Board {
 
     /// Builds a board from a validated setup.
     pub fn from_setup(s: &Setup) -> Board {
+        let t: &Tables = &TABLES;
         let mut b = Board::empty();
         for (i, &p) in s.squares.iter().enumerate() {
             if p != Piece::NONE {
-                b.put(Pos(i as i8), p);
+                b.put(t, Pos(i as i8), p);
             }
         }
         b.white_move = s.white_move;
@@ -59,6 +64,11 @@ impl Board {
         b.en_passant = s.en_passant;
         b.halfmove_clock = s.halfmove_clock;
         b.move_number = s.move_number;
+        // canonical en passant: only if a legal capture exists (Setup only checks for an adjacent pawn)
+        if b.en_passant.valid() && !b.has_legal_en_passant(t, b.en_passant, b.us()) {
+            b.en_passant = Pos::NONE;
+        }
+        b.finish_key(t);
         b
     }
 
@@ -89,22 +99,24 @@ impl Board {
     }
 
     #[inline(always)]
-    pub(super) fn put(&mut self, sq: Pos, p: Piece) {
+    pub(super) fn put(&mut self, t: &Tables, sq: Pos, p: Piece) {
         let bb = bit(sq);
         let c = color_idx(p);
         self.pieces[c][kind_idx(p)] |= bb;
         self.by_color[c] |= bb;
         self.squares[sq.idx()] = p;
+        self.xor_piece(t, p, sq);
     }
 
     #[inline(always)]
-    pub(super) fn remove(&mut self, sq: Pos) {
+    pub(super) fn remove(&mut self, t: &Tables, sq: Pos) {
         let p = self.squares[sq.idx()];
         let bb = bit(sq);
         let c = color_idx(p);
         self.pieces[c][kind_idx(p)] &= !bb;
         self.by_color[c] &= !bb;
         self.squares[sq.idx()] = Piece::NONE;
+        self.xor_piece(t, p, sq);
     }
 
     /// The color index of the side to move.

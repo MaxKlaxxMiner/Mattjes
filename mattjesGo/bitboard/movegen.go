@@ -204,6 +204,27 @@ func (b *Board) emitPawns(buf *chess.MoveBuffer, n int, targets uint64, delta ch
 	return n
 }
 
+// hasLegalEnPassant reports whether `side` has at least one legal en passant
+// capture onto ep. Used by DoMove and FromSetup to store the square canonically.
+func (b *Board) hasLegalEnPassant(ep chess.Pos, side int) bool {
+	cands := pawnAttacks[side^1][ep] & b.Pieces[side][kPawn]
+	if cands == 0 {
+		return false
+	}
+	capSq := ep + chess.Width
+	if side == 1 {
+		capSq = ep - chess.Width
+	}
+	ksq := lsb(b.Pieces[side][kKing])
+	occ := b.occupied()
+	for c := cands; c != 0; {
+		if b.enPassantLegal(popLSB(&c), ep, capSq, ksq, side, occ) {
+			return true
+		}
+	}
+	return false
+}
+
 // enPassantLegal applies the capture to the occupancy and checks whether our
 // king is attacked afterwards. Covers pins, discovered rank attacks and the
 // case where the double-pushed pawn is the checker.

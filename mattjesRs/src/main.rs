@@ -21,6 +21,7 @@ mod bitboard;
 mod chess;
 mod mailbox;
 mod perft;
+mod tests_hash;
 mod tests_perft;
 
 fn main() {
@@ -46,5 +47,11 @@ fn main() {
     // tests_perft::bitboard_perft_breadth_encoded::<bitboard::FastFen>(200_000_000, 2048);
     // tests_perft::bitboard_perft_breadth_encoded::<bitboard::Packed>(200_000_000, 2048);
     // tests_perft::bitboard_perft_breadth_encoded::<bitboard::PackedFixed>(200_000_000, 2048);
+
+    // --- milestone 2: hash keys ---
+    // tests_hash::bitboard_hash_verify(5_000_000);
+    // tests_hash::bitboard_perft_key_cost(20_000_000);
+    // let level = tests_hash::bitboard_unique_positions(tests_hash::start_fen(), 6, 40_000_000);
+    // tests_hash::bitboard_key_distribution(&level, 22);
     // tests_perft::bitboard_divide(chess::START_FEN, 3);
 }

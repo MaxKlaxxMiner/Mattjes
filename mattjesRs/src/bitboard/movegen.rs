@@ -1,7 +1,7 @@
 use super::bits::*;
 use super::board::Board;
 use super::tables::{Tables, TABLES};
-use crate::chess::{Move, MoveBuffer, Piece, Pos, BLACK_KINGSIDE, BLACK_QUEENSIDE, WHITE_KINGSIDE, WHITE_QUEENSIDE};
+use crate::chess::{Move, MoveBuffer, Piece, Pos, BLACK_KINGSIDE, BLACK_QUEENSIDE, WHITE_KINGSIDE, WHITE_QUEENSIDE, WIDTH};
 
 impl Board {
     /// Writes all legal moves of the side to move into `buf` and returns their count.
@@ -231,6 +231,24 @@ impl Board {
             }
         }
         n
+    }
+
+    /// Reports whether `side` has at least one legal en passant capture onto ep.
+    /// Used by do_move and from_setup to store the square canonically.
+    pub(super) fn has_legal_en_passant(&self, t: &Tables, ep: Pos, side: usize) -> bool {
+        let mut cands = t.pawn[side ^ 1][ep.idx()] & self.pieces[side][K_PAWN];
+        if cands == 0 {
+            return false;
+        }
+        let cap_sq = if side == 0 { ep + WIDTH } else { ep - WIDTH };
+        let ksq = lsb(self.pieces[side][K_KING]);
+        let occ = self.occupied();
+        while cands != 0 {
+            if self.en_passant_legal(t, pop_lsb(&mut cands), ep, cap_sq, ksq, side, occ) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Applies the capture to the occupancy and checks whether our king is attacked

@@ -27,8 +27,11 @@ func (b *Board) DoMove(m chess.Move) {
 				b.remove(m.To - chess.Width)
 			}
 		} else if d := m.To - m.From; d == 2*chess.Width || d == -2*chess.Width { // double push
+			// Only remember the square if the opponent can legally capture en passant
+			// (pinned pawns excluded). This is the canonical rule used for counting
+			// distinct positions (OEIS A083276) and keeps equal positions equal for hashing.
 			ep := (m.From + m.To) / 2
-			if pawnAttacks[us][ep]&b.Pieces[them][kPawn] != 0 { // only if an enemy pawn can use it
+			if b.hasLegalEnPassant(ep, them) {
 				newEnPassant = ep
 			}
 		}
@@ -44,8 +47,10 @@ func (b *Board) DoMove(m chess.Move) {
 			b.put(m.To+1, rook)
 		}
 	}
+	oldCastling, oldEnPassant := b.Castling, b.EnPassant
 	b.EnPassant = newEnPassant
 	b.Castling &^= castleClear[m.From] | castleClear[m.To]
+	b.xorState(oldCastling, oldEnPassant)
 
 	if p.Is(chess.Pawn) || m.Capture != chess.None {
 		b.HalfmoveClock = 0
@@ -98,5 +103,6 @@ func (b *Board) UndoMove(m chess.Move, s State) {
 		}
 	}
 
+	b.xorState(chess.Castling(s>>8)&chess.AllCastling, chess.Pos(int8(uint8(s))))
 	b.restoreState(s)
 }

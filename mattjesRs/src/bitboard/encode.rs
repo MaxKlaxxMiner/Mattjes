@@ -4,6 +4,7 @@
 
 use super::bits::*;
 use super::board::Board;
+use super::tables::{Tables, TABLES};
 use crate::chess::{Castling, Piece, Pos, ALL_CASTLING, FIELD_COUNT};
 
 const FLAG_BYTES: usize = 6;
@@ -47,6 +48,7 @@ impl Codec for FastFen {
     }
 
     fn decode(src: &[u8]) -> (Board, usize) {
+        let t: &Tables = &TABLES;
         let mut b = Board::empty();
         let mut i = 0;
         let mut sq = 0usize;
@@ -57,10 +59,10 @@ impl Codec for FastFen {
                 sq += c as usize;
                 continue;
             }
-            b.put(Pos(sq as i8), Piece(c));
+            b.put(t, Pos(sq as i8), Piece(c));
             sq += 1;
         }
-        i += read_flags(&mut b, &src[i..]);
+        i += read_flags(t, &mut b, &src[i..]);
         (b, i)
     }
 }
@@ -93,6 +95,23 @@ fn nibble(p: Piece) -> u8 {
     (color_idx(p) * 6 + kind_idx(p)) as u8
 }
 
+/// Reads occupancy and nibbles; returns the board (flags not yet set) and the bytes consumed.
+fn decode_packed_pieces(t: &Tables, src: &[u8]) -> (Board, usize) {
+    let mut b = Board::empty();
+    let occ = u64::from_le_bytes(src[..8].try_into().unwrap());
+    let mut i = 8;
+    let mut bb = occ;
+    while bb != 0 {
+        let code = src[i];
+        i += 1;
+        b.put(t, pop_lsb(&mut bb), NIBBLE_PIECE[(code & 15) as usize]);
+        if bb != 0 {
+            b.put(t, pop_lsb(&mut bb), NIBBLE_PIECE[(code >> 4) as usize]);
+        }
+    }
+    (b, i)
+}
+
 impl Codec for Packed {
     const NAME: &'static str = "packed";
     const MAX_BYTES: usize = 8 + MAX_PIECES / 2 + FLAG_BYTES;
@@ -112,19 +131,9 @@ impl Codec for Packed {
     }
 
     fn decode(src: &[u8]) -> (Board, usize) {
-        let mut b = Board::empty();
-        let occ = u64::from_le_bytes(src[..8].try_into().unwrap());
-        let mut i = 8;
-        let mut bb = occ;
-        while bb != 0 {
-            let code = src[i];
-            i += 1;
-            b.put(pop_lsb(&mut bb), NIBBLE_PIECE[(code & 15) as usize]);
-            if bb != 0 {
-                b.put(pop_lsb(&mut bb), NIBBLE_PIECE[(code >> 4) as usize]);
-            }
-        }
-        i += read_flags(&mut b, &src[i..]);
+        let t: &Tables = &TABLES;
+        let (mut b, mut i) = decode_packed_pieces(t, src);
+        i += read_flags(t, &mut b, &src[i..]);
         (b, i)
     }
 }
@@ -136,35 +145,41 @@ pub struct PackedFixed;
 
 const FIXED_FLAGS_OFFSET: usize = 8 + MAX_PIECES / 2;
 
+/// One PackedFixed record as a stack array (no allocation).
+pub fn packed_fixed_record(b: &Board) -> [u8; PackedFixed::MAX_BYTES] {
+    let mut rec = [0u8; PackedFixed::MAX_BYTES];
+    let occ = b.occupied();
+    rec[..8].copy_from_slice(&occ.to_le_bytes());
+    let mut i = 8;
+    let mut bb = occ;
+    while bb != 0 {
+        let mut code = nibble(b.squares[pop_lsb(&mut bb).idx()]);
+        if bb != 0 {
+            code |= nibble(b.squares[pop_lsb(&mut bb).idx()]) << 4;
+        }
+        rec[i] = code;
+        i += 1;
+    }
+    let f = &mut rec[FIXED_FLAGS_OFFSET..];
+    f[0] = (b.castling << 1) | b.white_move as u8;
+    f[1] = b.en_passant.0 as u8;
+    f[2..4].copy_from_slice(&b.halfmove_clock.to_le_bytes());
+    f[4..6].copy_from_slice(&b.move_number.to_le_bytes());
+    rec
+}
+
 impl Codec for PackedFixed {
     const NAME: &'static str = "packed-fixed";
     const MAX_BYTES: usize = 32;
 
     fn append(b: &Board, dst: &mut Vec<u8>) {
-        let mut rec = [0u8; Self::MAX_BYTES];
-        let occ = b.occupied();
-        rec[..8].copy_from_slice(&occ.to_le_bytes());
-        let mut i = 8;
-        let mut bb = occ;
-        while bb != 0 {
-            let mut code = nibble(b.squares[pop_lsb(&mut bb).idx()]);
-            if bb != 0 {
-                code |= nibble(b.squares[pop_lsb(&mut bb).idx()]) << 4;
-            }
-            rec[i] = code;
-            i += 1;
-        }
-        let f = &mut rec[FIXED_FLAGS_OFFSET..];
-        f[0] = (b.castling << 1) | b.white_move as u8;
-        f[1] = b.en_passant.0 as u8;
-        f[2..4].copy_from_slice(&b.halfmove_clock.to_le_bytes());
-        f[4..6].copy_from_slice(&b.move_number.to_le_bytes());
-        dst.extend_from_slice(&rec);
+        dst.extend_from_slice(&packed_fixed_record(b));
     }
 
     fn decode(src: &[u8]) -> (Board, usize) {
-        let (mut b, _) = Packed::decode(src);
-        read_flags(&mut b, &src[FIXED_FLAGS_OFFSET..]);
+        let t: &Tables = &TABLES;
+        let (mut b, _) = decode_packed_pieces(t, src);
+        read_flags(t, &mut b, &src[FIXED_FLAGS_OFFSET..]);
         (b, Self::MAX_BYTES)
     }
 }
@@ -181,11 +196,13 @@ fn append_flags(b: &Board, dst: &mut Vec<u8>) {
     ]);
 }
 
-fn read_flags(b: &mut Board, src: &[u8]) -> usize {
+/// Completes a decoded board: flags and the state part of the Zobrist key.
+fn read_flags(t: &Tables, b: &mut Board, src: &[u8]) -> usize {
     b.white_move = src[0] & 1 != 0;
     b.castling = (src[0] >> 1) as Castling & ALL_CASTLING;
     b.en_passant = Pos(src[1] as i8);
     b.halfmove_clock = u16::from_le_bytes([src[2], src[3]]);
     b.move_number = u16::from_le_bytes([src[4], src[5]]);
+    b.finish_key(t);
     FLAG_BYTES
 }

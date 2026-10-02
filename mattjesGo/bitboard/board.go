@@ -14,6 +14,7 @@ type Board struct {
 	WhiteMove     bool
 	HalfmoveClock uint16
 	MoveNumber    uint16
+	Key           Key // incremental Zobrist key, see zobrist.go
 }
 
 // State is the irreversible part of a position for UndoMove.
@@ -52,6 +53,11 @@ func FromSetup(s *chess.Setup) Board {
 			b.put(sq, p)
 		}
 	}
+	// canonical en passant: only if a legal capture exists (Setup only checks for an adjacent pawn)
+	if b.EnPassant.Valid() && !b.hasLegalEnPassant(b.EnPassant, b.us()) {
+		b.EnPassant = chess.NoPos
+	}
+	b.finishKey()
 	return b
 }
 
@@ -83,6 +89,7 @@ func (b *Board) put(sq chess.Pos, p chess.Piece) {
 	b.Pieces[c][kindIdx(p)] |= bb
 	b.ByColor[c] |= bb
 	b.Squares[sq] = p
+	b.xorPiece(p, sq)
 }
 
 func (b *Board) remove(sq chess.Pos) {
@@ -92,6 +99,7 @@ func (b *Board) remove(sq chess.Pos) {
 	b.Pieces[c][kindIdx(p)] &^= bb
 	b.ByColor[c] &^= bb
 	b.Squares[sq] = chess.None
+	b.xorPiece(p, sq)
 }
 
 // us returns the color index of the side to move.
