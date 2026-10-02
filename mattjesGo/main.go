@@ -22,10 +22,12 @@ import (
 )
 
 func main() {
-	fmt.Println("Mattjes (Go) - hello world")
-	fmt.Printf("%s on %s/%s, %d CPUs\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU())
+	fmt.Printf("Mattjes (Go) %s on %s/%s, %d CPUs\n\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU())
 
-	// --- tests (enable one at a time) ---
-	// perft.RunClassic()
-	// perft.RunListBased()
+	// --- milestone 1: move generator + perft (enable one at a time) ---
+	mailboxPerftRecursive(200_000_000)
+	// mailboxPerftIterative(200_000_000)
+	// mailboxPerftBreadth(200_000_000, 2048)
+	// mailboxPerftParallel(1_000_000_000, 0)
+	// mailboxDivide(mailbox.StartFEN, 3)
 }

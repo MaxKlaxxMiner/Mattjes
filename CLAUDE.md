@@ -14,6 +14,7 @@ Neustart nach ca. 5 Jahren Pause (Oktober 2026). Der Autor (20+ Jahre Entwickler
 - **Kein UCI, keine Unit-Tests am Anfang.** Alles sind Konsolenprogramme; Tests werden in `main` ein- und auskommentiert (wie im alten C#-Code). UCI kommt erst in Milestone 6.
 - **Ein Package/Modul pro Ansatz.** Jeder Generator-, Hash- oder Such-Ansatz bekommt sein eigenes Package, damit er später leicht komplett verworfen werden kann.
 - **Performance nur mit Zahlen.** Jede Optimierungsbehauptung wird per Benchmark belegt (Nodes/s, Speicherverbrauch), so wie in der alten Commit-Historie.
+- **Korrektheit und Benchmark trennen.** Korrektheitsläufe (Perft-Zahlen stimmen) kann Claude jederzeit selbst starten. Benchmarks dagegen nur auf Ansage des Autors, weil auf der Maschine oft andere Engines (z. B. Stockfish) nebenher laufen und die Werte verzerren. Zwischenmessungen immer mit diesem Vorbehalt kennzeichnen.
 - **Alle Dev-Tools laufen unter MSYS2/ucrt64**, ohne Abhängigkeit zum nativen Windows. Go 1.26 (cgo via ucrt64-gcc möglich), Rust 1.95 aus pacman (`mingw-w64-ucrt-x86_64-rust`, Target `x86_64-pc-windows-gnu`, kein rustup, kein MSVC). JetBrains-IDEs (GoLand, RustRover) sind optional und bringen ggf. eigene Toolchains mit. C# wird nicht verwendet.
 
 ## Milestones
@@ -43,6 +44,16 @@ Welcher Test läuft, wird in `main` ein- und auskommentiert. Benchmarks nur mit 
 ## Git
 
 Claude committet nicht selbst. Bei sinnvollen Abständen einen **Commit-Vorschlag als kurzen Einzeiler** machen (Format wie die bisherige Historie, z. B. `mattjes: faster search for mate positions`). Längere Erklärungen gehören in Markdown-Docs im Repo, nicht in die Commit-Message. Der Autor committet per TortoiseGit und bestätigt explizit ("commit ist drin").
+
+## Code-Struktur (mattjesGo)
+
+- `chess/` – generator-unabhängiges Vokabular: `Piece`, `Pos`, Perft-Referenzstellungen. Wird von allen Brett-Darstellungen geteilt.
+- `mailbox/` – erster Generator (Milestone 1): 8x8-Mailbox mit Tabellen (`edgeDist`, `knightTargets`, …), `GenMoves` liefert legale Züge via Make/Check/Unmake, `DoMove`/`UndoMove(State)`, FEN, vier Perft-Varianten (`PerftRecursive`, `PerftIterative` copy-make, `PerftBreadth`, `PerftParallel`) und `PerftDivide` zum Debuggen.
+- `perft/` – Runner: prüft eine `Func(fen, depth)` gegen die Referenzdaten und druckt Zeit, Mn/s und Allokationen.
+- `tests_perft.go` + `main.go` – die ein-/auskommentierbaren Testläufe.
+- `docs/` – Messwerte und Erkenntnisse pro Milestone (z. B. `m1-mailbox-perft.md`). Neue Benchmarks dort eintragen, nicht in Commit-Messages.
+
+Neue Generator-Ansätze bekommen ein eigenes Package neben `mailbox/` und hängen sich über `perft.Run` ein.
 
 ## Referenzcode
 

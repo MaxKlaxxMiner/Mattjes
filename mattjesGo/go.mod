@@ -1,3 +1,3 @@
 module github.com/MaxKlaxxMiner/Mattjes/mattjesGo
 
-go 1.26
+go 1.26.0
