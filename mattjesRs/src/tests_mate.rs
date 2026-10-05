@@ -161,7 +161,15 @@ pub fn matelist_solve(name: &str, max_mate_in: u32, max_plies: u32, max_position
             println!("    FAIL: mate in {} plies, expected {} ({})", r.mate_plies, 2 * p.mate_in - 1, fmt_ms(elapsed));
             ok = false;
         } else {
-            println!("    ok: mate in {} in {}  pv {}", r.mate_plies.div_ceil(2), fmt_ms(elapsed), pv_string(&r.pv));
+            println!(
+                "    ok: mate in {} in {}, proof DAG {} of {} positions ({:.1}%)  pv {}",
+                r.mate_plies.div_ceil(2),
+                fmt_ms(elapsed),
+                group(r.proof_positions as u64),
+                group(r.positions as u64),
+                100.0 * r.proof_positions as f64 / r.positions as f64,
+                pv_string(&r.pv)
+            );
         }
     }
     print!("--- total: {}", fmt_ms(total_time));

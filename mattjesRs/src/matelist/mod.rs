@@ -39,6 +39,12 @@ pub struct Result {
     pub resolved: usize,
     /// Longest mate distance found anywhere in the graph.
     pub max_level: u32,
+    /// One proof DAG of the root's mate: the attacker plays one shortest move per
+    /// position, the defender every move. No search can prove the mate with fewer
+    /// positions than the smallest such DAG, so this bounds what a smarter forward
+    /// search could save against brute force.
+    pub proof_positions: usize,
+    pub proof_edges: usize,
 }
 
 // status per position: 0 unknown, 1..127 side to move wins (mates) in n plies,
@@ -188,8 +194,54 @@ pub fn solve(root: &Board, max_plies: u32, max_positions: usize, progress: &mut 
     if s != UNKNOWN && s & LOSE_FLAG == 0 {
         r.mate_plies = s as u32;
         r.pv = principal_variation(root, &store, &status);
+        (r.proof_positions, r.proof_edges) = proof_size(&recs, &store, &status);
+        progress(&format!("proof DAG: {} positions, {} edges (attacker one shortest move, defender all moves)", r.proof_positions, r.proof_edges));
     }
     Ok(r)
+}
+
+/// Walks one proof DAG of the root's mate breadth-first: at a winning position
+/// the first child that loses in n-1 is taken, at a losing position all children.
+/// Returns the number of distinct positions and edges in it.
+fn proof_size(recs: &[Record], store: &Store, status: &[u8]) -> (usize, usize) {
+    let mut in_proof = vec![false; recs.len()];
+    in_proof[0] = true;
+    let mut queue: Vec<u32> = vec![0];
+    let (mut positions, mut edges) = (1usize, 0usize);
+    let mut buf = new_buffer();
+    while !queue.is_empty() {
+        let mut next: Vec<u32> = Vec::new();
+        for &i in &queue {
+            let s = status[i as usize];
+            if s == lose_in(0) {
+                continue;
+            }
+            let b = PackedFixed::decode(&recs[i as usize]).0;
+            let n = b.gen_moves(&mut buf);
+            let attacker = s & LOSE_FLAG == 0;
+            let want = lose_in(s as u32 - 1);
+            for &m in &buf[..n] {
+                let mut child = b;
+                child.do_move(m);
+                let Some(idx) = store.get(child.key) else { continue };
+                let idx = idx as usize;
+                if attacker && status[idx] != want {
+                    continue;
+                }
+                edges += 1;
+                if !in_proof[idx] {
+                    in_proof[idx] = true;
+                    positions += 1;
+                    next.push(idx as u32);
+                }
+                if attacker {
+                    break;
+                }
+            }
+        }
+        queue = next;
+    }
+    (positions, edges)
 }
 
 /// Follows the mate distances from the root: the winner picks a child that

@@ -321,3 +321,34 @@ Lesart:
   zählt stattdessen alle Stellungen des Materials auf (mit Symmetrie), nutzt
   Rückwärtszüge statt Elternlisten und schreibt DTM in ein Byte-Array; die
   Retrograde-Logik ist dieselbe.
+
+### Wie groß ist der Beweis? Der Maßstab für jede Suche
+
+Der Autor hielt dagegen, dass `matelist` Brute Force ist und kein besserer
+Algorithmus. Um zu wissen, wie viel ein besserer Algorithmus überhaupt sparen
+kann, zählt `matelist` nach dem Lösen **einen Beweisgraphen** des Wurzelmatts:
+von der Wurzel aus nimmt der Angreifer pro Stellung einen kürzesten Zug, der
+Verteidiger alle Züge; gezählt werden die verschiedenen Stellungen. Keine
+Suche kann das Matt mit weniger Stellungen beweisen als der kleinste solche
+Graph (der hier gezählte ist eine Obergrenze dafür).
+
+| Stellung | Matt in | erreichbare Stellungen | Beweisgraph | Anteil | `mateab`-Expansionen (Stores) | Faktor `mateab` | Faktor `matelist` |
+|---|---|---|---|---|---|---|---|
+| KRR-K | 7 | 11.079.632 | 907 (1.194 Kanten) | 0,008 % | 578.963 | 640 | 12.200 |
+| KQ-KN | 12 | 22.292.508 | 2.687 (3.560) | 0,012 % | 12.883.793 | 4.800 | 8.300 |
+| KBN-K | 31 | 12.814.320 | 29.958 (45.788) | 0,23 % | 192.200.797 | 6.400 | 430 |
+
+Die Vermutung, ein Matt in 31 sei inhärent ein großer Beweis, war falsch: Die
+drei bis acht Königszüge des Verteidigers laufen über Transpositionen
+zusammen, der Beweis bleibt bei 30 Tsd. Stellungen. Gegen diesen Maßstab
+rechnen beide bisherigen Verfahren um Größenordnungen zu viel. Ein Verfahren,
+das den **Beweis sucht statt den Raum**, hat hier echtes Potenzial, und der
+Beweisgraph ist sein Maßstab: Knoten der Suche geteilt durch Beweisgröße ist
+der Overhead des Algorithmus, unabhängig vom Material. Das ist der Auftrag an
+df-pn (Schritt 4).
+
+Einschränkung: Der Beweisgraph beweist "Matt in 31 existiert". Der Nachweis,
+dass es **kein kürzeres** gibt, ist eine Widerlegung über alle Angreiferzüge
+und kann viel größer sein; daran hat sich `mateab` verausgabt. Deshalb die
+Zweistufigkeit aus dem Milestone-Text: Stufe 1 findet beweisgeleitet irgendein
+Matt (Obergrenze), Stufe 2 beweist die Kürze gezielt mit dieser Schranke.

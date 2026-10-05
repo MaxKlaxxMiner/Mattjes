@@ -35,6 +35,11 @@ type Result struct {
 	Plies     int // breadth-first depth reached
 	Resolved  int // positions with a known mate distance for either side
 	MaxLevel  int // longest mate distance found anywhere in the graph
+	// ProofPositions and ProofEdges measure one proof DAG of the root's mate: the
+	// attacker plays one shortest move per position, the defender every move. No
+	// search can prove the mate with fewer positions than the smallest such DAG,
+	// so this bounds what a smarter forward search could save against brute force.
+	ProofPositions, ProofEdges int
 }
 
 // Progress receives one line per phase and per breadth-first ply.
@@ -186,8 +191,53 @@ func Solve(root *bitboard.Board, maxPlies, maxPositions int, progress Progress) 
 	if s := status[0]; s != unknown && s&loseFlag == 0 {
 		r.MatePlies = int(s)
 		r.PV = principalVariation(root, store, status)
+		r.ProofPositions, r.ProofEdges = proofSize(recs, store, status)
+		report(fmt.Sprintf("proof DAG: %d positions, %d edges (attacker one shortest move, defender all moves)", r.ProofPositions, r.ProofEdges))
 	}
 	return r, nil
+}
+
+// proofSize walks one proof DAG of the root's mate breadth-first: at a winning
+// position the first child that loses in n-1 is taken, at a losing position all
+// children. Returns the number of distinct positions and edges in it.
+func proofSize(recs [][bitboard.PackedFixedBytes]byte, store *ttstore.Store, status []uint8) (int, int) {
+	inProof := make([]bool, len(recs))
+	inProof[0] = true
+	queue := []uint32{0}
+	positions, edges := 1, 0
+	var buf chess.MoveBuffer
+	for len(queue) > 0 {
+		var next []uint32
+		for _, i := range queue {
+			s := status[i]
+			if s == loseIn(0) {
+				continue
+			}
+			b, _ := bitboard.DecodePackedFixed(recs[i][:])
+			n := b.GenMoves(&buf)
+			attacker := s&loseFlag == 0
+			want := loseIn(int(s) - 1)
+			for j := 0; j < n; j++ {
+				child := b
+				child.DoMove(buf[j])
+				idx, _ := store.Get(child.Key)
+				if attacker && status[idx] != want {
+					continue
+				}
+				edges++
+				if !inProof[idx] {
+					inProof[idx] = true
+					positions++
+					next = append(next, uint32(idx))
+				}
+				if attacker {
+					break
+				}
+			}
+		}
+		queue = next
+	}
+	return positions, edges
 }
 
 // principalVariation follows the mate distances from the root: the winner picks

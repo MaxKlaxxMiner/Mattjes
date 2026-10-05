@@ -159,7 +159,8 @@ func matelistSolve(name string, maxMateIn int, maxPlies int, maxPositions int) {
 			fmt.Printf("    FAIL: mate in %d plies, expected %d (%s)\n", r.MatePlies, 2*p.MateIn-1, fmtMs(elapsed))
 			ok = false
 		default:
-			fmt.Printf("    ok: mate in %d in %s  pv %s\n", (r.MatePlies+1)/2, fmtMs(elapsed), pvString(r.PV))
+			fmt.Printf("    ok: mate in %d in %s, proof DAG %s of %s positions (%.1f%%)  pv %s\n", (r.MatePlies+1)/2, fmtMs(elapsed),
+				perftGroup(uint64(r.ProofPositions)), perftGroup(uint64(r.Positions)), 100*float64(r.ProofPositions)/float64(r.Positions), pvString(r.PV))
 		}
 	}
 	fmt.Printf("--- total: %s", fmtMs(totalTime))
