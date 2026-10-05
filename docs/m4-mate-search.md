@@ -115,3 +115,114 @@ Schritt 3.
 Die Mattzüge der Hauptvarianten weichen von den Tablebase-Erstzügen ab (KQQ-K:
 Qe7+ statt Qf7). Das ist korrekt: Es gibt mehrere Matts in 3, die Suche liefert
 das erste in Zugreihenfolge, die Tablebase ein beliebiges optimales.
+
+## Schritt 3: `mateab` mit Transposition Table (2026-10-05)
+
+Die Tabelle aus Milestone 3 (`tt.Table` oder `tt.Buckets`, 256 MB) hängt über
+ein kleines Interface an der Suche. Was gespeichert wird, steht in
+`mateab/ttvalue.go`:
+
+| Knoten | Typ 2 (Matt) | Typ 1 (kein Matt) |
+|---|---|---|
+| Angreifer | Matt in d Halbzügen, exakt, gilt für jede Resttiefe ≥ d; Zug = Mattzug | kein Matt innerhalb d, gilt für jede Resttiefe ≤ d |
+| Verteidiger | wird in d gemattet; Zug = längste Verteidigung | Flucht existiert innerhalb d; Zug = der Fluchtzug |
+
+Value = Typ (2 Bit) | Tiefe (7 Bit) | Von (6) | Nach (6) = 21 Bit, passt in
+beide Layouts bei 256 MB. Der Zug trägt keine Umwandlungsfigur (Dame wird
+angenommen), er dient nur der Sortierung. **Kein Tiefensalz im Key**, anders
+als bei Perft: Ein bewiesenes Matt ist tiefenunabhängig, eine Widerlegung
+gilt bis zur gespeicherten Tiefe. Bei einem Treffer, der den Knoten beendet,
+bricht die Hauptvariante der Dreieckstabelle ab; `extendPV` setzt sie nach der
+Suche über die TT-Züge fort (Mattzug an Angreifer-, längste Verteidigung an
+Verteidigerknoten), bis zum Matt oder bis ein Eintrag fehlt ("..." in der
+Ausgabe).
+
+Alle Teststellungen bis Matt in 17, direkte Tabelle 256 MB, Tabelle pro
+Stellung geleert (Arbeitsrechner; Knoten und Zähler in Go und Rust identisch):
+
+| Stellung | Matt in | Knoten ohne TT | Knoten mit TT | Go ohne | Go mit | Rust mit | Treffer, die den Knoten beenden | ersetzt | Füllgrad |
+|---|---|---|---|---|---|---|---|---|---|
+| KQQ-K | 3 | 1.966 | 1.810 | 0 ms | 0 ms | 0 ms | 14 | 0 | 0,0 % |
+| KQR-K | 5 | 1.169.380 | 285.159 | 129 ms | 47 ms | 34 ms | 39.293 | 83 | 0,3 % |
+| KRR-K | 7 | 106.775.538 | 2.440.949 | 17,9 s | 0,62 s | 0,40 s | 1.297.138 | 10.765 | 2,6 % |
+| KQ-KN | 12 | | 82.841.381 | | 20,8 s | 13,5 s | 56.380.522 | 2.192.652 | 28,2 % |
+| KR-KR | 15 | | 20.179.903 | | 5,0 s | 3,1 s | 16.096.707 | 92.443 | 4,7 % |
+| KBB-K | 17 | | 446.543.152 | | 119,1 s | 81,5 s | 369.430.716 | 16.397.933 | 26,7 % |
+| Bauern | 6 | 464.248 | 216.357 | 99 ms | 54 ms | 36 ms | 36.971 | 216 | 0,4 % |
+| gesamt | | | 552.508.711 | | 145,7 s | 98,5 s | | | |
+
+Alle Mattlängen exakt bei 2N-1 Halbzügen, Rust 1,5-mal schneller als Go. Lesart:
+
+- **Faktor 30 bis 44** bei KRR-K (Knoten 44-fach, Zeit 29-fach). Der Gewinn
+  kommt fast vollständig aus der Widerlegungsphase: Tiefe 11 fällt von 81,7
+  Mio. auf 1,9 Mio. Knoten. Transpositionen in Figurenendspielen sind massiv,
+  dieselbe Stellung entsteht über unzählige Zugfolgen.
+- **Trefferquote 80 bis 85 %** der Probes beenden den Knoten. Die Suche
+  besteht zum größten Teil aus Wiedersehen.
+- **KQ-KN und KBB-K** füllen die Tabelle zu über einem Viertel und ersetzen
+  Millionen Einträge, obwohl 16 Mio. Slots da sind. Die Hauptvariante von
+  KQ-KN ist deshalb abgeschnitten (Eintrag unterwegs ersetzt). Beide sind
+  Stellungen mit langen stillen Manövern, in denen fast jeder Zug legal und
+  nicht widerlegbar ist, bis die Tiefe ausgeht. Hier wird Alterung oder eine
+  klügere Ersetzung (Typ Matt behalten) nötig, und hier beginnt der Fall für
+  df-pn.
+- **KR-KR** (Matt in 15) ist mit 5 s billiger als KQ-KN (Matt in 12): Das
+  Gegenspiel des Verteidigers (eigener Turm) erzwingt Abtausch oder
+  Turmverlust, der Baum ist schmal.
+
+Beide Layouts (direkt und 4-Wege-Buckets) liefern dieselben Mattlängen.
+Buckets bis Matt in 7: 2 statt 10.765 Ersetzungen bei KRR-K, Knotenzahlen
+innerhalb von 1 % gleich, Zeit identisch. Ob die Buckets bei den großen
+Stellungen (28 % Füllgrad) den Unterschied machen, ist noch nicht gemessen.
+
+### KBN-K, Matt in 31, mit 1-GB-Bucket-Tabelle
+
+Vom Autor auf dem Arbeitsrechner gestartet (`mateabSolveNamed("KBN-K", 1024,
+true)`), Go und Rust knotengenau gleich:
+
+| | Go | Rust |
+|---|---|---|
+| Knoten gesamt (31 Iterationen) | 1.411.582.185 | 1.411.582.185 |
+| Zeit | 363,9 s | 300,2 s |
+| TT-Treffer, die den Knoten beenden | 1.205.568.301 (85 %) | gleich |
+| Stores (= echte Expansionen) | 192.200.797 | gleich |
+| Ersetzungen | 164.863 | gleich |
+| Füllgrad | 14,1 % = 9,5 Mio. Einträge | gleich |
+
+Der Füllgrad passt zur Schätzung von rund 13 Mio. erreichbaren Stellungen
+(wK 64 × sK 64 × L 32 Felder einer Farbe × S 64 × 2 Seiten, minus illegale):
+Die Tabelle hält das ganze Endspiel, 67 Mio. Plätze reichen mit Reserve. Der
+Aufwand pro Iteration wächst nicht mehr exponentiell, sondern bleibt ab Tiefe
+37 flach bei 70 bis 120 Mio. Knoten, weil jede Iteration denselben
+Stellungsraum noch einmal durchläuft.
+
+**Die Zerlegung zeigt die Schwäche des Verfahrens:** 192 Mio. echte
+Expansionen in 31 Iterationen sind rund 6 Mio. pro Iteration, weniger als die
+Hälfte der erreichbaren Stellungen. Verschwendet wird der Faktor 31 der
+iterativen Vertiefung. Ursache ist die Semantik der Widerlegungen: "kein Matt
+innerhalb d" verfällt, sobald mit d+2 gesucht wird, und in einem Endspiel ohne
+Matt in Reichweite sind fast alle Knoten Widerlegungen. Beweise dagegen
+bleiben stehen; sie machen die 85 % Sofort-Treffer aus.
+
+Konsequenzen:
+
+- Für kleines Material ist die **Retrograde-Analyse** (Milestone 5) das
+  richtige Werkzeug: jede der 13 Mio. Stellungen genau einmal, und DTM für
+  alle Stellungen des Materials fällt mit ab. Zwei Größenordnungen weniger
+  Arbeit als diese Suche.
+- Für großes Material braucht die Vorwärtssuche ein Verfahren, dessen Wissen
+  nicht verfällt: **df-pn** iteriert über Beweiszahlen statt über Tiefen.
+  Dafür liefert es kein kürzestes Matt, deshalb die Zweistufigkeit.
+- Die **Hauptvariante bricht ab**, obwohl nur 1,7 % der Einträge ersetzt
+  wurden: Bei 61 Gliedern fehlt mit über 50 % Wahrscheinlichkeit eines. Die
+  Ersetzung muss Beweise schonen, oder die Variante kommt aus der Suche selbst.
+
+### Offen nach Schritt 3
+
+- Ersetzung nach Typ (Beweise nie durch Widerlegungen verdrängen) oder
+  Alterung; danach sollte die Hauptvariante bei KBN-K vollständig sein.
+- Buckets gegen direkt bei KQ-KN und KBB-K mit 256 MB: Die direkte Tabelle
+  ersetzte dort bei 27 % Füllgrad jeden vierten neuen Eintrag, Buckets sollten
+  das fast vollständig vermeiden.
+- KQ-KBN (fünf Steine, Matt in 39, über 500 Mio. Stellungen) ist mit dieser
+  Suche nicht sinnvoll; das ist der Fall für Schritt 4.

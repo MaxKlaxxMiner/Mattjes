@@ -37,10 +37,6 @@ impl Buckets {
         Buckets { buckets: vec![Bucket::default(); n], mask: n as u64 - 1, stats: Stats::default() }
     }
 
-    pub fn reset_stats(&mut self) {
-        self.stats = Stats::default();
-    }
-
     pub fn bytes(&self) -> usize {
         self.buckets.len() * BUCKET_BYTES
     }
@@ -108,5 +104,9 @@ impl TransTable for Buckets {
 
     fn stats(&self) -> &Stats {
         &self.stats
+    }
+
+    fn reset_stats(&mut self) {
+        self.stats = Stats::default();
     }
 }

@@ -22,6 +22,7 @@ type transTable interface {
 	Store(k tt.Key, value uint64)
 	MaxValue() uint64
 	Clear()
+	ResetStats()
 	Slots() int
 	Used() int
 	Counters() *tt.Stats

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math/bits"
 	"strings"
 	"time"
 
@@ -9,21 +10,43 @@ import (
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mateab"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/perft"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/tt"
 )
 
 // --- milestone 4, step 2: mate search with mate window, no TT ---
 
 // mateabSolve runs the reference mate positions up to maxMateIn moves with the
-// plain depth-first search. The mate must appear exactly at depth 2*MateIn-1
+// depth-first search, without a table (sizeMB 0) or with a direct-mapped or
+// bucket table of sizeMB. The mate must appear exactly at depth 2*MateIn-1
 // plies: earlier would contradict the tablebase, later or never is a miss.
-// Prints nodes, time and the principal variation per depth.
-func mateabSolve(maxMateIn int) {
-	fmt.Println("=== mateab / mate search with mate window, iterative deepening, no TT ===")
+// Prints nodes, time, table hits and the principal variation per depth. The
+// table is cleared per position, so Go and Rust can be compared node by node.
+func mateabSolve(maxMateIn int, sizeMB int, bucketed bool) {
+	runMateab(func(p chess.MatePosition) bool { return p.MateIn <= maxMateIn }, sizeMB, bucketed)
+}
+
+// mateabSolveNamed runs a single reference position by name, for the long ones.
+func mateabSolveNamed(name string, sizeMB int, bucketed bool) {
+	runMateab(func(p chess.MatePosition) bool { return p.Name == name }, sizeMB, bucketed)
+}
+
+func runMateab(selected func(p chess.MatePosition) bool, sizeMB int, bucketed bool) {
+	var table transTable
+	title := "no TT"
+	switch {
+	case sizeMB > 0 && bucketed:
+		table = tt.NewBuckets(sizeMB)
+		title = fmt.Sprintf("4-way bucket TT %d MB", sizeMB)
+	case sizeMB > 0:
+		table = tt.New(sizeMB)
+		title = fmt.Sprintf("direct-mapped TT %d MB", sizeMB)
+	}
+	fmt.Printf("=== mateab / mate search with mate window, iterative deepening, %s ===\n", title)
 	ok := true
 	var totalNodes uint64
 	var totalTime time.Duration
 	for i, p := range chess.MatePositions {
-		if p.MateIn > maxMateIn {
+		if !selected(p) {
 			continue
 		}
 		fmt.Printf("[%d] %s  %s  mate in %d\n", i+1, p.Name, p.FEN, p.MateIn)
@@ -31,14 +54,36 @@ func mateabSolve(maxMateIn int) {
 		if err != nil {
 			panic(err)
 		}
-		s := mateab.New(mateab.Material{})
+		var s *mateab.Searcher
+		if table != nil {
+			if mateab.ValueBits > bits.Len64(table.MaxValue()) {
+				panic("table too small for the mateab value layout")
+			}
+			table.Clear()
+			table.ResetStats()
+			s = mateab.New(mateab.Material{}, table)
+		} else {
+			s = mateab.New(mateab.Material{}, nil)
+		}
 		start := time.Now()
 		lastNodes := uint64(0)
 		depthStart := start
+		s.Progress = func(nodes uint64) {
+			line := fmt.Sprintf("              ... %s nodes, %s", perftGroup(nodes), fmtMs(time.Since(depthStart)))
+			if table != nil {
+				st := table.Counters()
+				line += fmt.Sprintf(", tt %s stores, %s replaced", perftGroup(st.Stores), perftGroup(st.Replaced))
+			}
+			fmt.Println(line)
+		}
 		r := s.Solve(&b, 2*p.MateIn-1, func(plies int, r mateab.Result) {
 			now := time.Now()
 			if r.MatePlies != 0 {
-				fmt.Printf("    depth %2d: mate in %d  %14s nodes %9s  pv %s\n", plies, (r.MatePlies+1)/2, perftGroup(r.Nodes-lastNodes), fmtMs(now.Sub(depthStart)), pvString(r.PV))
+				pv := pvString(r.PV)
+				if len(r.PV) < r.MatePlies {
+					pv += " ..."
+				}
+				fmt.Printf("    depth %2d: mate in %d  %14s nodes %9s  pv %s\n", plies, (r.MatePlies+1)/2, perftGroup(r.Nodes-lastNodes), fmtMs(now.Sub(depthStart)), pv)
 			} else {
 				fmt.Printf("    depth %2d: no mate    %14s nodes %9s\n", plies, perftGroup(r.Nodes-lastNodes), fmtMs(now.Sub(depthStart)))
 			}
@@ -56,7 +101,13 @@ func mateabSolve(maxMateIn int) {
 			fmt.Printf("    FAIL: mate in %d plies, expected %d\n", r.MatePlies, 2*p.MateIn-1)
 			ok = false
 		default:
-			fmt.Printf("    ok: %s nodes in %s\n", perftGroup(r.Nodes), fmtMs(elapsed))
+			fmt.Printf("    ok: %s nodes in %s", perftGroup(r.Nodes), fmtMs(elapsed))
+			if table != nil {
+				st := table.Counters()
+				fmt.Printf(", tt: %s probes, %s hits ending the node, %s stores, %s replaced, fill %.1f%%",
+					perftGroup(st.Probes), perftGroup(r.TTHits), perftGroup(st.Stores), perftGroup(st.Replaced), 100*float64(table.Used())/float64(table.Slots()))
+			}
+			fmt.Println()
 		}
 	}
 	fmt.Printf("--- total: %s nodes in %s", perftGroup(totalNodes), fmtMs(totalTime))

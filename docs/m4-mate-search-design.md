@@ -370,7 +370,13 @@ Bei Buckets fehlen 2 Bits: die beiden freien Bits im Zug entfallen. Bei einer
 1-GB-Tabelle (26 Bit) wären 2 Bits für Alterung frei. 63 Halbzüge reichen für
 Matt in 31, nicht für Matt in 39 (77 Halbzüge): dann 7 Tiefenbits und der
 Zug ohne Promo-Bits (Promo aus der Stellung rekonstruierbar, Dame als
-Default). Entscheidung bei der Implementierung, der Punkt ist dokumentiert.
+Default).
+
+*Umgesetzt (Schritt 3):* 21 Bit = Typ 2 (1 kein Matt / Flucht, 2 Matt /
+gemattet) + Tiefe 7 + Von 6 + Nach 6, Umwandlung implizit Dame. Passt in
+direkte Tabelle (24 Bit) und Buckets (22 Bit) bei 256 MB. Typ in den hohen
+Bits, damit die Bucket-Ersetzung Widerlegungen vor Beweisen und flache vor
+tiefen Einträgen opfert.
 
 **Tiefenunabhängigkeit.** Ein bewiesenes Matt (Typ 1) gilt für jede Suchtiefe
 ab der Distanz, ein "kein Matt bis Tiefe d" nur für Resttiefen bis d. Deshalb
@@ -494,9 +500,11 @@ Benchmarks auf Ansage (Maschine in der Kopfzeile nennen, `docs/machines.md`).
    Ebene, Terminal-Orakel-Schnittstelle (2.1) mit dem Material-Check als erster
    Quelle. Stellungen 1, 2, 3, 9 stimmen (Länge exakt bei 2N-1, eine Tiefe
    weniger findet nichts). Ergebnisse in `m4-mate-search.md`.
-3. **`mateab` mit `tt`:** Value-Layout aus 5.1, TT-Zug, Zugsortierung.
-   Stellungen 4, 5, 6. Erste Messung: Knoten und Zeit mit/ohne TT, mit/ohne
-   Sortierung, Trefferquote.
+3. **`mateab` mit `tt`** ✅ (2026-10-05, Go und Rust): Value-Layout 21 Bit
+   (Typ 2, Tiefe 7, Zug 12 ohne Umwandlungsfigur, passt in direkte Tabelle
+   und Buckets bei 256 MB), TT-Zug zuerst, Hauptvariante über TT-Einträge
+   verlängert. Stellungen 4, 5, 6 gelöst, Faktor 30 bei KRR-K. Ergebnisse in
+   `m4-mate-search.md`.
 4. **`matepn`:** df-pn mit `tt`, pn/dn-Kodierung (zwei Varianten messen),
    Mobilitätsinitialisierung an/aus. Stellungen 7 und 8. Orakelvergleich mit
    `mateab` auf 1 bis 6.

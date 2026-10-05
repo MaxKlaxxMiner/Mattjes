@@ -82,6 +82,7 @@ pub trait TransTable {
     /// Occupied slots (full scan).
     fn used(&self) -> usize;
     fn stats(&self) -> &Stats;
+    fn reset_stats(&mut self);
     /// The width of a stored value (= log2 of the slot or bucket count).
     fn value_bits(&self) -> u32 {
         self.max_value().count_ones()
@@ -112,10 +113,6 @@ impl Table {
 
     pub(super) fn with_slots(slots: usize) -> Table {
         Table { entries: vec![Entry::default(); slots], mask: slots as u64 - 1, stats: Stats::default() }
-    }
-
-    pub fn reset_stats(&mut self) {
-        self.stats = Stats::default();
     }
 
     pub fn bytes(&self) -> usize {
@@ -169,5 +166,9 @@ impl TransTable for Table {
 
     fn stats(&self) -> &Stats {
         &self.stats
+    }
+
+    fn reset_stats(&mut self) {
+        self.stats = Stats::default();
     }
 }

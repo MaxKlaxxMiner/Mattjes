@@ -59,7 +59,10 @@ func main() {
 	// bitboardPerftDetailed(200_000_000)
 	// bitboardMateVerify(5_000_000)
 
-	// --- milestone 4, step 2: mate search without TT ---
-	// mateabSolve(7)
+	// --- milestone 4, step 2 + 3: mate search without / with TT ---
+	// mateabSolve(7, 0, false)
+	// mateabSolve(17, 256, false)
+	// mateabSolve(17, 256, true)
+	// mateabSolveNamed("KBN-K", 1024, true) // mate in 31: 1.4 G nodes, 5 to 6 minutes
 	_ = chess.StartFEN // keep the import for the commented experiments above
 }

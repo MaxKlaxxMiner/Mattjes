@@ -1,44 +1,89 @@
 //! Milestone 4, step 1: generator extensions for the mate search.
 
 use std::cell::Cell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::bitboard::{self, Board};
-use crate::chess::{new_buffer, Move, MATE_POSITIONS, PERFT_POSITIONS, UNKNOWN};
+use crate::chess::{new_buffer, MatePosition, Move, MATE_POSITIONS, PERFT_POSITIONS, UNKNOWN};
 use crate::mateab;
 use crate::perft;
 use crate::tests_hash::{fmt_ms, group};
+use crate::tt::{self, TransTable};
 
-// --- milestone 4, step 2: mate search with mate window, no TT ---
+// --- milestone 4, step 2 + 3: mate search with mate window, without / with TT ---
 
-/// Runs the reference mate positions up to `max_mate_in` moves with the plain
-/// depth-first search. The mate must appear exactly at depth 2*mate_in-1 plies:
-/// earlier would contradict the tablebase, later or never is a miss. Prints
-/// nodes, time and the principal variation per depth.
-pub fn mateab_solve(max_mate_in: u32) {
-    println!("=== mateab / mate search with mate window, iterative deepening, no TT ===");
+/// Runs the reference mate positions up to `max_mate_in` moves with the
+/// depth-first search, without a table (`size_mb` 0) or with a direct-mapped or
+/// bucket table of `size_mb`. The mate must appear exactly at depth 2*mate_in-1
+/// plies: earlier would contradict the tablebase, later or never is a miss.
+/// Prints nodes, time, table hits and the principal variation per depth. The
+/// table is cleared per position, so Go and Rust can be compared node by node.
+pub fn mateab_solve(max_mate_in: u32, size_mb: usize, bucketed: bool) {
+    mateab_run(&|p| p.mate_in <= max_mate_in, size_mb, bucketed);
+}
+
+/// Runs a single reference position by name, for the long ones.
+pub fn mateab_solve_named(name: &str, size_mb: usize, bucketed: bool) {
+    mateab_run(&|p| p.name == name, size_mb, bucketed);
+}
+
+fn mateab_run(selected: &dyn Fn(&MatePosition) -> bool, size_mb: usize, bucketed: bool) {
+    if size_mb == 0 {
+        run_mateab::<tt::Table>("no TT", None, selected);
+    } else if bucketed {
+        run_mateab(&format!("4-way bucket TT {} MB", size_mb), Some(tt::Buckets::new(size_mb)), selected);
+    } else {
+        run_mateab(&format!("direct-mapped TT {} MB", size_mb), Some(tt::Table::new(size_mb)), selected);
+    }
+}
+
+fn run_mateab<T: TransTable + 'static>(title: &str, mut table: Option<T>, selected: &dyn Fn(&MatePosition) -> bool) {
+    println!("=== mateab / mate search with mate window, iterative deepening, {} ===", title);
+    if let Some(t) = table.as_ref() {
+        assert!(mateab::VALUE_BITS <= t.value_bits(), "table too small for the mateab value layout");
+    }
     let mut ok = true;
     let mut total_nodes = 0u64;
     let mut total_time = Duration::ZERO;
     for (i, p) in MATE_POSITIONS.iter().enumerate() {
-        if p.mate_in > max_mate_in {
+        if !selected(p) {
             continue;
         }
         println!("[{}] {}  {}  mate in {}", i + 1, p.name, p.fen, p.mate_in);
         let b = Board::from_fen(p.fen).expect("valid FEN");
-        let mut s = mateab::Searcher::new(mateab::Material);
+        if let Some(t) = table.as_mut() {
+            t.clear();
+            t.reset_stats();
+        }
+        let mut s = mateab::Searcher::new(mateab::Material, table.take());
         let start = Instant::now();
         let mut last_nodes = 0u64;
         let mut depth_start = start;
+        let progress_start = Rc::new(Cell::new(start));
+        let ps = progress_start.clone();
+        s.progress = Some(Box::new(move |nodes, t: Option<&T>| {
+            let mut line = format!("              ... {} nodes, {}", group(nodes), fmt_ms(ps.get().elapsed()));
+            if let Some(t) = t {
+                let st = t.stats();
+                line += &format!(", tt {} stores, {} replaced", group(st.stores), group(st.replaced));
+            }
+            println!("{}", line);
+        }));
         let r = s.solve(&b, 2 * p.mate_in - 1, |plies, r| {
             let now = Instant::now();
             if r.mate_plies != 0 {
-                println!("    depth {:>2}: mate in {}  {:>14} nodes {:>9}  pv {}", plies, r.mate_plies.div_ceil(2), group(r.nodes - last_nodes), fmt_ms(now - depth_start), pv_string(&r.pv));
+                let mut pv = pv_string(&r.pv);
+                if r.pv.len() < r.mate_plies as usize {
+                    pv += " ...";
+                }
+                println!("    depth {:>2}: mate in {}  {:>14} nodes {:>9}  pv {}", plies, r.mate_plies.div_ceil(2), group(r.nodes - last_nodes), fmt_ms(now - depth_start), pv);
             } else {
                 println!("    depth {:>2}: no mate    {:>14} nodes {:>9}", plies, group(r.nodes - last_nodes), fmt_ms(now - depth_start));
             }
             last_nodes = r.nodes;
             depth_start = now;
+            progress_start.set(now);
         });
         let elapsed = start.elapsed();
         total_nodes += r.nodes;
@@ -50,8 +95,21 @@ pub fn mateab_solve(max_mate_in: u32) {
             println!("    FAIL: mate in {} plies, expected {}", r.mate_plies, 2 * p.mate_in - 1);
             ok = false;
         } else {
-            println!("    ok: {} nodes in {}", group(r.nodes), fmt_ms(elapsed));
+            print!("    ok: {} nodes in {}", group(r.nodes), fmt_ms(elapsed));
+            if let Some(t) = s.table() {
+                let st = t.stats();
+                print!(
+                    ", tt: {} probes, {} hits ending the node, {} stores, {} replaced, fill {:.1}%",
+                    group(st.probes),
+                    group(r.tt_hits),
+                    group(st.stores),
+                    group(st.replaced),
+                    100.0 * t.used() as f64 / t.slots() as f64
+                );
+            }
+            println!();
         }
+        table = s.into_table();
     }
     print!("--- total: {} nodes in {}", group(total_nodes), fmt_ms(total_time));
     println!("{}\n", if ok { "  [all ok]" } else { "  [FAILURES]" });

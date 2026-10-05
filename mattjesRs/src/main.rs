@@ -62,6 +62,9 @@ fn main() {
     // tests_mate::bitboard_perft_detailed(200_000_000);
     // tests_mate::bitboard_mate_verify(5_000_000);
 
-    // --- milestone 4, step 2: mate search without TT ---
-    // tests_mate::mateab_solve(7);
+    // --- milestone 4, step 2 + 3: mate search without / with TT ---
+    // tests_mate::mateab_solve(7, 0, false);
+    // tests_mate::mateab_solve(17, 256, false);
+    // tests_mate::mateab_solve(17, 256, true);
+    // tests_mate::mateab_solve_named("KBN-K", 1024, true); // mate in 31: 1.4 G nodes, 5 to 6 minutes
 }
