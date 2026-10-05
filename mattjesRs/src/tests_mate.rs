@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use crate::bitboard::{self, Board};
 use crate::chess::{new_buffer, MatePosition, Move, MATE_POSITIONS, PERFT_POSITIONS, UNKNOWN};
 use crate::mateab;
+use crate::matelist;
 use crate::perft;
 use crate::tests_hash::{fmt_ms, group};
 use crate::tt::{self, TransTable};
@@ -112,6 +113,58 @@ fn run_mateab<T: TransTable + 'static>(title: &str, mut table: Option<T>, select
         table = s.into_table();
     }
     print!("--- total: {} nodes in {}", group(total_nodes), fmt_ms(total_time));
+    println!("{}\n", if ok { "  [all ok]" } else { "  [FAILURES]" });
+}
+
+// --- milestone 4: list-based search (breadth-first enumeration + retrograde) ---
+
+/// Runs the reference positions up to `max_mate_in` (or a single one by name
+/// when `name` is not empty) with the list-based search: every reachable position
+/// enumerated once, mate distances resolved backwards. Positions whose reachable
+/// graph exceeds `max_positions` are reported as skipped.
+pub fn matelist_solve(name: &str, max_mate_in: u32, max_plies: u32, max_positions: usize) {
+    println!("=== matelist / breadth-first enumeration + retrograde, horizon {} plies, up to {} positions ===", max_plies, group(max_positions as u64));
+    let mut ok = true;
+    let mut total_time = Duration::ZERO;
+    for (i, p) in MATE_POSITIONS.iter().enumerate() {
+        if (!name.is_empty() && p.name != name) || (name.is_empty() && p.mate_in > max_mate_in) {
+            continue;
+        }
+        println!("[{}] {}  {}  mate in {}", i + 1, p.name, p.fen, p.mate_in);
+        let b = Board::from_fen(p.fen).expect("valid FEN");
+        let start = Instant::now();
+        let result = matelist::solve(&b, max_plies, max_positions, &mut |line: &str| {
+            println!("    {}  {}", line, fmt_ms(start.elapsed()));
+        });
+        let elapsed = start.elapsed();
+        total_time += elapsed;
+        let r = match result {
+            Ok(r) => r,
+            Err(e) => {
+                println!("    skipped: {} ({})", e, fmt_ms(elapsed));
+                continue;
+            }
+        };
+        println!(
+            "    {} positions ({} expanded), {} edges, {} plies, {} resolved, longest mate {} plies",
+            group(r.positions as u64),
+            group(r.expanded as u64),
+            group(r.edges as u64),
+            r.plies,
+            group(r.resolved as u64),
+            r.max_level
+        );
+        if r.mate_plies == 0 {
+            println!("    FAIL: no mate found ({})", fmt_ms(elapsed));
+            ok = false;
+        } else if r.mate_plies != 2 * p.mate_in - 1 {
+            println!("    FAIL: mate in {} plies, expected {} ({})", r.mate_plies, 2 * p.mate_in - 1, fmt_ms(elapsed));
+            ok = false;
+        } else {
+            println!("    ok: mate in {} in {}  pv {}", r.mate_plies.div_ceil(2), fmt_ms(elapsed), pv_string(&r.pv));
+        }
+    }
+    print!("--- total: {}", fmt_ms(total_time));
     println!("{}\n", if ok { "  [all ok]" } else { "  [FAILURES]" });
 }
 

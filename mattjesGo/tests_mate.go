@@ -9,6 +9,7 @@ import (
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mateab"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/matelist"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/perft"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/tt"
 )
@@ -111,6 +112,57 @@ func runMateab(selected func(p chess.MatePosition) bool, sizeMB int, bucketed bo
 		}
 	}
 	fmt.Printf("--- total: %s nodes in %s", perftGroup(totalNodes), fmtMs(totalTime))
+	if ok {
+		fmt.Println("  [all ok]")
+	} else {
+		fmt.Println("  [FAILURES]")
+	}
+	fmt.Println()
+}
+
+// --- milestone 4: list-based search (breadth-first enumeration + retrograde) ---
+
+// matelistSolve runs the reference positions up to maxMateIn (or a single one by
+// name when name is not empty) with the list-based search: every reachable
+// position enumerated once, mate distances resolved backwards. Positions whose
+// reachable graph exceeds maxPositions are reported as skipped.
+func matelistSolve(name string, maxMateIn int, maxPlies int, maxPositions int) {
+	fmt.Printf("=== matelist / breadth-first enumeration + retrograde, horizon %d plies, up to %s positions ===\n", maxPlies, perftGroup(uint64(maxPositions)))
+	ok := true
+	var totalTime time.Duration
+	for i, p := range chess.MatePositions {
+		if (name != "" && p.Name != name) || (name == "" && p.MateIn > maxMateIn) {
+			continue
+		}
+		fmt.Printf("[%d] %s  %s  mate in %d\n", i+1, p.Name, p.FEN, p.MateIn)
+		b, err := bitboard.FromFEN(p.FEN)
+		if err != nil {
+			panic(err)
+		}
+		start := time.Now()
+		r, err := matelist.Solve(&b, maxPlies, maxPositions, func(line string) {
+			fmt.Printf("    %s  %s\n", line, fmtMs(time.Since(start)))
+		})
+		elapsed := time.Since(start)
+		totalTime += elapsed
+		if err != nil {
+			fmt.Printf("    skipped: %v (%s)\n", err, fmtMs(elapsed))
+			continue
+		}
+		fmt.Printf("    %s positions (%s expanded), %s edges, %d plies, %s resolved, longest mate %d plies\n",
+			perftGroup(uint64(r.Positions)), perftGroup(uint64(r.Expanded)), perftGroup(uint64(r.Edges)), r.Plies, perftGroup(uint64(r.Resolved)), r.MaxLevel)
+		switch {
+		case r.MatePlies == 0:
+			fmt.Printf("    FAIL: no mate found (%s)\n", fmtMs(elapsed))
+			ok = false
+		case r.MatePlies != 2*p.MateIn-1:
+			fmt.Printf("    FAIL: mate in %d plies, expected %d (%s)\n", r.MatePlies, 2*p.MateIn-1, fmtMs(elapsed))
+			ok = false
+		default:
+			fmt.Printf("    ok: mate in %d in %s  pv %s\n", (r.MatePlies+1)/2, fmtMs(elapsed), pvString(r.PV))
+		}
+	}
+	fmt.Printf("--- total: %s", fmtMs(totalTime))
 	if ok {
 		fmt.Println("  [all ok]")
 	} else {

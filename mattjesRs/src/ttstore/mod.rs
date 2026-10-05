@@ -111,6 +111,23 @@ impl Store {
         self.put(k, 0)
     }
 
+    /// Returns the stored value of k, or stores `value` and returns it when k is
+    /// new, as (value, is_new, ok); ok is false if the store is full and k was
+    /// not stored.
+    pub fn get_or_put(&mut self, k: Key, value: u64) -> (u64, bool, bool) {
+        assert!(value <= self.mask, "ttstore: value exceeds value_bits");
+        let (i, found) = self.find(k);
+        if found {
+            return (self.entries[i][0] & self.mask, false, true);
+        }
+        if self.count >= self.limit {
+            return (0, true, false);
+        }
+        self.entries[i] = [(k[0] & !self.mask) | value, k[1]];
+        self.count += 1;
+        (value, true, true)
+    }
+
     pub fn len(&self) -> usize {
         self.count
     }

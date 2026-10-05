@@ -105,6 +105,24 @@ func (s *Store) Put(k Key, value uint64) (isNew, ok bool) {
 // Insert adds k with value 0 (set semantics); see Put for the results.
 func (s *Store) Insert(k Key) (isNew, ok bool) { return s.Put(k, 0) }
 
+// GetOrPut returns the stored value of k, or stores value and returns it when k
+// is new. ok is false if the store is full and k was not stored.
+func (s *Store) GetOrPut(k Key, value uint64) (got uint64, isNew, ok bool) {
+	if value > s.mask {
+		panic("ttstore: value exceeds ValueBits")
+	}
+	i, found := s.find(k)
+	if found {
+		return s.entries[i][0] & s.mask, false, true
+	}
+	if s.count >= s.limit {
+		return 0, true, false
+	}
+	s.entries[i] = Key{k[0]&^s.mask | value, k[1]}
+	s.count++
+	return value, true, true
+}
+
 func (s *Store) Len() int   { return s.count }
 func (s *Store) Slots() int { return len(s.entries) }
 func (s *Store) Bytes() int { return len(s.entries) * EntryBytes }

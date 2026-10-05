@@ -64,5 +64,9 @@ func main() {
 	// mateabSolve(17, 256, false)
 	// mateabSolve(17, 256, true)
 	// mateabSolveNamed("KBN-K", 1024, true) // mate in 31: 1.4 G nodes, 5 to 6 minutes
+
+	// --- milestone 4: list-based search, 10 to 50 s per four-piece position, about 3 GB (the pawn test exceeds 30 M positions at ply 9) ---
+	// matelistSolve("KRR-K", 0, 200, 30_000_000)
+	// matelistSolve("KBN-K", 0, 200, 30_000_000)
 	_ = chess.StartFEN // keep the import for the commented experiments above
 }

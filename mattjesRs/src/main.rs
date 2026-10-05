@@ -20,6 +20,7 @@
 mod bitboard;
 mod chess;
 mod mateab;
+mod matelist;
 mod perft;
 mod tests_hash;
 mod tests_mate;
@@ -67,4 +68,8 @@ fn main() {
     // tests_mate::mateab_solve(17, 256, false);
     // tests_mate::mateab_solve(17, 256, true);
     // tests_mate::mateab_solve_named("KBN-K", 1024, true); // mate in 31: 1.4 G nodes, 5 to 6 minutes
+
+    // --- milestone 4: list-based search, 10 to 50 s per four-piece position, about 3 GB (the pawn test exceeds 30 M positions at ply 9) ---
+    // tests_mate::matelist_solve("KRR-K", 0, 200, 30_000_000);
+    // tests_mate::matelist_solve("KBN-K", 0, 200, 30_000_000);
 }

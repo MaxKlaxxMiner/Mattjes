@@ -233,6 +233,12 @@ hat genau diese Richtung: Mattstellungen aufzählen und rückwärts gehen).
 Reihenfolge: `mateab` zuerst, dann `matepn`, `matelist` nur, wenn `matepn`
 an Speicher oder Transpositionen scheitert oder wenn Milestone 5 ihn braucht.
 
+*Geändert 2026-10-05:* `matelist` wurde vor `matepn` gebaut, weil der
+KBN-K-Lauf von `mateab` (1,4 Mrd. Knoten für 13 Mio. Stellungen) zeigte, dass
+bei endlichem Stellungsraum zuerst der Algorithmus gebraucht wird, der jede
+Stellung einmal anfasst. Ergebnis: KBN-K in 20 s statt 5 Minuten, exakte
+Distanzen für den ganzen erreichbaren Graphen, siehe `m4-mate-search.md`.
+
 ### 3.4 Asymmetrische Rollen: eine Seite will gewinnen, die andere Remis (Idee des Autors)
 
 Die drei Ansätze oben geben beiden Seiten dasselbe Ziel mit umgekehrtem
@@ -505,9 +511,14 @@ Benchmarks auf Ansage (Maschine in der Kopfzeile nennen, `docs/machines.md`).
    und Buckets bei 256 MB), TT-Zug zuerst, Hauptvariante über TT-Einträge
    verlängert. Stellungen 4, 5, 6 gelöst, Faktor 30 bei KRR-K. Ergebnisse in
    `m4-mate-search.md`.
+3b. **`matelist`** ✅ (2026-10-05, vorgezogen): Breitensuche mit `ttstore`-
+   Deduplizierung, Elternlisten per Zähl-Sortierung, Retrograde-Ebenen. Alle
+   Vier-Steiner-Teststellungen in 10 bis 47 s, längste Distanzen im Graphen
+   treffen die bekannten Maxima. Ergebnisse in `m4-mate-search.md`.
 4. **`matepn`:** df-pn mit `tt`, pn/dn-Kodierung (zwei Varianten messen),
-   Mobilitätsinitialisierung an/aus. Stellungen 7 und 8. Orakelvergleich mit
-   `mateab` auf 1 bis 6.
+   Mobilitätsinitialisierung an/aus. Stellung 8 (fünf Steine) und der
+   Bauerntest als Fälle, in denen der Raum nicht endlich genug für `matelist`
+   ist. Orakelvergleich mit `mateab` auf 1 bis 6.
 5. **Beweisspeicher und Verifikation:** `ttstore` für bewiesene Teilbäume,
    unabhängiger Prüfer, Save/Load, Fortsetzen einer abgebrochenen Suche.
 6. **Rust-Port** von 1 bis 5, Gegenprüfung der Knotenzahlen, Benchmarks beider

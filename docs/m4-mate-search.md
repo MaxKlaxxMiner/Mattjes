@@ -225,4 +225,99 @@ Konsequenzen:
   ersetzte dort bei 27 % Füllgrad jeden vierten neuen Eintrag, Buckets sollten
   das fast vollständig vermeiden.
 - KQ-KBN (fünf Steine, Matt in 39, über 500 Mio. Stellungen) ist mit dieser
-  Suche nicht sinnvoll; das ist der Fall für Schritt 4.
+  Suche nicht sinnvoll; das ist der Fall für df-pn.
+
+## `matelist`: listenbasierte Suche auf dem endlichen Graphen (2026-10-05)
+
+Der KBN-K-Lauf hatte das Grundproblem der Tiefensuche gezeigt: 192 Mio.
+Expansionen für 13 Mio. Stellungen, weil die iterative Vertiefung denselben
+Raum pro Tiefe neu durchläuft. Der Autor wollte deshalb zuerst den Algorithmus,
+der bei endlichem Stellungsraum jede Stellung nur einmal anfasst, und erst
+danach die Tabellen aus Milestone 5. Das ist der dritte Ansatz aus dem Entwurf
+(Abschnitt 3.3), vorgezogen vor df-pn. Package `matelist`, Go und Rust.
+
+Ablauf in drei Phasen:
+
+1. **Vorwärts, Breitensuche.** Alle vom Start erreichbaren Stellungen werden
+   Ebene für Ebene aufgezählt und über einen `ttstore` (Key → Index)
+   dedupliziert: Jede Stellung wird genau einmal expandiert, egal über wie
+   viele Zugfolgen sie erreichbar ist. Dabei werden pro Stellung der 32-Byte-
+   Satz, die Zahl der legalen Züge und die Kind-Indizes (4 Byte pro Kante)
+   gespeichert. Stellungen ohne Züge im Schach sind die Mattstellungen, die
+   Startmenge der Rückwärtsphase. Ein Horizont in Halbzügen und eine
+   Obergrenze an Stellungen begrenzen die Aufzählung; die Horizont-Ebene wird
+   nicht expandiert, Beweise, die sie bräuchten, bleiben offen (sicher).
+2. **Elternlisten** per Zähl-Sortierung aus den Kind-Kanten (CSR-Layout),
+   ohne Generator und ohne Hash: eine Sekunde für 160 Mio. Kanten. Eine erste
+   Fassung hatte die Züge dafür ein zweites Mal erzeugt und die Kinder
+   nachgeschlagen, das kostete so viel wie die ganze Aufzählung.
+3. **Rückwärts, Retrograde-Analyse.** Status pro Stellung: unbekannt, "Seite
+   am Zug gewinnt in n" oder "verliert in n". Ebene 0 sind die Mattstellungen
+   (verliert in 0). Ebene n → n+1: Jeder noch unbekannte Elternknoten eines
+   "verliert in n" gewinnt in n+1. Jeder Elternknoten eines "gewinnt in n"
+   bekommt seinen Zähler offener Kinder um eins verringert; erreicht er null,
+   verliert er in n+1 (alle Kinder gewonnen, das längste zuletzt, deshalb ist
+   n+1 automatisch das Maximum). Jede Kante wird genau einmal angefasst, nichts
+   verfällt, nichts wird wiederholt. Patt und Stellungen mit nicht
+   aufgelösten Kindern bleiben unbekannt, also "kein erzwungenes Matt".
+
+Das Ergebnis ist die **exakte Mattdistanz für jede erreichbare Stellung**, die
+Hauptvariante folgt den Distanzen von der Wurzel (Gewinner wählt ein Kind mit
+"verliert in n-1", Verlierer eines mit "gewinnt in n-1") und ist immer
+vollständig.
+
+Alle Vier-Steiner der Teststellungen, Horizont 200, Grenze 30 Mio. Stellungen
+(Arbeitsrechner, Go, vom Autor in der Konsole gestartet):
+
+| Stellung | Matt in | Stellungen | Kanten | Vorwärts (Go) | Eltern | Retrograde | gesamt Go | gesamt Rust | `mateab` mit TT (Go) | aufgelöst | längstes Matt im Graphen |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| KQQ-K | 3 | 9.194.248 | 154 Mio. | 16,7 s | (1 s) | 1,3 s | ≈ 19 s | | 0 ms | 98 % | 20 Halbzüge |
+| KQR-K | 5 | 20.391.772 | 320 Mio. | 38,2 s | (2 s) | 3,0 s | ≈ 43 s | | 47 ms | 99 % | 32 |
+| KRR-K | 7 | 11.079.632 | 159 Mio. | 18,8 s | 1,0 s | 1,4 s | 21,1 s | 21,5 s | 0,62 s | 99,6 % | 32 |
+| KBN-K | 31 | 12.814.320 | 142 Mio. | 18,0 s | 0,6 s | 1,5 s | 20,1 s | 22,0 s | 364 s | 85 % | 66 |
+| KBB-K | 17 | 6.352.868 | 76 Mio. | 8,8 s | 0,3 s | 0,7 s | 9,8 s | 10,5 s | 119 s | 83 % | 38 |
+| KQ-KN | 12 | 22.292.508 | 323 Mio. | 36,0 s | 1,4 s | 4,3 s | 41,6 s | 42,3 s | 20,8 s | 87 % | 42 |
+| KR-KR | 15 | 22.341.512 | 331 Mio. | 43,4 s | 2,2 s | 1,5 s | 47,1 s | 51,6 s | 5,0 s | 32 % | 38 |
+
+(KQQ-K und KQR-K noch mit der alten Elternlisten-Fassung gemessen, dort
+geschätzt.) Alle Mattlängen exakt, Go und Rust mit identischen Stellungs-,
+Kanten- und Auflösungszahlen. Der Bauerntest (12 Steine) sprengt die Grenze
+bei Ebene 9 mit über 22 Mio. Stellungen: Für viele Steine ist der erreichbare
+Raum nicht endlich genug, dafür bleibt die Vorwärtssuche.
+
+**Rust ist hier nicht schneller als Go**, sondern 2 bis 10 % langsamer. Das ist
+dasselbe Bild wie bei der Breitensuche mit rohen Brettern in Milestone 1
+(Faktor 1,03): Die Aufzählung ist speichergebunden, pro Kante ein zufälliger
+Zugriff in einen 1-GB-Store plus Sätze und Kantenlisten. Rusts Vorteil bei
+reiner Rechenarbeit (Perft 1,3 bis 1,5, Mattsuche 1,5 bis 1,8) spielt keine
+Rolle, wenn die CPU auf den Speicher wartet. Für eine Parallelisierung heißt
+das: Der Gewinn kommt aus mehr gleichzeitig offenen Speicherzugriffen, nicht
+aus mehr Rechenleistung.
+
+**Die Spalte "längstes Matt im Graphen" ist eine Verifikation ohne externe
+Tabelle.** Der Graph enthält auch das Untermaterial nach Schlagfällen, und die
+längsten Distanzen treffen genau die bekannten Maxima: KBN-K 66 Halbzüge =
+Matt in 33, KBB-K 19, KQ-KN 21, KR-KR 19, KR-K (in KRR-K und KQR-K) 16, KQ-K
+(in KQQ-K) 10. Die Retrograde-Phase rechnet also für diese Materialien bereits
+korrekte Tabellenwerte für alle erreichbaren Stellungen.
+
+Lesart:
+
+- **KBN-K in 20 s statt 5 bis 6 Minuten**, Faktor 15 bis 18, mit vollständiger
+  Variante über 61 Halbzüge. Je länger das Matt, desto deutlicher gewinnt die
+  Liste. Bei kurzen Matts (KRR-K, 0,6 s mit TT) bleibt die Tiefensuche billiger,
+  weil sie nur den Beweis sucht, nicht den ganzen Raum.
+- Die Zeit steckt zu über 90 % in der Vorwärts-Aufzählung, rund 130 ns pro
+  Kante (Zug ausführen, Key, Hash-Zugriff). Elternlisten und Retrograde sind
+  Sekunden. Die Aufzählung lässt sich pro Ebene parallelisieren, der Store
+  braucht dafür nebenläufiges Einfügen.
+- Speicher für 22 Mio. Stellungen: 700 MB Sätze, 1 GB Store (2^26 Slots),
+  1,3 GB Kanten (Kinder, danach Eltern), rund 3 GB in der Spitze. Die
+  Kind-Liste wird nach dem Bau der Elternliste freigegeben.
+- KR-KR löst nur 32 % der Stellungen auf: Der Rest ist Remis oder Gewinn für
+  Schwarz, der eigene Turm gibt dem Verteidiger viel Gegenspiel.
+- Für vier Steine ist das schon die Tabelle aus Milestone 5, beschränkt auf die
+  erreichbare Teilmenge und per Hash statt Index. Der eigentliche Generator
+  zählt stattdessen alle Stellungen des Materials auf (mit Symmetrie), nutzt
+  Rückwärtszüge statt Elternlisten und schreibt DTM in ein Byte-Array; die
+  Retrograde-Logik ist dieselbe.
