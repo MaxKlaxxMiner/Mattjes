@@ -20,5 +20,6 @@ pub static MATE_POSITIONS: &[MatePosition] = &[
     MatePosition { name: "KBB-K", fen: "8/8/4k3/8/8/8/8/K2BB3 w - - 0 1", mate_in: 17, note: "long quiet manoeuvres" },
     MatePosition { name: "KBN-K", fen: "8/8/8/8/3k4/8/N7/KB6 w - - 0 1", mate_in: 31, note: "needs df-pn or TT transpositions" },
     MatePosition { name: "KQ-KBN", fen: "8/8/4k3/3bn3/8/4Q3/8/K7 w - - 0 1", mate_in: 39, note: "longest test, two defending pieces" },
+    MatePosition { name: "KP-KP", fen: "8/7k/1p6/1P6/7K/8/8/8 w - - 0 1", mate_in: 25, note: "opposition study: 1.Kh5! wins, 1.Kg5? and black to move draw; value from the own KPKP table, confirmed by matelist" },
     MatePosition { name: "pawns", fen: "5k2/5P1P/4P3/pP6/P6q/3P2P1/2P5/K7 w - a6 0 1", mate_in: 6, note: "promotion, en passant, black queen; unconfirmed" },
 ];

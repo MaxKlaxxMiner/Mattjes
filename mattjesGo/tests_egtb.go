@@ -161,6 +161,73 @@ func egtbLoadOrGenerate(workers int) *egtb.Set {
 	return set
 }
 
+// egtbProbe looks positions up in the tables and follows the optimal line:
+// the winner picks a child lost in n-1, the loser a child won in the longest
+// n-1 (captures and promotions cross into smaller tables). Positions with an
+// en passant right are not in the tables; the line stops there.
+func egtbProbe(fens ...string) {
+	set := egtbLoadOrGenerate(12)
+	for _, fen := range fens {
+		b, err := bitboard.FromFEN(fen)
+		if err != nil {
+			panic(err)
+		}
+		v, ok := set.Lookup(&b)
+		if !ok {
+			fmt.Printf("%s: not covered by the tables\n", fen)
+			continue
+		}
+		fmt.Printf("%s: %s", fen, v)
+		if v.IsWin() {
+			fmt.Printf(" = mate in %d", (v.Plies()+1)/2)
+		}
+		fmt.Println()
+		var line []string
+		for v.IsWin() || (v.IsLoss() && v.Plies() > 0) { // stop at mate (loss in 0)
+			var buf chess.MoveBuffer
+			n := b.GenMoves(&buf)
+			best, bestVal, found := chess.Move{}, egtb.Draw, false
+			for _, m := range buf[:n] {
+				c := b
+				c.DoMove(m)
+				cv, ok := set.Lookup(&c)
+				if !ok {
+					continue
+				}
+				want := cv.IsLoss() && cv.Plies() == v.Plies()-1 // winner: the child that loses fastest
+				if v.IsLoss() {
+					want = cv.IsWin() && (!found || cv.Plies() > bestVal.Plies()) // loser: the child that wins slowest
+				}
+				if want {
+					best, bestVal, found = m, cv, true
+					if v.IsWin() {
+						break
+					}
+				}
+			}
+			if !found {
+				line = append(line, "(en passant, not in the tables)")
+				break
+			}
+			line = append(line, best.UCI())
+			b.DoMove(best)
+			v = bestVal
+		}
+		fmt.Printf("    %s\n\n", pvString2(line))
+	}
+}
+
+func pvString2(line []string) string {
+	s := ""
+	for i, m := range line {
+		if i%2 == 0 {
+			s += fmt.Sprintf("%d.", i/2+1)
+		}
+		s += m + " "
+	}
+	return s
+}
+
 func materialPieces(m egtb.Material) []chess.Piece {
 	var ps []chess.Piece
 	for _, p := range m.White {

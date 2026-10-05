@@ -92,11 +92,25 @@ Vertiefungsstufe). Der Bauerntest (9 Steine) läuft unverändert mit 464.248 Kno
 Rust gleich. Offen: KQ-KBN (Matt in 39, fünf Steine), das bisher außer Reichweite war; mit
 Tabellen wird jeder Schlagzug zum Blatt.
 
+## Neue Teststellung: KP-KP (Oppositions-Studie)
+
+`8/7k/1p6/1P6/7K/8/8/8 w` (Könige h4/h7, Bauern b5/b6, vom Autor vorgeschlagen). Die
+KPKP-Tabelle antwortet sofort: **Weiß am Zug gewinnt in 49 Halbzügen (Matt in 25)**, Schlüssel
+1.Kh5! (1.Kg5? Kg7 hält); **Schwarz am Zug: Remis**. `egtbProbe` folgt der Tabelle bis zum
+Matt: 1.Kh5 Kg7 2.Kg5 Kf7 3.Kf5 Ke7 4.Ke5 Kd7 5.Kd5 Kc7 6.Ke6 Kb8 7.Kd7 Kb7 8.Kd6 Ka8 9.Kc7
+Ka7 10.Kc6 Ka8 11.Kxb6 Kb8 12.Ka6 Kc7 13.Ka7 Kc8 14.b6 Kd7 15.b7 Ke6 16.Kb6 Kf6 17.Kc6 Ke5
+18.b8D Kd4 19.Df4 Kc3 20.Kb5 Kd3 21.Kb4 Kc2 22.Kc4 Kb2 23.Dd2 Ka3 24.De2 Ka4 25.Da2#.
+
+Unabhängige Bestätigung durch `matelist` (Hash-basierte Breitensuche plus Retrograde, anderer
+Code-Pfad als die Index-Tabellen): 2.878.165 erreichbare Stellungen, 30,2 Mio. Kanten,
+Matt in 25 mit derselben Hauptvariante in 4,0 s; Beweisgraph nur 4.125 Stellungen. Die
+Stellung ist als `KP-KP` in `chess/matedata.go` aufgenommen (Matt in 25).
+
 ## Offen
 
 - Fünf Steine: nur optionale Syzygy-Dateien (Entscheidung), kein eigener Generator.
-- Die Tabellen liefern Distanzen, aber keine Züge: Die PV endet am Tabellen-Blatt. Wer die
-  Mattführung sehen will, muss aus der Tabelle heraus den Zug mit Distanz n − 1 wählen (1 Zug
-  Generierung pro Halbzug, billig). Noch nicht gebaut.
+- Die Suche verlängert ihre PV noch nicht aus der Tabelle heraus (die PV endet am
+  Tabellen-Blatt); `egtbProbe` zeigt, wie billig das ist: pro Halbzug einmal Züge erzeugen
+  und das Kind mit Distanz n − 1 wählen.
 - Gleiche Steine (KQQK, KBBK, KPPK) belegen die Hälfte ihrer Indizes als tote Einträge
   (Dreiecks-Indizierung würde sie sparen, 24 MB von 173).
