@@ -2,12 +2,79 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mateab"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/perft"
 )
+
+// --- milestone 4, step 2: mate search with mate window, no TT ---
+
+// mateabSolve runs the reference mate positions up to maxMateIn moves with the
+// plain depth-first search. The mate must appear exactly at depth 2*MateIn-1
+// plies: earlier would contradict the tablebase, later or never is a miss.
+// Prints nodes, time and the principal variation per depth.
+func mateabSolve(maxMateIn int) {
+	fmt.Println("=== mateab / mate search with mate window, iterative deepening, no TT ===")
+	ok := true
+	var totalNodes uint64
+	var totalTime time.Duration
+	for i, p := range chess.MatePositions {
+		if p.MateIn > maxMateIn {
+			continue
+		}
+		fmt.Printf("[%d] %s  %s  mate in %d\n", i+1, p.Name, p.FEN, p.MateIn)
+		b, err := bitboard.FromFEN(p.FEN)
+		if err != nil {
+			panic(err)
+		}
+		s := mateab.New(mateab.Material{})
+		start := time.Now()
+		lastNodes := uint64(0)
+		depthStart := start
+		r := s.Solve(&b, 2*p.MateIn-1, func(plies int, r mateab.Result) {
+			now := time.Now()
+			if r.MatePlies != 0 {
+				fmt.Printf("    depth %2d: mate in %d  %14s nodes %9s  pv %s\n", plies, (r.MatePlies+1)/2, perftGroup(r.Nodes-lastNodes), fmtMs(now.Sub(depthStart)), pvString(r.PV))
+			} else {
+				fmt.Printf("    depth %2d: no mate    %14s nodes %9s\n", plies, perftGroup(r.Nodes-lastNodes), fmtMs(now.Sub(depthStart)))
+			}
+			lastNodes = r.Nodes
+			depthStart = now
+		})
+		elapsed := time.Since(start)
+		totalNodes += r.Nodes
+		totalTime += elapsed
+		switch {
+		case r.MatePlies == 0:
+			fmt.Printf("    FAIL: no mate found within %d plies\n", 2*p.MateIn-1)
+			ok = false
+		case r.MatePlies != 2*p.MateIn-1:
+			fmt.Printf("    FAIL: mate in %d plies, expected %d\n", r.MatePlies, 2*p.MateIn-1)
+			ok = false
+		default:
+			fmt.Printf("    ok: %s nodes in %s\n", perftGroup(r.Nodes), fmtMs(elapsed))
+		}
+	}
+	fmt.Printf("--- total: %s nodes in %s", perftGroup(totalNodes), fmtMs(totalTime))
+	if ok {
+		fmt.Println("  [all ok]")
+	} else {
+		fmt.Println("  [FAILURES]")
+	}
+	fmt.Println()
+}
+
+func pvString(pv []chess.Move) string {
+	parts := make([]string, len(pv))
+	for i, m := range pv {
+		parts[i] = m.UCI()
+	}
+	return strings.Join(parts, " ")
+}
 
 // --- milestone 4, step 1: generator extensions for the mate search ---
 

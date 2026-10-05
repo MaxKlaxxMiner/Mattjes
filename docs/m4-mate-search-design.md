@@ -489,10 +489,11 @@ Benchmarks auf Ansage (Maschine in der Kopfzeile nennen, `docs/machines.md`).
    `IsStalemate`, `GivesCheck`, `GenChecks`. Referenzzähler in `chess`,
    Perft-Lauf mit Zählung als Regressionstest, Vergleich `GenChecks` gegen
    Filter. Ergebnisse in `m4-mate-search.md`.
-2. **`mateab` ohne TT:** Mattfenster, iterative Vertiefung, Schachs im letzten
-   Halbzug, Terminal-Orakel-Schnittstelle (2.1) mit dem Material-Check als
-   erster Quelle. Stellungen 1, 2, 3, 9 müssen stimmen (Länge und "eine Tiefe
-   weniger findet nichts"). Ausgabe: Knoten, Zeit, Hauptvariante in UCI.
+2. **`mateab` ohne TT** ✅ (2026-10-05, Go und Rust, knotengenau gleich):
+   Mattfenster, iterative Vertiefung, Schachs im letzten Halbzug, Killerzug pro
+   Ebene, Terminal-Orakel-Schnittstelle (2.1) mit dem Material-Check als erster
+   Quelle. Stellungen 1, 2, 3, 9 stimmen (Länge exakt bei 2N-1, eine Tiefe
+   weniger findet nichts). Ergebnisse in `m4-mate-search.md`.
 3. **`mateab` mit `tt`:** Value-Layout aus 5.1, TT-Zug, Zugsortierung.
    Stellungen 4, 5, 6. Erste Messung: Knoten und Zeit mit/ohne TT, mit/ohne
    Sortierung, Trefferquote.

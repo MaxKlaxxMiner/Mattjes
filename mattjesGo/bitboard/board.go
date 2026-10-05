@@ -112,6 +112,9 @@ func (b *Board) us() int {
 
 func (b *Board) occupied() uint64 { return b.ByColor[0] | b.ByColor[1] }
 
+// PieceBB returns the bit set of one piece (color and kind).
+func (b *Board) PieceBB(p chess.Piece) uint64 { return b.Pieces[colorIdx(p)][kindIdx(p)] }
+
 // KingPos returns the king square of the color index.
 func (b *Board) KingPos(c int) chess.Pos { return lsb(b.Pieces[c][kKing]) }
 

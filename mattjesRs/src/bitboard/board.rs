@@ -136,6 +136,11 @@ impl Board {
 
     /// The king square of the color index.
     #[inline(always)]
+    /// The bit set of one piece (color and kind).
+    pub fn piece_bb(&self, p: Piece) -> u64 {
+        self.pieces[color_idx(p)][kind_idx(p)]
+    }
+
     pub fn king_pos(&self, c: usize) -> Pos {
         lsb(self.pieces[c][K_KING])
     }

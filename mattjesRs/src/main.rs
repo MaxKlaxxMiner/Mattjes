@@ -19,6 +19,7 @@
 
 mod bitboard;
 mod chess;
+mod mateab;
 mod perft;
 mod tests_hash;
 mod tests_mate;
@@ -60,4 +61,7 @@ fn main() {
     // --- milestone 4, step 1: mate search generator extensions ---
     // tests_mate::bitboard_perft_detailed(200_000_000);
     // tests_mate::bitboard_mate_verify(5_000_000);
+
+    // --- milestone 4, step 2: mate search without TT ---
+    // tests_mate::mateab_solve(7);
 }

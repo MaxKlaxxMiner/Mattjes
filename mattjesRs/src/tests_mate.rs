@@ -4,9 +4,62 @@ use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use crate::bitboard::{self, Board};
-use crate::chess::{new_buffer, PERFT_POSITIONS, UNKNOWN};
+use crate::chess::{new_buffer, Move, MATE_POSITIONS, PERFT_POSITIONS, UNKNOWN};
+use crate::mateab;
 use crate::perft;
 use crate::tests_hash::{fmt_ms, group};
+
+// --- milestone 4, step 2: mate search with mate window, no TT ---
+
+/// Runs the reference mate positions up to `max_mate_in` moves with the plain
+/// depth-first search. The mate must appear exactly at depth 2*mate_in-1 plies:
+/// earlier would contradict the tablebase, later or never is a miss. Prints
+/// nodes, time and the principal variation per depth.
+pub fn mateab_solve(max_mate_in: u32) {
+    println!("=== mateab / mate search with mate window, iterative deepening, no TT ===");
+    let mut ok = true;
+    let mut total_nodes = 0u64;
+    let mut total_time = Duration::ZERO;
+    for (i, p) in MATE_POSITIONS.iter().enumerate() {
+        if p.mate_in > max_mate_in {
+            continue;
+        }
+        println!("[{}] {}  {}  mate in {}", i + 1, p.name, p.fen, p.mate_in);
+        let b = Board::from_fen(p.fen).expect("valid FEN");
+        let mut s = mateab::Searcher::new(mateab::Material);
+        let start = Instant::now();
+        let mut last_nodes = 0u64;
+        let mut depth_start = start;
+        let r = s.solve(&b, 2 * p.mate_in - 1, |plies, r| {
+            let now = Instant::now();
+            if r.mate_plies != 0 {
+                println!("    depth {:>2}: mate in {}  {:>14} nodes {:>9}  pv {}", plies, r.mate_plies.div_ceil(2), group(r.nodes - last_nodes), fmt_ms(now - depth_start), pv_string(&r.pv));
+            } else {
+                println!("    depth {:>2}: no mate    {:>14} nodes {:>9}", plies, group(r.nodes - last_nodes), fmt_ms(now - depth_start));
+            }
+            last_nodes = r.nodes;
+            depth_start = now;
+        });
+        let elapsed = start.elapsed();
+        total_nodes += r.nodes;
+        total_time += elapsed;
+        if r.mate_plies == 0 {
+            println!("    FAIL: no mate found within {} plies", 2 * p.mate_in - 1);
+            ok = false;
+        } else if r.mate_plies != 2 * p.mate_in - 1 {
+            println!("    FAIL: mate in {} plies, expected {}", r.mate_plies, 2 * p.mate_in - 1);
+            ok = false;
+        } else {
+            println!("    ok: {} nodes in {}", group(r.nodes), fmt_ms(elapsed));
+        }
+    }
+    print!("--- total: {} nodes in {}", group(total_nodes), fmt_ms(total_time));
+    println!("{}\n", if ok { "  [all ok]" } else { "  [FAILURES]" });
+}
+
+fn pv_string(pv: &[Move]) -> String {
+    pv.iter().map(|m| m.uci()).collect::<Vec<_>>().join(" ")
+}
 
 /// Compares the leaf classification (captures, en passant, castles, promotions,
 /// checks, discovered and double checks, mates) with the chessprogramming.org

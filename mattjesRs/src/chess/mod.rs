@@ -3,6 +3,7 @@
 //! Mirrors `mattjesGo/chess`.
 
 mod fen;
+mod matedata;
 mod mv;
 mod perftdata;
 mod piece;
@@ -10,6 +11,8 @@ mod pos;
 
 #[allow(unused_imports)]
 pub use fen::{Setup, START_FEN};
+#[allow(unused_imports)]
+pub use matedata::{MatePosition, MATE_POSITIONS};
 #[allow(unused_imports)]
 pub use mv::{
     new_buffer, Castling, Move, MoveBuffer, ALL_CASTLING, BLACK_KINGSIDE, BLACK_QUEENSIDE, MAX_MOVES, WHITE_KINGSIDE, WHITE_QUEENSIDE,

@@ -58,5 +58,8 @@ func main() {
 	// --- milestone 4, step 1: mate search generator extensions ---
 	// bitboardPerftDetailed(200_000_000)
 	// bitboardMateVerify(5_000_000)
+
+	// --- milestone 4, step 2: mate search without TT ---
+	// mateabSolve(7)
 	_ = chess.StartFEN // keep the import for the commented experiments above
 }

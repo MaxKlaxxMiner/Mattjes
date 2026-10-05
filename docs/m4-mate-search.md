@@ -64,3 +64,54 @@ Rust. Go und Rust liefern identische Zählerwerte in allen Spalten.
   sind (Messgröße aus dem Entwurf), und ob ein eigener `GenChecks`-Generator
   mit Zielmasken den Filter schlägt. Beides erst messen, wenn `mateab` steht
   und zeigt, wie oft die Funktionen wirklich aufgerufen werden.
+
+## Schritt 2: `mateab` ohne Transposition Table (2026-10-05)
+
+Package `mateab` (Arbeitstitel), in Go und Rust. Zwei Knotenfunktionen bilden
+den AND/OR-Baum direkt ab:
+
+- `attack` (OR, Angreifer am Zug, Resttiefe ungerade): Orakel fragen, bei
+  Resttiefe 1 nur `GenChecks` und `HasMoves` am Kind, sonst alle Züge in der
+  Reihenfolge Killer, Schachs, Schlagzüge, Rest. Der erste Zug, dessen
+  `defend` ein Matt liefert, beendet den Knoten.
+- `defend` (AND, Verteidiger am Zug, Resttiefe gerade): keine Züge und Schach
+  ist "schon matt" (Distanz 0), keine Züge ohne Schach ist Patt, Orakel-Remis
+  ist Widerlegung. Reihenfolge Killer, Schlagzüge, Rest. Der erste Zug, dessen
+  `attack` kein Matt findet, beendet den Knoten; sonst ist die Distanz das
+  längste Kind plus eins.
+- **Killer** pro Ebene: der Zug, der zuletzt auf dieser Ebene gemattet oder
+  widerlegt hat, wird zuerst probiert. Billig und bei iterativer Vertiefung
+  sehr wirksam, weil die nächste Tiefe die alten Widerlegungen wiederfindet.
+- **Hauptvariante** über eine Dreieckstabelle (`pv[ply][...]`), keine
+  Allokation im Baum; copy-make mit einem Brett pro Rekursionsebene.
+- **Orakel**: `Material` meldet Remis für tote Stellungen nach FIDE 5.2.2
+  (K-K, K+Leichtfigur-K, K+L-K+L gleichfarbig). Zwei Springer gegen König sind
+  bewusst nicht tot, weil mit Hilfe des Verteidigers Matt möglich ist.
+
+Teststellungen bis Matt in 7, Iteration über 1, 3, 5 ... Halbzüge
+(Arbeitsrechner):
+
+| Stellung | Matt in | Halbzüge | Knoten gesamt | Go | Rust | Hauptvariante |
+|---|---|---|---|---|---|---|
+| KQQ-K | 3 | 5 | 1.966 | 0 ms | 0 ms | Qe7+ Kf5 Qg2 Kf4 Qg5# |
+| KQR-K | 5 | 9 | 1.169.380 | 124 ms | 78 ms | Qe7+ Kd5 Ra5+ Kc6 Rc5+ Kb6 Qc7+ Ka6 Ra5# |
+| KRR-K | 7 | 13 | 106.775.538 | 16,35 s | 9,15 s | Ra5+ Kd6 Rd2+ Kc7 Rc5+ Kb6 Rc8 Kb7 Rc3 Ka6 Rb2 Ka7 Ra3# |
+| Bauern | 6 | 11 | 464.248 | 108 ms | 51 ms | g3xh4 Ke7 h8=Q Ke6 Qe8+ Kd6 f8=Q+ Kc7 Qef7+ Kb6 Qfd6# |
+
+Alle vier Mattlängen exakt bei 2N-1 Halbzügen, eine Tiefe weniger findet
+nichts. Der Bauerntest (Matt in 6) ist damit zum ersten Mal unabhängig
+bestätigt, beide Sprachen finden dieselbe Variante. Go und Rust zählen
+knotengenau gleich (108.411.132 Knoten über alle vier), Rust ist 1,8-mal
+schneller als Go.
+
+Die Verteilung bei KRR-K zeigt, wo die Zeit hingeht: Tiefe 11 ("es gibt kein
+Matt in 6") kostet 81,7 Mio. Knoten, Tiefe 13 (das Matt in 7 finden) nur 22,3
+Mio. **Widerlegen ist teurer als Beweisen**, weil an jedem Verteidigerknoten
+nur ein Fluchtzug nötig ist, aber die Angreiferknoten darüber jeden ihrer Züge
+widerlegt sehen müssen. Transpositionen sind in solchen Endspielen massiv
+(dieselbe Stellung über verschiedene Zugfolgen), das ist der Ansatzpunkt für
+Schritt 3.
+
+Die Mattzüge der Hauptvarianten weichen von den Tablebase-Erstzügen ab (KQQ-K:
+Qe7+ statt Qf7). Das ist korrekt: Es gibt mehrere Matts in 3, die Suche liefert
+das erste in Zugreihenfolge, die Tablebase ein beliebiges optimales.
