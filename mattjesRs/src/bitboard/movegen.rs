@@ -256,7 +256,7 @@ impl Board {
     /// afterwards. Covers pins, discovered rank attacks and the case where the
     /// double-pushed pawn is the checker.
     #[allow(clippy::too_many_arguments)]
-    fn en_passant_legal(&self, t: &Tables, from: Pos, ep: Pos, cap_sq: Pos, ksq: Pos, us: usize, occ: u64) -> bool {
+    pub(super) fn en_passant_legal(&self, t: &Tables, from: Pos, ep: Pos, cap_sq: Pos, ksq: Pos, us: usize, occ: u64) -> bool {
         let new_occ = (occ & !bit(from) & !bit(cap_sq)) | bit(ep);
         let tp = &self.pieces[us ^ 1];
         let attackers = (t.magics.rook_attacks(ksq, new_occ) & (tp[K_ROOK] | tp[K_QUEEN]))

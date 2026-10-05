@@ -21,6 +21,7 @@ mod bitboard;
 mod chess;
 mod perft;
 mod tests_hash;
+mod tests_mate;
 mod tests_perft;
 mod tests_tt;
 mod tt;
@@ -55,4 +56,8 @@ fn main() {
     // tests_tt::bitboard_perft_tt_load(chess::START_FEN, 7); // also reads the file written by the Go build
     // tests_tt::bitboard_unique_positions_hashed(chess::START_FEN, 6, 40_000_000);
     // tests_tt::bitboard_store_roundtrip();
+
+    // --- milestone 4, step 1: mate search generator extensions ---
+    // tests_mate::bitboard_perft_detailed(200_000_000);
+    // tests_mate::bitboard_mate_verify(5_000_000);
 }

@@ -215,6 +215,73 @@ pub fn perft_parallel(root: &Board, depth: u32, workers: usize) -> u64 {
     total.load(Relaxed)
 }
 
+/// A perft count together with the classification of its leaf moves, the extra
+/// columns of the chessprogramming.org tables.
+#[derive(Clone, Copy, Default)]
+pub struct PerftDetail {
+    pub nodes: u64,
+    pub detail: crate::chess::PerftDetail,
+}
+
+/// `perft_recursive` that additionally classifies every leaf move (capture, en
+/// passant, castling, promotion, check kinds, mate). Checks are found with
+/// `checkers_after` without playing the move; only checking moves are played to
+/// test for mate with `has_moves`.
+pub fn perft_detailed(b: &mut Board, depth: u32) -> PerftDetail {
+    let mut d = PerftDetail::default();
+    perft_detailed_rec(b, depth, &mut d);
+    d
+}
+
+fn perft_detailed_rec(b: &mut Board, depth: u32, d: &mut PerftDetail) {
+    use super::bits::{kind_idx, K_KING, K_PAWN};
+    let mut buf = new_buffer();
+    let n = b.gen_moves(&mut buf);
+    let s = b.state();
+    if depth > 1 {
+        for &m in &buf[..n] {
+            b.do_move(m);
+            perft_detailed_rec(b, depth - 1, d);
+            b.undo_move(m, s);
+        }
+        return;
+    }
+    d.nodes += n as u64;
+    for &m in &buf[..n] {
+        let p = b.squares[m.from.idx()];
+        let is_ep = kind_idx(p) == K_PAWN && m.to == b.en_passant && b.en_passant.valid();
+        if m.capture != crate::chess::Piece::NONE || is_ep {
+            d.detail.captures += 1;
+        }
+        if is_ep {
+            d.detail.en_passant += 1;
+        }
+        if kind_idx(p) == K_KING && (m.to.0 - m.from.0 == 2 || m.from.0 - m.to.0 == 2) {
+            d.detail.castles += 1;
+        }
+        if m.promo != crate::chess::Piece::NONE {
+            d.detail.promotions += 1;
+        }
+        let (checkers, direct) = b.checkers_after(m);
+        if checkers == 0 {
+            continue;
+        }
+        d.detail.checks += 1;
+        let double = checkers & (checkers - 1) != 0;
+        if !direct && !double {
+            d.detail.discovery_checks += 1; // chessprogramming.org: a single checker that is not the moved piece
+        }
+        if double {
+            d.detail.double_checks += 1;
+        }
+        b.do_move(m);
+        if !b.has_moves() {
+            d.detail.checkmates += 1;
+        }
+        b.undo_move(m, s);
+    }
+}
+
 /// Prints the node count below every root move, the standard tool to locate move
 /// generator bugs by comparing with another engine.
 pub fn perft_divide(b: &mut Board, depth: u32) -> u64 {

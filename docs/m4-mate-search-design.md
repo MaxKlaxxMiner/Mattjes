@@ -485,9 +485,10 @@ Details, wenn die Mattsuche gemessen ist.
 Jeder Schritt zuerst in Go, Korrektheit prüfen, dann Rust, dann Gegenprüfung.
 Benchmarks auf Ansage (Maschine in der Kopfzeile nennen, `docs/machines.md`).
 
-1. **`bitboard`:** `HasMoves`, `IsMate`, `IsStalemate`, `GivesCheck`,
-   `GenChecks`. Referenzzähler Checks/Checkmates in `chess`, Perft-Lauf mit
-   Zählung als Regressionstest, Mengen-Vergleich `GenChecks` gegen Filter.
+1. **`bitboard`** ✅ (2026-10-05, Go und Rust): `HasMoves`, `IsMate`,
+   `IsStalemate`, `GivesCheck`, `GenChecks`. Referenzzähler in `chess`,
+   Perft-Lauf mit Zählung als Regressionstest, Vergleich `GenChecks` gegen
+   Filter. Ergebnisse in `m4-mate-search.md`.
 2. **`mateab` ohne TT:** Mattfenster, iterative Vertiefung, Schachs im letzten
    Halbzug, Terminal-Orakel-Schnittstelle (2.1) mit dem Material-Check als
    erster Quelle. Stellungen 1, 2, 3, 9 müssen stimmen (Länge und "eine Tiefe

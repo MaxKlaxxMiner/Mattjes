@@ -211,6 +211,72 @@ func PerftParallel(root *Board, depth int, workers int) uint64 {
 	return total.Load()
 }
 
+// PerftDetail is a perft count together with the classification of its leaf
+// moves, the extra columns of the chessprogramming.org tables.
+type PerftDetail struct {
+	Nodes uint64
+	chess.PerftDetail
+}
+
+// PerftDetailed is PerftRecursive that additionally classifies every leaf move
+// (capture, en passant, castling, promotion, check kinds, mate). Checks are
+// found with checkersAfter without playing the move; only checking moves are
+// played to test for mate with HasMoves.
+func PerftDetailed(b *Board, depth int) PerftDetail {
+	var d PerftDetail
+	perftDetailed(b, depth, &d)
+	return d
+}
+
+func perftDetailed(b *Board, depth int, d *PerftDetail) {
+	var buf chess.MoveBuffer
+	n := b.GenMoves(&buf)
+	s := b.State()
+	if depth > 1 {
+		for i := 0; i < n; i++ {
+			b.DoMove(buf[i])
+			perftDetailed(b, depth-1, d)
+			b.UndoMove(buf[i], s)
+		}
+		return
+	}
+	d.Nodes += uint64(n)
+	for i := 0; i < n; i++ {
+		m := buf[i]
+		p := b.Squares[m.From]
+		isEP := p&chess.Pawn != 0 && m.To == b.EnPassant && b.EnPassant.Valid()
+		if m.Capture != chess.None || isEP {
+			d.Captures++
+		}
+		if isEP {
+			d.EnPassant++
+		}
+		if p&chess.King != 0 && (m.To-m.From == 2 || m.From-m.To == 2) {
+			d.Castles++
+		}
+		if m.Promo != chess.None {
+			d.Promotions++
+		}
+		checkers, direct := b.checkersAfter(m)
+		if checkers == 0 {
+			continue
+		}
+		d.Checks++
+		double := checkers&(checkers-1) != 0
+		if !direct && !double {
+			d.DiscoveryChecks++ // chessprogramming.org: a single checker that is not the moved piece
+		}
+		if double {
+			d.DoubleChecks++
+		}
+		b.DoMove(m)
+		if !b.HasMoves() {
+			d.Checkmates++
+		}
+		b.UndoMove(m, s)
+	}
+}
+
 // PerftDivide prints the node count below every root move, the standard tool to
 // locate move generator bugs by comparing with another engine.
 func PerftDivide(b *Board, depth int) uint64 {

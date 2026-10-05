@@ -54,5 +54,9 @@ func main() {
 	// bitboardPerftTTLoad(chess.StartFEN, 7) // also reads the file written by the Rust build
 	// bitboardUniquePositionsHashed(chess.StartFEN, 6, 40_000_000)
 	// bitboardStoreRoundtrip()
+
+	// --- milestone 4, step 1: mate search generator extensions ---
+	// bitboardPerftDetailed(200_000_000)
+	// bitboardMateVerify(5_000_000)
 	_ = chess.StartFEN // keep the import for the commented experiments above
 }

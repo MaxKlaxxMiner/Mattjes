@@ -10,6 +10,7 @@ mod board;
 mod domove;
 mod encode;
 mod magic;
+mod mate;
 mod movegen;
 mod perft;
 mod tables;
@@ -21,7 +22,7 @@ pub use board::{Board, State};
 #[allow(unused_imports)]
 pub use encode::{packed_fixed_record, Codec, Packed, PackedFixed};
 #[allow(unused_imports)]
-pub use perft::{perft_breadth, perft_breadth_encoded, perft_divide, perft_iterative, perft_parallel, perft_recursive, BOARD_SIZE, FRAME_SIZE};
+pub use perft::{perft_breadth, perft_breadth_encoded, perft_detailed, perft_divide, perft_iterative, perft_parallel, perft_recursive, PerftDetail, BOARD_SIZE, FRAME_SIZE};
 #[allow(unused_imports)]
 pub use tables::{init_duration, TABLES};
 #[allow(unused_imports)]
