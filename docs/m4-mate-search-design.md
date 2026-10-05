@@ -41,6 +41,41 @@ Ein Knoten ist fertig, ohne weiter zu suchen, wenn:
 | Tiefe erschöpft | egal | Widerlegung ("kein Matt in dieser Tiefe") |
 | Material reicht nie zum Matt | egal | Widerlegung (K gegen K, K+N, K+B) |
 
+### 2.1 Terminal-Orakel: Endspieltabellen (Entscheidung 2026-10-05)
+
+Die Zeile "Material reicht nie zum Matt" ist der Spezialfall einer
+allgemeineren Schnittstelle: Die Suche fragt an jedem Blatt ein **Orakel**
+"kennst du diese Stellung?" und bekommt entweder nichts oder ein fertiges
+Ergebnis (Remis, Gewinn/Verlust in n Halbzügen). Die Schnittstelle kommt
+schon in M4 mit dem Material-Check als einziger Quelle, damit Milestone 5
+Tabellen einstecken kann, ohne die Suche anzufassen.
+
+Was eingesteckt wird (Details in `CLAUDE.md`, Milestone 5):
+
+- **Eigene 4-Steiner als Fundament, immer verfügbar.** Alle Materialien bis
+  vier Steine per Retrograde-Analyse als **DTM** berechnet, komplett im RAM
+  (≈ 250 MB mit Königs-Symmetrie, 1 Byte pro Stellung), beim ersten Start
+  gerechnet (Minuten, parallel weniger) und als eine Cache-Datei neben der
+  Binary abgelegt (kein Header, Layout fest im Code, Prüfsumme über den Inhalt
+  als bekannte Konstante im Code), danach praktisch sofort geladen. DTM statt
+  WDL, weil ein Blatt in
+  der Tabelle dann sofort den Beweis **mit Distanz** liefert: Die Suche muss
+  nur bis in die Tabelle hinein beweisen, nicht bis zum Matt. Die
+  Teststellungen 1 bis 3 und 6 bis 7 (alle bis vier Steine) werden damit
+  Tabellen-Lookups, erst 4, 5, 8 und 9 bleiben echte Suchaufgaben.
+- **Ab 5 Steinen nur optionale Syzygy-Dateien**, zuerst WDL (Gewinn, Remis,
+  Verlust, mit 50-Züge-Regel), später DTZ. Fehlen sie, läuft die Suche ohne.
+  WDL kann kein Matt beweisen, nur "gewonnen", und ist deshalb für die
+  asymmetrischen Rollen (3.4) und die Vorab-Suche wertvoll, für den Mattbeweis
+  nur als Richtungsgeber.
+- Rochade ist mit vier Steinen ausgeschlossen; Stellungen mit En-passant-Feld
+  stehen nicht in der Tabelle, die Suche spielt dort einen Halbzug weiter und
+  fragt dann (wie Syzygy).
+- Verifikation nur gegen Bekanntes oder Eigenes: bekannte Maximaldistanzen
+  (KQK 10, KRK 16, KBBK 19, KBNK 33, KQKR 35 Züge), die eigene Mattsuche als
+  Orakel für kleine Distanzen, der Rückwärtszug-Generator gegen den
+  Vorwärts-Generator. Nichts aus dem alten C#-Code, keine externen Dienste.
+
 Was **nicht** terminal ist, bewusst:
 
 - **Zugwiederholung.** Bei der Suche nach dem kürzesten Matt kann sie gar nicht
@@ -61,7 +96,10 @@ Was **nicht** terminal ist, bewusst:
 
 ## 3. Algorithmen
 
-Drei Ansätze, jeder als eigenes Package, damit er komplett fliegen kann.
+Drei Ansätze, jeder als eigenes Package, damit er komplett fliegen kann. Die
+Namen `mateab`, `matepn`, `matelist` sind Arbeitstitel dieses Entwurfs, keine
+Entscheidung des Autors. Der eigene Ansatz des Autors steht in Abschnitt 3.4
+und ist noch nicht in den Umsetzungsplan eingeordnet.
 
 ### 3.1 `mateab`: Alpha/Beta mit Mattfenster (Referenzorakel)
 
@@ -194,6 +232,39 @@ hat genau diese Richtung: Mattstellungen aufzählen und rückwärts gehen).
 
 Reihenfolge: `mateab` zuerst, dann `matepn`, `matelist` nur, wenn `matepn`
 an Speicher oder Transpositionen scheitert oder wenn Milestone 5 ihn braucht.
+
+### 3.4 Asymmetrische Rollen: eine Seite will gewinnen, die andere Remis (Idee des Autors)
+
+Die drei Ansätze oben geben beiden Seiten dasselbe Ziel mit umgekehrtem
+Vorzeichen. Der Autor hat einen anderen Algorithmus im Sinn: Jede Seite
+bekommt eine **Rolle** mit eigenem Ziel und eigenen Heuristiken.
+
+- Die **Gewinnseite** sucht Fortschritt (Matt, Materialgewinn, Umwandlung).
+- Die **Remisseite** versucht nicht zu gewinnen, sondern das Spiel so schnell
+  wie möglich remis zu beenden: früh Figuren abtauschen, Bauern pushen und
+  abklären, und wenn kein Fortschritt mehr möglich ist, den König nur noch
+  minimal pendeln (a→b, b→a), um Stellungswiederholungen heraufzubeschwören.
+  Patt, Wiederholung, totes Material und 50-Züge-Regel sind für sie Erfolge.
+
+Beide Richtungen sind möglich ("Weiß will gewinnen, Schwarz spielt auf
+Remis" und umgekehrt). Was sich dadurch gegenüber 3.1 bis 3.3 ändert:
+
+- **Zugsortierung** und **Pruning** sind pro Rolle verschieden. Die Remisseite
+  reduziert ihre Breite freiwillig (Abtausch vor allem anderen, Pendelzüge
+  statt aller Königszüge), die Gewinnseite behält ihre volle Breite.
+- **Terminalkriterien** sind pro Rolle verschieden, und Wiederholung wird zum
+  Ziel der Remisseite. Damit braucht die Suche Pfadhistorie von Anfang an
+  (Abschnitt 8), nicht erst in Phase 2.
+- Die Antwort ist nicht mehr nur "Matt in N", sondern "die Gewinnseite kommt
+  gegen einen Gegner, der nur noch vereinfacht, (nicht) durch". Das ist genau
+  die **schnelle Vorab-Suche** der ersten Stufe aus dem Milestone-Text: Findet
+  die Gewinnseite gegen die Remisseite nichts, ist ein Beweis unwahrscheinlich
+  und die exakte Suche kann sich sparen oder gezielt ansetzen.
+
+Offen: ob die Rollen als eigenes Package neben den dreien stehen oder als
+Zugsortierungs- und Terminal-Strategie in `mateab` eingehängt werden; und wie
+die Heuristiken der Remisseite gemessen werden (Testfall: Stellungen mit
+bekanntem Remis durch Dauerschach oder Festung, die Remisseite muss es finden).
 
 ## 4. Generator-Erweiterungen in `bitboard`
 
@@ -418,7 +489,8 @@ Benchmarks auf Ansage (Maschine in der Kopfzeile nennen, `docs/machines.md`).
    `GenChecks`. Referenzzähler Checks/Checkmates in `chess`, Perft-Lauf mit
    Zählung als Regressionstest, Mengen-Vergleich `GenChecks` gegen Filter.
 2. **`mateab` ohne TT:** Mattfenster, iterative Vertiefung, Schachs im letzten
-   Halbzug. Stellungen 1, 2, 3, 9 müssen stimmen (Länge und "eine Tiefe
+   Halbzug, Terminal-Orakel-Schnittstelle (2.1) mit dem Material-Check als
+   erster Quelle. Stellungen 1, 2, 3, 9 müssen stimmen (Länge und "eine Tiefe
    weniger findet nichts"). Ausgabe: Knoten, Zeit, Hauptvariante in UCI.
 3. **`mateab` mit `tt`:** Value-Layout aus 5.1, TT-Zug, Zugsortierung.
    Stellungen 4, 5, 6. Erste Messung: Knoten und Zeit mit/ohne TT, mit/ohne
@@ -443,5 +515,7 @@ entschieden sind:
 - Mobilitätsinitialisierung in df-pn: Generatoraufruf pro Blatt lohnt sich?
 - Zweistufig (df-pn beweist, `mateab` kürzt) oder df-pn mit Tiefenschranke
   in iterativer Vertiefung.
+- Einordnung der asymmetrischen Rollen (3.4) in den Umsetzungsplan: eigenes
+  Package oder Strategie innerhalb von `mateab`; Testfälle für die Remisseite.
 - Erledigt 2026-10-05: Tablebase-Prüfung der Teststellungen, alle acht
   Endspiele bestätigt (Abschnitt 7).
