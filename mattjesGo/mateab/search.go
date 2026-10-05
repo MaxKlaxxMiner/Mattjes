@@ -31,23 +31,25 @@ const NoMate = -1
 // the principal variation; with a table it may be shorter than MatePlies when
 // the entries needed to extend it were replaced.
 type Result struct {
-	MatePlies int
-	PV        []chess.Move
-	Nodes     uint64
-	TTHits    uint64 // probes that ended the node (mate or refutation taken from the table)
+	MatePlies  int
+	PV         []chess.Move
+	Nodes      uint64
+	TTHits     uint64 // probes that ended the node (mate or refutation taken from the table)
+	OracleHits uint64 // nodes decided by the oracle with an exact distance (endgame tables)
 }
 
 // Searcher holds the per-search state: the oracle, the optional table, node
 // counters, principal variation (triangular table) and one killer move per ply,
 // the move that most recently mated or refuted at that ply and is tried first.
 type Searcher struct {
-	oracle Oracle
-	table  Table
-	nodes  uint64
-	ttHits uint64
-	pv     [MaxPly][MaxPly]chess.Move
-	pvLen  [MaxPly]int
-	killer [MaxPly]chess.Move
+	oracle     Oracle
+	table      Table
+	nodes      uint64
+	ttHits     uint64
+	oracleHits uint64
+	pv         [MaxPly][MaxPly]chess.Move
+	pvLen      [MaxPly]int
+	killer     [MaxPly]chess.Move
 
 	// Progress, if set, is called every ProgressNodes nodes of a depth, for long searches.
 	Progress func(nodes uint64)
@@ -67,14 +69,15 @@ func New(oracle Oracle, table Table) *Searcher {
 // MatePlies 0). Nodes accumulate over all depths.
 func (s *Searcher) Solve(root *bitboard.Board, maxPlies int, report func(plies int, r Result)) Result {
 	s.killer = [MaxPly]chess.Move{}
-	var totalNodes, totalHits uint64
+	var totalNodes, totalHits, totalOracle uint64
 	var last Result
 	for d := 1; d <= maxPlies && d < MaxPly; d += 2 {
-		s.nodes, s.ttHits = 0, 0
+		s.nodes, s.ttHits, s.oracleHits = 0, 0, 0
 		dist := s.attack(root, d, 0)
 		totalNodes += s.nodes
 		totalHits += s.ttHits
-		last = Result{Nodes: totalNodes, TTHits: totalHits}
+		totalOracle += s.oracleHits
+		last = Result{Nodes: totalNodes, TTHits: totalHits, OracleHits: totalOracle}
 		if dist != NoMate {
 			last.MatePlies = dist
 			last.PV = s.extendPV(root, dist)
@@ -97,8 +100,16 @@ func (s *Searcher) attack(b *bitboard.Board, depth, ply int) int {
 	if s.nodes&(ProgressNodes-1) == 0 && s.Progress != nil {
 		s.Progress(s.nodes)
 	}
-	if v, _ := s.oracle.Probe(b); v == Draw || v == Loss {
+	switch v, plies := s.oracle.Probe(b); {
+	case v == Draw || v == Loss:
 		return NoMate
+	case v == Win && plies > 0: // an endgame table knows the exact distance
+		s.oracleHits++
+		if plies > depth {
+			return NoMate
+		}
+		s.pvLen[ply] = 0
+		return plies
 	}
 	var ttFrom, ttTo chess.Pos = -1, -1
 	if s.table != nil {
@@ -164,8 +175,16 @@ func (s *Searcher) defend(b *bitboard.Board, depth, ply int) int {
 		}
 		return NoMate // stalemate
 	}
-	if v, _ := s.oracle.Probe(b); v == Draw || v == Win {
+	switch v, plies := s.oracle.Probe(b); {
+	case v == Draw || v == Win:
 		return NoMate
+	case v == Loss && plies > 0: // the defender is mated in plies, known exactly
+		s.oracleHits++
+		if plies > depth {
+			return NoMate
+		}
+		s.pvLen[ply] = 0
+		return plies
 	}
 	var ttFrom, ttTo chess.Pos = -1, -1
 	if s.table != nil {

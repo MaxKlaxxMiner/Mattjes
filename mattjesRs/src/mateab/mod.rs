@@ -17,7 +17,7 @@
 mod oracle;
 mod ttvalue;
 
-pub use oracle::{Material, Oracle, Verdict};
+pub use oracle::{Material, Oracle, Tables, Verdict};
 pub use ttvalue::VALUE_BITS;
 
 use ttvalue::{pack_value, same_move, unpack_value, TT_MATE, TT_NO_MATE};
@@ -44,6 +44,8 @@ pub struct Result {
     pub nodes: u64,
     /// Probes that ended the node (mate or refutation taken from the table).
     pub tt_hits: u64,
+    /// Nodes decided by the oracle with an exact distance (endgame tables).
+    pub oracle_hits: u64,
 }
 
 /// Per-search state: the oracle, the optional table, node counters, principal
@@ -54,6 +56,7 @@ pub struct Searcher<O: Oracle, T: TransTable> {
     table: Option<T>,
     nodes: u64,
     tt_hits: u64,
+    oracle_hits: u64,
     pv: Box<[[Move; MAX_PLY]; MAX_PLY]>,
     pv_len: [usize; MAX_PLY],
     killer: [Move; MAX_PLY],
@@ -73,7 +76,7 @@ const NO_SQUARE: Pos = Pos(-1);
 impl<O: Oracle, T: TransTable> Searcher<O, T> {
     /// A searcher that asks `oracle` at every node and uses `table` (`None` for none).
     pub fn new(oracle: O, table: Option<T>) -> Searcher<O, T> {
-        Searcher { oracle, table, nodes: 0, tt_hits: 0, pv: Box::new([[Move::NONE; MAX_PLY]; MAX_PLY]), pv_len: [0; MAX_PLY], killer: [Move::NONE; MAX_PLY], progress: None }
+        Searcher { oracle, table, nodes: 0, tt_hits: 0, oracle_hits: 0, pv: Box::new([[Move::NONE; MAX_PLY]; MAX_PLY]), pv_len: [0; MAX_PLY], killer: [Move::NONE; MAX_PLY], progress: None }
     }
 
     /// The table (for statistics after the search).
@@ -92,16 +95,18 @@ impl<O: Oracle, T: TransTable> Searcher<O, T> {
     /// last depth, with `mate_plies` 0). Nodes accumulate over all depths.
     pub fn solve(&mut self, root: &Board, max_plies: u32, mut report: impl FnMut(u32, &Result)) -> Result {
         self.killer = [Move::NONE; MAX_PLY];
-        let (mut total_nodes, mut total_hits) = (0u64, 0u64);
+        let (mut total_nodes, mut total_hits, mut total_oracle) = (0u64, 0u64, 0u64);
         let mut last = Result::default();
         let mut d = 1u32;
         while d <= max_plies && (d as usize) < MAX_PLY {
             self.nodes = 0;
             self.tt_hits = 0;
+            self.oracle_hits = 0;
             let dist = self.attack(root, d, 0);
             total_nodes += self.nodes;
             total_hits += self.tt_hits;
-            last = Result { nodes: total_nodes, tt_hits: total_hits, ..Default::default() };
+            total_oracle += self.oracle_hits;
+            last = Result { nodes: total_nodes, tt_hits: total_hits, oracle_hits: total_oracle, ..Default::default() };
             if dist != NO_MATE {
                 last.mate_plies = dist as u32;
                 last.pv = self.extend_pv(root, dist as usize);
@@ -150,8 +155,18 @@ impl<O: Oracle, T: TransTable> Searcher<O, T> {
                 p(self.nodes, self.table.as_ref());
             }
         }
-        if matches!(self.oracle.probe(b).0, Verdict::Draw | Verdict::Loss) {
-            return NO_MATE;
+        match self.oracle.probe(b) {
+            (Verdict::Draw | Verdict::Loss, _) => return NO_MATE,
+            (Verdict::Win, plies) if plies > 0 => {
+                // an endgame table knows the exact distance
+                self.oracle_hits += 1;
+                if plies > depth {
+                    return NO_MATE;
+                }
+                self.pv_len[ply] = 0;
+                return plies as i32;
+            }
+            _ => {}
         }
         let (tt_from, tt_to) = match self.probe(b, depth, ply) {
             Err(r) => return r,
@@ -206,8 +221,18 @@ impl<O: Oracle, T: TransTable> Searcher<O, T> {
             }
             return NO_MATE; // stalemate
         }
-        if matches!(self.oracle.probe(b).0, Verdict::Draw | Verdict::Win) {
-            return NO_MATE;
+        match self.oracle.probe(b) {
+            (Verdict::Draw | Verdict::Win, _) => return NO_MATE,
+            (Verdict::Loss, plies) if plies > 0 => {
+                // the defender is mated in plies, known exactly
+                self.oracle_hits += 1;
+                if plies > depth {
+                    return NO_MATE;
+                }
+                self.pv_len[ply] = 0;
+                return plies as i32;
+            }
+            _ => {}
         }
         let (tt_from, tt_to) = match self.probe(b, depth, ply) {
             Err(r) => return r,

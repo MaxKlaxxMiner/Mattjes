@@ -5,6 +5,7 @@ import (
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
 )
 
 // Verdict is what an Oracle knows about a position, from the point of view of
@@ -23,6 +24,29 @@ const (
 // plug in here without touching the search.
 type Oracle interface {
 	Probe(b *bitboard.Board) (Verdict, int)
+}
+
+// Tables answers from the endgame tables (milestone 5) for every position
+// with up to four pieces, including the exact distance, and falls back to
+// the material check for everything else. Positions with an en passant right
+// are not in the tables; the search simply continues there.
+type Tables struct {
+	Set *egtb.Set
+}
+
+func (o Tables) Probe(b *bitboard.Board) (Verdict, int) {
+	if v, ok := o.Set.Lookup(b); ok {
+		switch {
+		case v.IsWin():
+			return Win, v.Plies()
+		case v.IsLoss():
+			return Loss, v.Plies()
+		case v == egtb.Draw:
+			return Draw, 0
+		}
+		return Unknown, 0 // invalid position, cannot happen for legal input
+	}
+	return Material{}.Probe(b)
 }
 
 // lightSquares has a8 (bit 0) set: a8 is a light square.

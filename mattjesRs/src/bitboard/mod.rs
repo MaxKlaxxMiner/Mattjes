@@ -7,6 +7,7 @@
 
 mod bits;
 mod board;
+mod compose;
 mod domove;
 mod encode;
 mod magic;
@@ -19,6 +20,8 @@ mod zobrist;
 // The public API is wider than what the currently enabled experiment uses.
 #[allow(unused_imports)]
 pub use board::{Board, State};
+#[allow(unused_imports)]
+pub use compose::piece_attacks;
 #[allow(unused_imports)]
 pub use encode::{packed_fixed_record, Codec, Packed, PackedFixed};
 #[allow(unused_imports)]

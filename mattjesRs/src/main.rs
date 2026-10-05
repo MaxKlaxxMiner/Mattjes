@@ -19,9 +19,11 @@
 
 mod bitboard;
 mod chess;
+mod egtb;
 mod mateab;
 mod matelist;
 mod perft;
+mod tests_egtb;
 mod tests_hash;
 mod tests_mate;
 mod tests_perft;
@@ -38,7 +40,7 @@ fn main() {
     );
 
     // --- milestone 1: move generator + perft (enable one at a time) ---
-    tests_perft::bitboard_perft_recursive(200_000_000);
+    // tests_perft::bitboard_perft_recursive(200_000_000);
     // tests_perft::bitboard_perft_iterative(200_000_000);
     // tests_perft::bitboard_perft_breadth(200_000_000, 2048);
     // tests_perft::bitboard_perft_breadth_encoded::<bitboard::Packed>(200_000_000, 2048);
@@ -72,4 +74,11 @@ fn main() {
     // --- milestone 4: list-based search, 10 to 50 s per four-piece position, about 3 GB (the pawn test exceeds 30 M positions at ply 9) ---
     // tests_mate::matelist_solve("KRR-K", 0, 200, 30_000_000);
     // tests_mate::matelist_solve("KBN-K", 0, 200, 30_000_000);
+
+    // --- milestone 5: endgame tables ---
+    // tests_egtb::egtb_index_roundtrip(7); // 16 s
+    // tests_egtb::egtb_generate(&["all"], 12, false, true); // 15 s + 7 s verification
+    // tests_egtb::egtb_load_or_generate(12);
+    // tests_mate::mateab_solve_tables(31, 0, false); // four-piece positions are root hits, pawns 464,248 nodes (identical to Go)
+    tests_mate::mateab_solve_tables_named("KQ-KBN", 1024, true); // mate in 39 with five pieces: open how long, user runs it
 }

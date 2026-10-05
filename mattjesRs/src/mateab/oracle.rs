@@ -1,5 +1,6 @@
 use crate::bitboard::Board;
 use crate::chess::Piece;
+use crate::egtb;
 
 /// What an `Oracle` knows about a position, from the point of view of the side
 /// to move.
@@ -20,6 +21,27 @@ pub trait Oracle {
     fn probe(&self, b: &Board) -> (Verdict, u32);
 }
 
+/// Answers from the endgame tables (milestone 5) for every position with up
+/// to four pieces, including the exact distance, and falls back to the
+/// material check for everything else. Positions with an en passant right are
+/// not in the tables; the search simply continues there.
+#[derive(Clone, Copy)]
+pub struct Tables<'a> {
+    pub set: &'a egtb::Set,
+}
+
+impl Oracle for Tables<'_> {
+    fn probe(&self, b: &Board) -> (Verdict, u32) {
+        match self.set.lookup(b) {
+            Some(v) if v.is_win() => (Verdict::Win, v.plies()),
+            Some(v) if v.is_loss() => (Verdict::Loss, v.plies()),
+            Some(egtb::Value::DRAW) => (Verdict::Draw, 0),
+            Some(_) => (Verdict::Unknown, 0), // invalid position, cannot happen for legal input
+            None => Material.probe(b),
+        }
+    }
+}
+
 /// a8 (bit 0) is a light square.
 const LIGHT_SQUARES: u64 = 0xAA55AA55AA55AA55;
 
@@ -28,6 +50,7 @@ const LIGHT_SQUARES: u64 = 0xAA55AA55AA55AA55;
 /// king, and king and bishop against king and bishop with both bishops on the
 /// same square colour. Everything else is `Unknown`; note that two knights
 /// against a bare king can still mate with the defender's help, so it is not dead.
+#[derive(Clone, Copy)]
 pub struct Material;
 
 impl Oracle for Material {

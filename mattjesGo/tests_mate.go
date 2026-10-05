@@ -8,6 +8,7 @@ import (
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mateab"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/matelist"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/perft"
@@ -23,15 +24,28 @@ import (
 // Prints nodes, time, table hits and the principal variation per depth. The
 // table is cleared per position, so Go and Rust can be compared node by node.
 func mateabSolve(maxMateIn int, sizeMB int, bucketed bool) {
-	runMateab(func(p chess.MatePosition) bool { return p.MateIn <= maxMateIn }, sizeMB, bucketed)
+	runMateab(func(p chess.MatePosition) bool { return p.MateIn <= maxMateIn }, sizeMB, bucketed, nil)
 }
 
 // mateabSolveNamed runs a single reference position by name, for the long ones.
 func mateabSolveNamed(name string, sizeMB int, bucketed bool) {
-	runMateab(func(p chess.MatePosition) bool { return p.Name == name }, sizeMB, bucketed)
+	runMateab(func(p chess.MatePosition) bool { return p.Name == name }, sizeMB, bucketed, nil)
 }
 
-func runMateab(selected func(p chess.MatePosition) bool, sizeMB int, bucketed bool) {
+// mateabSolveTables runs the reference positions with the endgame tables as
+// oracle (milestone 5): positions with up to four pieces are answered at the
+// root, the five-piece ones as soon as a capture reaches a table.
+func mateabSolveTables(maxMateIn int, sizeMB int, bucketed bool) {
+	set := egtbLoadOrGenerate(12)
+	runMateab(func(p chess.MatePosition) bool { return p.MateIn <= maxMateIn }, sizeMB, bucketed, set)
+}
+
+func mateabSolveTablesNamed(name string, sizeMB int, bucketed bool) {
+	set := egtbLoadOrGenerate(12)
+	runMateab(func(p chess.MatePosition) bool { return p.Name == name }, sizeMB, bucketed, set)
+}
+
+func runMateab(selected func(p chess.MatePosition) bool, sizeMB int, bucketed bool, tables *egtb.Set) {
 	var table transTable
 	title := "no TT"
 	switch {
@@ -41,6 +55,11 @@ func runMateab(selected func(p chess.MatePosition) bool, sizeMB int, bucketed bo
 	case sizeMB > 0:
 		table = tt.New(sizeMB)
 		title = fmt.Sprintf("direct-mapped TT %d MB", sizeMB)
+	}
+	var oracle mateab.Oracle = mateab.Material{}
+	if tables != nil {
+		oracle = mateab.Tables{Set: tables}
+		title += ", endgame tables"
 	}
 	fmt.Printf("=== mateab / mate search with mate window, iterative deepening, %s ===\n", title)
 	ok := true
@@ -62,9 +81,9 @@ func runMateab(selected func(p chess.MatePosition) bool, sizeMB int, bucketed bo
 			}
 			table.Clear()
 			table.ResetStats()
-			s = mateab.New(mateab.Material{}, table)
+			s = mateab.New(oracle, table)
 		} else {
-			s = mateab.New(mateab.Material{}, nil)
+			s = mateab.New(oracle, nil)
 		}
 		start := time.Now()
 		lastNodes := uint64(0)
@@ -103,6 +122,9 @@ func runMateab(selected func(p chess.MatePosition) bool, sizeMB int, bucketed bo
 			ok = false
 		default:
 			fmt.Printf("    ok: %s nodes in %s", perftGroup(r.Nodes), fmtMs(elapsed))
+			if tables != nil {
+				fmt.Printf(", %s table hits", perftGroup(r.OracleHits))
+			}
 			if table != nil {
 				st := table.Counters()
 				fmt.Printf(", tt: %s probes, %s hits ending the node, %s stores, %s replaced, fill %.1f%%",

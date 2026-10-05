@@ -34,7 +34,7 @@ func main() {
 	fmt.Printf("Mattjes (Go) %s on %s/%s, %d CPUs\n\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU())
 
 	// --- milestone 1: move generator + perft (enable one at a time) ---
-	bitboardPerftRecursive(200_000_000)
+	// bitboardPerftRecursive(200_000_000)
 	// bitboardPerftIterative(200_000_000)
 	// bitboardPerftBreadth(200_000_000, 2048)
 	// bitboardPerftBreadthPacked(200_000_000, 2048)
@@ -68,5 +68,13 @@ func main() {
 	// --- milestone 4: list-based search, 10 to 50 s per four-piece position, about 3 GB (the pawn test exceeds 30 M positions at ply 9) ---
 	// matelistSolve("KRR-K", 0, 200, 30_000_000)
 	// matelistSolve("KBN-K", 0, 200, 30_000_000)
+
+	// --- milestone 5: endgame tables ---
+	// egtbIndexRoundtrip(7) // 16 s
+	// egtbGenerate([]string{"KBNK", "KQKR", "KRKR", "KQKN"}, 12, false, true)
+	// egtbGenerate([]string{"all"}, 12, false, true) // 17 s + 9 s verification
+	// egtbLoadOrGenerate(12)
+	// mateabSolveTables(31, 0, false) // four-piece positions are root hits, pawns 464,248 nodes (identical to Rust)
+	mateabSolveTablesNamed("KQ-KBN", 1024, true) // mate in 39 with five pieces: open how long, user runs it
 	_ = chess.StartFEN // keep the import for the commented experiments above
 }

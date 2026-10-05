@@ -6,9 +6,11 @@ use std::time::{Duration, Instant};
 
 use crate::bitboard::{self, Board};
 use crate::chess::{new_buffer, MatePosition, Move, MATE_POSITIONS, PERFT_POSITIONS, UNKNOWN};
-use crate::mateab;
+use crate::egtb;
+use crate::mateab::{self, Oracle};
 use crate::matelist;
 use crate::perft;
+use crate::tests_egtb;
 use crate::tests_hash::{fmt_ms, group};
 use crate::tt::{self, TransTable};
 
@@ -21,26 +23,47 @@ use crate::tt::{self, TransTable};
 /// Prints nodes, time, table hits and the principal variation per depth. The
 /// table is cleared per position, so Go and Rust can be compared node by node.
 pub fn mateab_solve(max_mate_in: u32, size_mb: usize, bucketed: bool) {
-    mateab_run(&|p| p.mate_in <= max_mate_in, size_mb, bucketed);
+    mateab_run(&|p| p.mate_in <= max_mate_in, size_mb, bucketed, None);
 }
 
 /// Runs a single reference position by name, for the long ones.
 pub fn mateab_solve_named(name: &str, size_mb: usize, bucketed: bool) {
-    mateab_run(&|p| p.name == name, size_mb, bucketed);
+    mateab_run(&|p| p.name == name, size_mb, bucketed, None);
 }
 
-fn mateab_run(selected: &dyn Fn(&MatePosition) -> bool, size_mb: usize, bucketed: bool) {
-    if size_mb == 0 {
-        run_mateab::<tt::Table>("no TT", None, selected);
-    } else if bucketed {
-        run_mateab(&format!("4-way bucket TT {} MB", size_mb), Some(tt::Buckets::new(size_mb)), selected);
-    } else {
-        run_mateab(&format!("direct-mapped TT {} MB", size_mb), Some(tt::Table::new(size_mb)), selected);
+/// Runs the reference positions with the endgame tables as oracle (milestone
+/// 5): positions with up to four pieces are answered at the root, the
+/// five-piece ones as soon as a capture reaches a table.
+pub fn mateab_solve_tables(max_mate_in: u32, size_mb: usize, bucketed: bool) {
+    let set = tests_egtb::egtb_load_or_generate(12);
+    mateab_run(&|p| p.mate_in <= max_mate_in, size_mb, bucketed, Some(&set));
+}
+
+pub fn mateab_solve_tables_named(name: &str, size_mb: usize, bucketed: bool) {
+    let set = tests_egtb::egtb_load_or_generate(12);
+    mateab_run(&|p| p.name == name, size_mb, bucketed, Some(&set));
+}
+
+fn mateab_run(selected: &dyn Fn(&MatePosition) -> bool, size_mb: usize, bucketed: bool, tables: Option<&egtb::Set>) {
+    match tables {
+        None => mateab_run_oracle(selected, size_mb, bucketed, mateab::Material, ""),
+        Some(set) => mateab_run_oracle(selected, size_mb, bucketed, mateab::Tables { set }, ", endgame tables"),
     }
 }
 
-fn run_mateab<T: TransTable + 'static>(title: &str, mut table: Option<T>, selected: &dyn Fn(&MatePosition) -> bool) {
+fn mateab_run_oracle<O: Oracle + Copy>(selected: &dyn Fn(&MatePosition) -> bool, size_mb: usize, bucketed: bool, oracle: O, suffix: &str) {
+    if size_mb == 0 {
+        run_mateab::<O, tt::Table>(&format!("no TT{}", suffix), oracle, None, selected);
+    } else if bucketed {
+        run_mateab(&format!("4-way bucket TT {} MB{}", size_mb, suffix), oracle, Some(tt::Buckets::new(size_mb)), selected);
+    } else {
+        run_mateab(&format!("direct-mapped TT {} MB{}", size_mb, suffix), oracle, Some(tt::Table::new(size_mb)), selected);
+    }
+}
+
+fn run_mateab<O: Oracle + Copy, T: TransTable + 'static>(title: &str, oracle: O, mut table: Option<T>, selected: &dyn Fn(&MatePosition) -> bool) {
     println!("=== mateab / mate search with mate window, iterative deepening, {} ===", title);
+    let with_tables = title.contains("endgame tables");
     if let Some(t) = table.as_ref() {
         assert!(mateab::VALUE_BITS <= t.value_bits(), "table too small for the mateab value layout");
     }
@@ -57,7 +80,7 @@ fn run_mateab<T: TransTable + 'static>(title: &str, mut table: Option<T>, select
             t.clear();
             t.reset_stats();
         }
-        let mut s = mateab::Searcher::new(mateab::Material, table.take());
+        let mut s = mateab::Searcher::new(oracle, table.take());
         let start = Instant::now();
         let mut last_nodes = 0u64;
         let mut depth_start = start;
@@ -97,6 +120,9 @@ fn run_mateab<T: TransTable + 'static>(title: &str, mut table: Option<T>, select
             ok = false;
         } else {
             print!("    ok: {} nodes in {}", group(r.nodes), fmt_ms(elapsed));
+            if with_tables {
+                print!(", {} table hits", group(r.oracle_hits));
+            }
             if let Some(t) = s.table() {
                 let st = t.stats();
                 print!(
