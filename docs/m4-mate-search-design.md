@@ -356,23 +356,25 @@ gleiche Knotenzahlen bei gleichem Algorithmus.
 
 ## 7. Teststellungen
 
-Aus `old/Program.cs`, Mattlängen laut altem Code. Der alte Sucher war "teils
-noch buggy" (CLAUDE.md), die Werte gelten bis zur Prüfung als **unbestätigt**.
-Alle Stellungen bis fünf Steine lassen sich gegen eine Tablebase (DTM) prüfen,
-bevor sie als Referenz gelten; der Bauern-Test (12 Steine) nur durch die
-eigene Suche in beiden Sprachen und beiden Algorithmen.
+Aus `old/Program.cs`. Die Mattlängen der acht Endspiele (bis fünf Steine)
+wurden am 2026-10-05 gegen die Lichess-Tablebase (Syzygy mit DTM) geprüft:
+**alle acht stimmen** mit dem alten C#-Code überein. DTM in Halbzügen,
+DTZ (Halbzüge bis zum nächsten Schlag- oder Bauernzug) zur Kontrolle, dass
+die 50-Züge-Regel in keiner der Stellungen den Mattweg kreuzt (alle DTZ unter
+100). Der Bauern-Test (12 Steine) ist nur durch die eigene Suche in beiden
+Sprachen und beiden Algorithmen prüfbar.
 
-| Nr | Material | FEN | Matt in (alt) | Steine | Zweck |
-|---|---|---|---|---|---|
-| 1 | KQQ-K | `8/8/8/4k3/8/Q7/Q7/K7 w - - 0 1` | 3 | 4 | Rauchtest |
-| 2 | KQR-K | `8/8/8/4k3/8/Q7/R7/K7 w - - 0 1` | 5 | 4 | |
-| 3 | KRR-K | `8/8/8/4k3/8/R7/R7/K7 w - - 0 1` | 7 | 4 | Treppenmatt, stille Züge |
-| 4 | KQ-KN | `7k/5n2/8/8/8/8/5Q2/K7 w - - 0 1` | 12 | 4 | Zugzwang, Pattfallen |
-| 5 | KR-KR | `8/5rK1/6R1/8/4k3/8/8/8 w - - 0 1` | 15 | 4 | Gegenspiel des Verteidigers |
-| 6 | KBB-K | `8/8/4k3/8/8/8/8/K2BB3 w - - 0 1` | 17 | 4 | lange stille Manöver |
-| 7 | KBN-K | `8/8/8/8/3k4/8/N7/KB6 w - - 0 1` | 31 | 4 | nur mit df-pn oder TT-Transpositionen |
-| 8 | KQ-KBN | `8/8/4k3/3bn3/8/4Q3/8/K7 w - - 0 1` | 39 | 5 | längster Test, Verteidiger mit zwei Figuren |
-| 9 | Bauern | `5k2/5P1P/4P3/pP6/P6q/3P2P1/2P5/K7 w - a6 0 1` | 6 | 12 | Umwandlung, En passant (a6 im FEN), schwarze Dame |
+| Nr | Material | FEN | Matt in | DTM | DTZ | Erster Zug | Zweck |
+|---|---|---|---|---|---|---|---|
+| 1 | KQQ-K | `8/8/8/4k3/8/Q7/Q7/K7 w - - 0 1` | 3 | 5 | 3 | Qf7 | Rauchtest |
+| 2 | KQR-K | `8/8/8/4k3/8/Q7/R7/K7 w - - 0 1` | 5 | 9 | 6 | Qe3+ | |
+| 3 | KRR-K | `8/8/8/4k3/8/R7/R7/K7 w - - 0 1` | 7 | 13 | 8 | Re2+ | Treppenmatt, stille Züge |
+| 4 | KQ-KN | `7k/5n2/8/8/8/8/5Q2/K7 w - - 0 1` | 12 | 23 | 21 | Qf6+ | Zugzwang, Pattfallen |
+| 5 | KR-KR | `8/5rK1/6R1/8/4k3/8/8/8 w - - 0 1` | 15 | 29 | 1 | Kxf7 | Gegenspiel des Verteidigers |
+| 6 | KBB-K | `8/8/4k3/8/8/8/8/K2BB3 w - - 0 1` | 17 | 33 | 33 | Kb2 | lange stille Manöver |
+| 7 | KBN-K | `8/8/8/8/3k4/8/N7/KB6 w - - 0 1` | 31 | 61 | 61 | Nc1 | nur mit df-pn oder TT-Transpositionen |
+| 8 | KQ-KBN | `8/8/4k3/3bn3/8/4Q3/8/K7 w - - 0 1` | 39 | 77 | 55 | Kb2 | längster Test, Verteidiger mit zwei Figuren |
+| 9 | Bauern | `5k2/5P1P/4P3/pP6/P6q/3P2P1/2P5/K7 w - a6 0 1` | 6 | | | | Umwandlung, En passant (a6 im FEN), schwarze Dame; unbestätigt |
 
 Noch zu ergänzen, bevor die Messungen beginnen:
 
@@ -441,5 +443,5 @@ entschieden sind:
 - Mobilitätsinitialisierung in df-pn: Generatoraufruf pro Blatt lohnt sich?
 - Zweistufig (df-pn beweist, `mateab` kürzt) oder df-pn mit Tiefenschranke
   in iterativer Vertiefung.
-- Tablebase-Prüfung der Teststellungen: online abfragen oder bis Milestone 5
-  (eigene Tables) als unbestätigt führen.
+- Erledigt 2026-10-05: Tablebase-Prüfung der Teststellungen, alle acht
+  Endspiele bestätigt (Abschnitt 7).
