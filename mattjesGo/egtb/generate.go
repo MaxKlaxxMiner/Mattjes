@@ -22,6 +22,7 @@ type Stats struct {
 	Evaluations                       int // candidate evaluations (forward move generation) over all levels
 	Duration                          time.Duration
 	Overflow                          bool // distances beyond MaxPlies occurred, the table is incomplete
+	Beyond                            int  // positions with distance MaxPlies+1 (or waiting for deeper cross-table children): a lower bound of what is missing
 }
 
 // LongestMate is the longest forced mate in moves (the usual way to quote it).
@@ -33,6 +34,8 @@ var KnownMaxima = map[string]int{
 	"KQK": 10, "KRK": 16, "KBBK": 19, "KBNK": 33, "KQKR": 35,
 	"KQKQ": 13, "KRKR": 19, "KQKN": 21, "KQKB": 17, "KRKB": 29, "KRKN": 40,
 	"KPK": 28, "KPKP": 33,
+	// five pieces (Nalimov DTM maxima)
+	"KBBKN": 78, "KBNKN": 107, "KNNKP": 115, "KQPKQ": 124, "KPPKP": 127,
 }
 
 // dependencies lists the materials a table looks up: captures (one piece of
@@ -161,11 +164,23 @@ func (s *Set) Generate(t *Table, workers int, progress Progress) Stats {
 			break
 		}
 	}
-	if !completed {
+	if !completed || g.beyond.Load() > 0 {
 		// distances beyond MaxPlies cannot be stored in a byte; the positions
-		// that were still open stay 0 and would read as draws
+		// that were still open stay 0 and would read as draws. One more scan
+		// at level MaxPlies+1 without storing counts them (their own parents
+		// are not followed, so the count is a lower bound).
+		level := MaxPlies + 1
+		cur := g.cand[level%3]
+		for _, idx := range g.pending[level] {
+			cur.set(int(idx))
+		}
+		g.pending[level] = nil
+		g.level = level
+		beyond, evals := g.parallelBits(workers, cur, g.scanCandidates)
+		st.Evaluations += evals
+		st.Beyond = beyond + int(g.beyond.Load())
 		st.Overflow = true
-		progress(fmt.Sprintf("%-5s WARNING: distances exceed %d plies, open positions left as draws", t.Mat.Name(), MaxPlies))
+		progress(fmt.Sprintf("%-5s WARNING: distances exceed %d plies, at least %d positions left as draws", t.Mat.Name(), MaxPlies, st.Beyond))
 	}
 	st.Losses += mates
 	st.Draws = legal - st.Wins - st.Losses
@@ -190,6 +205,7 @@ type generator struct {
 	// tables (captures, promotions) with a larger distance.
 	pending   [MaxPlies + 2][]uint32
 	pendingMu sync.Mutex
+	beyond    atomic.Int64 // positions waiting for a level beyond MaxPlies+1 (cannot be stored)
 }
 
 func newGenerator(s *Set, t *Table) *generator {
@@ -208,8 +224,9 @@ func newGenerator(s *Set, t *Table) *generator {
 }
 
 func (g *generator) registerPending(level, idx int) {
-	if level > MaxPlies {
-		panic(fmt.Sprintf("egtb %s: distance %d exceeds the value range", g.t.Mat.Name(), level))
+	if level > MaxPlies+1 {
+		g.beyond.Add(1) // beyond the value range: counted for the overflow report
+		return
 	}
 	g.pendingMu.Lock()
 	g.pending[level] = append(g.pending[level], uint32(idx))
@@ -354,18 +371,20 @@ func (g *generator) initRange(lo, hi int) (int, int) {
 // levels for a loss (every child is won by the opponent, the longest in
 // level-1). Children inside the table never exceed level-1 at this point,
 // children in smaller tables can: such a position is registered for the level
-// it waits for. Returns (1 if decided, 1 evaluation).
+// it waits for. Returns (1 if decided, 1 evaluation). At level MaxPlies+1 the
+// scan is dry: it only counts what the byte cannot hold.
 func (g *generator) scanCandidates(idx int) (int, int) {
 	t := g.t
 	if t.Values[idx] != 0 {
 		return 0, 0
 	}
 	level := g.level
+	dry := level > MaxPlies
 	var sq [6]chess.Pos
 	var buf chess.MoveBuffer
 	s := sq[:len(g.pieces)]
 	whiteMove := t.Decode(idx, s)
-	if g.enPassantPossible {
+	if g.enPassantPossible && !dry {
 		// a double step into this position may have created an en passant right;
 		// that parent is decided by this position's children, not by this value
 		g.markEnPassantParents(s, whiteMove, g.cand[(level+1)%3])
@@ -400,7 +419,9 @@ moves:
 	if win {
 		switch {
 		case minLoss == level-1:
-			t.Values[idx] = WinIn(level)
+			if !dry {
+				t.Values[idx] = WinIn(level)
+			}
 			decided = true
 		case minLoss < level-1:
 			panic(fmt.Sprintf("egtb %s: %s has a child lost in %d at level %d", t.Mat.Name(), b.FEN(), minLoss, level))
@@ -410,7 +431,9 @@ moves:
 	} else if allWin {
 		switch {
 		case maxWin == level-1:
-			t.Values[idx] = LossIn(level)
+			if !dry {
+				t.Values[idx] = LossIn(level)
+			}
 			decided = true
 		case maxWin < level-1:
 			panic(fmt.Sprintf("egtb %s: %s has longest child %d at level %d", t.Mat.Name(), b.FEN(), maxWin, level))
@@ -421,7 +444,9 @@ moves:
 	if !decided {
 		return 0, 1
 	}
-	g.markParents(s, whiteMove, g.cand[(level+1)%3])
+	if !dry {
+		g.markParents(s, whiteMove, g.cand[(level+1)%3])
+	}
 	return 1, 1
 }
 

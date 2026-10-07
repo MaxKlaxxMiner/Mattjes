@@ -278,7 +278,14 @@ func egtbMeasure(names []string, workers int, verify bool) {
 				st.Duration.Seconds(), workers, perftGroup(uint64(st.Legal)), perftGroup(uint64(st.Wins)), perftGroup(uint64(st.Losses)), perftGroup(uint64(st.Draws)),
 				st.MaxWin, st.LongestMate(), st.Levels, perftGroup(uint64(st.Evaluations)))
 			if st.Overflow {
-				fmt.Println("    WARNING: distance range exceeded, table incomplete")
+				fmt.Printf("    WARNING: distance range exceeded, at least %d positions beyond %d plies read as draws\n", st.Beyond, egtb.MaxPlies)
+			}
+			if want, known := egtb.KnownMaxima[m.Name()]; known {
+				verdict := "OK"
+				if st.LongestMate() != want {
+					verdict = fmt.Sprintf("MISMATCH, expected %d", want)
+				}
+				fmt.Printf("    longest mate %d moves against the literature: %s\n", st.LongestMate(), verdict)
 			}
 			fmt.Printf("    memory: process %d MB from the OS (%d MB before), heap in use %d MB; table %d MB\n",
 				after.Sys>>20, before.Sys>>20, after.HeapInuse>>20, t.Size>>20)
@@ -313,8 +320,8 @@ func egtbMeasure(names []string, workers int, verify bool) {
 		if loaded {
 			logLine(fmt.Sprintf("%s pieces=%d indices=%d loaded checksum=%016x %s verify=%s", m.Name(), m.Pieces(), t.Size, sum, verdict, verified))
 		} else {
-			logLine(fmt.Sprintf("%s pieces=%d indices=%d legal=%d wins=%d losses=%d draws=%d longest_plies=%d levels=%d evaluations=%d seconds=%.1f workers=%d overflow=%v memory_mb=%d checksum=%016x %s verify=%s",
-				m.Name(), m.Pieces(), t.Size, st.Legal, st.Wins, st.Losses, st.Draws, st.MaxWin, st.Levels, st.Evaluations, st.Duration.Seconds(), workers, st.Overflow, after.Sys>>20, sum, verdict, verified))
+			logLine(fmt.Sprintf("%s pieces=%d indices=%d legal=%d wins=%d losses=%d draws=%d longest_plies=%d levels=%d evaluations=%d seconds=%.1f workers=%d overflow=%v beyond=%d memory_mb=%d checksum=%016x %s verify=%s",
+				m.Name(), m.Pieces(), t.Size, st.Legal, st.Wins, st.Losses, st.Draws, st.MaxWin, st.Levels, st.Evaluations, st.Duration.Seconds(), workers, st.Overflow, st.Beyond, after.Sys>>20, sum, verdict, verified))
 		}
 		fmt.Println()
 	}

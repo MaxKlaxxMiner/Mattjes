@@ -255,7 +255,11 @@ pub fn egtb_measure(names: &[&str], workers: usize, verify: bool) {
                 group(st.evaluations as u64)
             );
             if st.overflow {
-                println!("    WARNING: distance range exceeded, table incomplete");
+                println!("    WARNING: distance range exceeded, at least {} positions beyond {} plies read as draws", st.beyond, egtb::MAX_PLIES);
+            }
+            if let Some(&(_, want)) = egtb::KNOWN_MAXIMA.iter().find(|(n, _)| *n == m.name()) {
+                let verdict = if st.longest_mate() == want { "OK".to_string() } else { format!("MISMATCH, expected {}", want) };
+                println!("    longest mate {} moves against the literature: {}", st.longest_mate(), verdict);
             }
             println!("    checksum {:016x} {}  (record as (\"{}\", 0x{:016x}),)", sum, verdict, m.name(), sum);
         }
@@ -286,7 +290,7 @@ pub fn egtb_measure(names: &[&str], workers: usize, verify: bool) {
             log(&format!("{} pieces={} indices={} loaded checksum={:016x} {} verify={}", m.name(), m.pieces(), size, sum, verdict, verified));
         } else {
             log(&format!(
-                "{} pieces={} indices={} legal={} wins={} losses={} draws={} longest_plies={} levels={} evaluations={} seconds={:.1} workers={} overflow={} checksum={:016x} {} verify={}",
+                "{} pieces={} indices={} legal={} wins={} losses={} draws={} longest_plies={} levels={} evaluations={} seconds={:.1} workers={} overflow={} beyond={} checksum={:016x} {} verify={}",
                 m.name(),
                 m.pieces(),
                 size,
@@ -300,6 +304,7 @@ pub fn egtb_measure(names: &[&str], workers: usize, verify: bool) {
                 st.duration.as_secs_f64(),
                 workers,
                 st.overflow,
+                st.beyond,
                 sum,
                 verdict,
                 verified

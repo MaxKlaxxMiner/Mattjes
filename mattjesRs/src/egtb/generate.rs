@@ -3,7 +3,7 @@
 //! with the forward move generator; un-moves only tell which positions are
 //! worth looking at (the parents of positions decided in the previous level).
 
-use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -32,6 +32,9 @@ pub struct Stats {
     pub duration: Duration,
     /// Distances beyond MAX_PLIES occurred, the table is incomplete.
     pub overflow: bool,
+    /// Positions with distance MAX_PLIES+1 (or waiting for deeper cross-table
+    /// children): a lower bound of what is missing.
+    pub beyond: usize,
 }
 
 impl Stats {
@@ -57,6 +60,12 @@ pub const KNOWN_MAXIMA: &[(&str, u32)] = &[
     ("KRKN", 40),
     ("KPK", 28),
     ("KPKP", 33),
+    // five pieces (Nalimov DTM maxima)
+    ("KBBKN", 78),
+    ("KBNKN", 107),
+    ("KNNKP", 115),
+    ("KQPKQ", 124),
+    ("KPPKP", 127),
 ];
 
 impl Material {
@@ -172,11 +181,25 @@ impl Set {
                 break;
             }
         }
-        if !completed {
+        if !completed || g.beyond.load(Ordering::Relaxed) > 0 {
             // distances beyond MAX_PLIES cannot be stored in a byte; the positions
-            // that were still open stay 0 and would read as draws
+            // that were still open stay 0 and would read as draws. One more scan
+            // at level MAX_PLIES+1 without storing counts them (their own parents
+            // are not followed, so the count is a lower bound).
+            let level = MAX_PLIES + 1;
+            let cur = &g.cand[(level % 3) as usize];
+            {
+                let mut pending = g.pending.lock().unwrap();
+                for &idx in &pending[level as usize] {
+                    cur.set(idx as usize);
+                }
+                pending[level as usize].clear();
+            }
+            let (beyond, evals) = parallel_bits(workers, cur, &|idx| g.scan_candidate(level, idx));
+            st.evaluations += evals;
+            st.beyond = beyond + g.beyond.load(Ordering::Relaxed);
             st.overflow = true;
-            progress(&format!("{:<5} WARNING: distances exceed {} plies, open positions left as draws", t.mat.name(), MAX_PLIES));
+            progress(&format!("{:<5} WARNING: distances exceed {} plies, at least {} positions left as draws", t.mat.name(), MAX_PLIES, st.beyond));
         }
         st.losses += mates;
         st.draws = legal - st.wins - st.losses;
@@ -271,6 +294,8 @@ struct Generator<'a> {
     /// in-table child will trigger: their decisive children lie in smaller tables
     /// (captures, promotions) with a larger distance.
     pending: Mutex<Vec<Vec<u32>>>,
+    /// Positions waiting for a level beyond MAX_PLIES+1 (cannot be stored).
+    beyond: AtomicUsize,
 }
 
 impl<'a> Generator<'a> {
@@ -287,11 +312,15 @@ impl<'a> Generator<'a> {
             en_passant_possible: white_pawns && black_pawns,
             cand: [Bitset::new(n), Bitset::new(n), Bitset::new(n)],
             pending: Mutex::new(vec![Vec::new(); MAX_PLIES as usize + 2]),
+            beyond: AtomicUsize::new(0),
         }
     }
 
     fn register_pending(&self, level: u32, idx: usize) {
-        assert!(level <= MAX_PLIES, "egtb {}: distance {} exceeds the value range", self.t.mat.name(), level);
+        if level > MAX_PLIES + 1 {
+            self.beyond.fetch_add(1, Ordering::Relaxed); // beyond the value range: counted for the overflow report
+            return;
+        }
         self.pending.lock().unwrap()[level as usize].push(idx as u32);
     }
 
@@ -374,7 +403,8 @@ impl<'a> Generator<'a> {
         let n = self.pieces.len();
         let s = &mut sq[..n];
         let white_move = t.decode(idx, s);
-        if self.en_passant_possible {
+        let dry = level > MAX_PLIES; // the overflow check only counts
+        if self.en_passant_possible && !dry {
             // a double step into this position may have created an en passant right;
             // that parent is decided by this position's children, not by this value
             self.mark_en_passant_parents(s, white_move, &self.cand[((level + 1) % 3) as usize]);
@@ -406,7 +436,9 @@ impl<'a> Generator<'a> {
         let mut decided = false;
         if win {
             if min_loss == level - 1 {
-                t.set_value(idx, Value::win_in(level));
+                if !dry {
+                    t.set_value(idx, Value::win_in(level));
+                }
                 decided = true;
             } else if min_loss < level - 1 {
                 panic!("egtb {}: {} has a child lost in {} at level {}", t.mat.name(), b.fen(), min_loss, level);
@@ -416,7 +448,9 @@ impl<'a> Generator<'a> {
         } else if all_win {
             let max_win = max_win as u32;
             if max_win == level - 1 {
-                t.set_value(idx, Value::loss_in(level));
+                if !dry {
+                    t.set_value(idx, Value::loss_in(level));
+                }
                 decided = true;
             } else if max_win < level - 1 {
                 panic!("egtb {}: {} has longest child {} at level {}", t.mat.name(), b.fen(), max_win, level);
@@ -427,7 +461,9 @@ impl<'a> Generator<'a> {
         if !decided {
             return (0, 1);
         }
-        self.mark_parents(s, white_move, &self.cand[((level + 1) % 3) as usize]);
+        if !dry {
+            self.mark_parents(s, white_move, &self.cand[((level + 1) % 3) as usize]);
+        }
         (1, 1)
     }
 

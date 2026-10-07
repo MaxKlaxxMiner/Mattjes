@@ -134,8 +134,184 @@ Arbeitsrechner (i5, 12 Threads), Go:
 | KBNKQ (= KQKBN) | 1,64 Mrd. | 242.221.056 = 231 MiB | 149.985.528 | 86,9 Mio. / 56,6 Mio. / 6,4 Mio. | 105 Halbzüge = 53 Züge | 106 | 558,7 Mio. | **47,2 s Go / 44,8 s Rust** | 845 MB (355 vorher) | `0xb52d6cdf4e9bee6f` |
 | KBBBK | 1,64 Mrd. | 242.221.056 = 231 MiB | 28.017.470 | 8,1 Mio. / 11,7 Mio. / 8,2 Mio. | 31 Halbzüge = 16 Züge | 38 | 34,8 Mio. | 4,0 s Rust | | `0x985cad50bec78a9d` |
 
-(Prüfsummen im Zugzahl-Format; die weiteren 108 Fünf-Steiner misst der Autor mit
-`measure-egtb.bat`, Ergebnisse folgen hier.)
+### Alle 110 Fünf-Steiner (Messlauf 2026-10-07)
+
+`measure-egtb.bat 5 12` auf dem Arbeitsrechner (i5, 12 Threads), Rust-Binary, ein Prozess
+pro Material, jede Tabelle anschließend vorwärts verifiziert. Start 16:37, Ende 18:36.
+Weder `panicked` noch `MISMATCH` im Konsolenlog, alle 110 Verifikationen melden 0
+Abweichungen. Alle Prüfsummen stehen seitdem als Konstanten im Code
+(`egtb.TableChecksums` / `TABLE_CHECKSUMS`), damit ist jede weitere Erzeugung ein
+Regressionstest.
+
+| | Summe |
+|---|---|
+| Materialien | 110 (60 ohne Bauern à 231 MiB, 36 mit einem Bauern à 677 MiB, 12 mit zwei Bauern à 507 MiB, 2 mit drei Bauern à 380 MiB) |
+| Indizes | 47.288.844.288 = 44,0 GiB roh, mit Basis 47,47 GB |
+| legale Stellungen | 25,87 Mrd. |
+| Erzeugung | 4.953 s = 83 min (3 s KNNKB bis 149 s KRPKQ, 12 bis 13 Mio. Bewertungen/s) |
+| Verifikation | 1.955 s = 33 min |
+| komprimiert (`egtb-compress`, danach) | 10.116.567.003 Byte, mit Basis 10,16 GB, **Faktor 4,67** |
+
+Literatur-Maxima (Nalimov-DTM), die die Tabellen treffen: KBBKN 78, KBNKN 107, KNNKP 115,
+KQPKQ 124, KPPKP 127 Züge. Diese fünf stehen jetzt in `KnownMaxima` und werden bei jeder
+Messung geprüft. Die weiteren Maxima der Tabelle (etwa KRBKR 65, KRPKR 74, KQRKQ 67) habe
+ich nicht gegen die Literatur geprüft, sie sind nur unsere Werte.
+
+**KPPKP sprengt den Wertebereich (Überlauf).** Der längste Gewinn ist 253 Halbzüge =
+127 Züge und trifft die Literatur, aber die Tabelle meldet "distances exceed 253 plies".
+Gewinne können bis 253 Halbzüge gespeichert werden (ungerade), Verluste nur bis 252
+(gerade). Der Verteidiger am Zug, der erst nach 254 Halbzügen matt ist, passt nicht ins
+Byte: Der Generator bricht nach Ebene 253 ab, diese Stellungen bleiben 0 und lesen sich
+als Remis. Seit diesem Lauf rechnet der Generator eine letzte Ebene 254 trocken (nur
+zählen, nichts speichern): **mindestens 7 Stellungen** fehlen in KPPKP, Go und Rust
+zählen identisch, die Prüfsumme bleibt `d2f3cdafa0bb5ca5`. Es sind ausschließlich
+Verluste in 254 Halbzügen für die Seite am Zug, alle anderen 163.262.453 legalen
+Stellungen stimmen. Ausweg ohne zweites Byte: den Wert 128 (ungültig) aufgeben, dann
+reichen 128 Verlustwerte bis 254 Halbzüge, tote und illegale Indizes würden der Generator
+in einem eigenen Bitset führen und `Verify` über `Index(Decode(i)) != i` erkennen; in der
+Datei sind sie schon heute "egal". Das ändert jedes Byte 128 in 0, also alle 146
+Prüfsummen und erfordert eine Neuberechnung (zwei Stunden mit Verifikation). Für
+Sechs-Steiner (KRNKNN 262 Züge) braucht es ohnehin zwei Byte pro Stellung.
+
+Die vollständige Anforderungstabelle. Spalten: Indizes in MiB (= Rohdatei), legale
+Stellungen, Gewinne / Verluste / Remis in Millionen, längstes Matt in Halbzügen = Zügen,
+Ebenen, Bewertungen in Millionen, Erzeugung in Sekunden, Verifikation in Sekunden,
+komprimierte Datei in MiB mit Faktor, Prüfsumme (Zugzahl-Format, über die Rohwerte mit
+128ern):
+
+| Material | MiB | legal | G / V / R (Mio.) | Matt | Ebenen | Bew. (Mio.) | s | Verify s | gepackt MiB | Prüfsumme |
+|---|---|---|---|---|---|---|---|---|---|---|
+| KBBBK | 231 | 28.0 | 8.1 / 11.7 / 8.2 | 31 = 16 | 38 | 34.8 | 3.9 | 2.5 | 11 (21.1×) | `985cad50bec78a9d` |
+| KBBKB | 231 | 82.9 | 6.0 / 0.6 / 76.3 | 43 = 22 | 44 | 42.2 | 5.1 | 6.3 | 8 (30.2×) | `35aeff97f4dcf6e9` |
+| KBBKN | 231 | 85.4 | 18.5 / 15.9 / 51.0 | 155 = 78 | 156 | 143.2 | 10.6 | 6.2 | 34 (6.8×) | `d4e475056311e413` |
+| KBBKQ | 231 | 72.5 | 38.7 / 25.0 / 8.7 | 161 = 81 | 162 | 240.3 | 21.8 | 7.0 | 47 (4.9×) | `e7efffa62ded744d` |
+| KBBKR | 231 | 79.2 | 6.9 / 0.6 / 71.7 | 61 = 31 | 61 | 58.1 | 5.9 | 6.9 | 9 (27.0×) | `f1ff23cccfcfdc2f` |
+| KBBNK | 231 | 86.6 | 35.3 / 49.2 / 2.1 | 65 = 33 | 66 | 148.9 | 14.1 | 6.3 | 32 (7.2×) | `e5fedab06c47bf9f` |
+| KBNKB | 231 | 170.9 | 20.9 / 1.1 / 148.9 | 77 = 39 | 78 | 157.7 | 14.2 | 12.5 | 24 (9.6×) | `de72c4c91280419d` |
+| KBNKN | 231 | 175.9 | 26.3 / 3.6 / 146.0 | 213 = 107 | 213 | 183.0 | 16.0 | 11.9 | 35 (6.7×) | `664ecda0ec6e3aed` |
+| KBNKQ | 231 | 150.0 | 86.9 / 56.6 / 6.4 | 105 = 53 | 106 | 558.7 | 47.6 | 12.2 | 109 (2.1×) | `b52d6cdf4e9bee6f` |
+| KBNKR | 231 | 163.4 | 24.3 / 1.4 / 137.6 | 81 = 41 | 81 | 221.0 | 16.0 | 11.9 | 28 (8.4×) | `7426ac0fcf5e5565` |
+| KBNNK | 231 | 88.8 | 37.6 / 46.9 / 4.3 | 67 = 34 | 68 | 150.9 | 13.2 | 6.1 | 39 (6.0×) | `c3c3a9ec4b714bff` |
+| KNNKB | 231 | 87.7 | 0.0 / 0.0 / 87.6 | 7 = 4 | 7 | 0.0 | 3.1 | 6.3 | 1 (252.4×) | `dfd8153ec0c88027` |
+| KNNKN | 231 | 90.1 | 0.0 / 0.0 / 90.1 | 13 = 7 | 13 | 0.2 | 3.1 | 6.0 | 1 (248.7×) | `674398e2ff0a9a3a` |
+| KNNKQ | 231 | 77.2 | 32.0 / 24.7 / 20.5 | 143 = 72 | 144 | 258.2 | 20.6 | 6.9 | 48 (4.8×) | `c3cfe34d51c2073b` |
+| KNNKR | 231 | 83.9 | 2.5 / 0.2 / 81.2 | 81 = 41 | 81 | 26.2 | 4.5 | 6.6 | 4 (64.3×) | `654b31c1394f625f` |
+| KNNNK | 231 | 30.3 | 13.0 / 12.8 / 4.4 | 41 = 21 | 42 | 48.9 | 4.6 | 2.5 | 15 (15.1×) | `38031b8ca47ce417` |
+| KQBBK | 231 | 76.4 | 25.2 / 48.7 / 2.6 | 11 = 6 | 38 | 118.0 | 14.3 | 6.3 | 26 (9.0×) | `6a0ce04fa153f207` |
+| KQBKB | 231 | 147.9 | 58.7 / 71.4 / 17.8 | 33 = 17 | 34 | 323.9 | 34.1 | 12.8 | 57 (4.1×) | `681d91e6196bdc7b` |
+| KQBKN | 231 | 152.8 | 58.5 / 78.3 / 16.1 | 41 = 21 | 42 | 337.3 | 33.1 | 12.5 | 58 (3.9×) | `2ec6a87537b772d2` |
+| KQBKQ | 231 | 127.0 | 53.5 / 5.1 / 68.3 | 65 = 33 | 66 | 311.8 | 29.4 | 13.0 | 40 (5.7×) | `196cfbc1e93c3f5d` |
+| KQBKR | 231 | 140.4 | 59.0 / 58.6 / 22.8 | 79 = 40 | 80 | 401.9 | 37.0 | 12.7 | 68 (3.4×) | `29b6ed1ffa6d270a` |
+| KQBNK | 231 | 156.7 | 54.3 / 101.3 / 1.1 | 13 = 7 | 66 | 257.9 | 27.9 | 11.5 | 38 (6.0×) | `f91f7ea18fa1d5f6` |
+| KQNKB | 231 | 151.8 | 62.6 / 70.4 / 18.8 | 33 = 17 | 34 | 341.8 | 33.4 | 12.8 | 61 (3.8×) | `c992d53be8ca7d92` |
+| KQNKN | 231 | 156.8 | 62.4 / 77.3 / 17.1 | 41 = 21 | 42 | 352.4 | 33.0 | 12.4 | 61 (3.8×) | `1f0572e8de3f5dd7` |
+| KQNKQ | 231 | 130.9 | 54.2 / 3.1 / 73.5 | 81 = 41 | 82 | 324.3 | 28.5 | 13.2 | 40 (5.8×) | `359f224624fbdb4e` |
+| KQNKR | 231 | 144.3 | 64.7 / 57.0 / 22.6 | 81 = 41 | 81 | 442.0 | 38.6 | 12.8 | 73 (3.2×) | `16b8f7fe86f1a71a` |
+| KQNNK | 231 | 80.1 | 28.9 / 46.6 / 4.6 | 15 = 8 | 18 | 130.9 | 13.4 | 6.2 | 22 (10.3×) | `cf70620539854aeb` |
+| KQQBK | 231 | 70.0 | 18.8 / 49.9 / 1.4 | 7 = 4 | 16 | 86.0 | 13.9 | 5.7 | 14 (16.7×) | `dab613fd75f95631` |
+| KQQKB | 231 | 66.5 | 21.9 / 44.5 / 0.0 | 29 = 15 | 34 | 113.5 | 18.4 | 6.2 | 26 (9.0×) | `46585e1abb321c51` |
+| KQQKN | 231 | 68.9 | 21.9 / 47.0 / 0.0 | 37 = 19 | 42 | 112.7 | 18.0 | 6.2 | 23 (10.0×) | `5fef0fcd1fbd0bca` |
+| KQQKQ | 231 | 56.0 | 21.9 / 22.7 / 11.3 | 59 = 30 | 60 | 130.8 | 17.5 | 6.3 | 29 (7.9×) | `c93de3b5b227a414` |
+| KQQKR | 231 | 62.7 | 22.0 / 40.6 / 0.1 | 69 = 35 | 70 | 124.2 | 19.9 | 6.2 | 27 (8.7×) | `07d2ff57a51748f3` |
+| KQQNK | 231 | 71.5 | 20.3 / 50.0 / 1.2 | 7 = 4 | 18 | 90.2 | 14.0 | 5.9 | 13 (18.1×) | `0cfbbdde55c6c66e` |
+| KQQQK | 231 | 21.6 | 4.5 / 16.4 / 0.7 | 5 = 3 | 8 | 21.9 | 5.4 | 2.3 | 5 (42.4×) | `361952f9bce1e718` |
+| KQQRK | 231 | 67.9 | 16.7 / 49.7 / 1.6 | 7 = 4 | 12 | 75.1 | 13.8 | 5.6 | 10 (23.0×) | `501617ecfc7c5e65` |
+| KQRBK | 231 | 148.5 | 46.1 / 100.7 / 1.7 | 9 = 5 | 32 | 209.8 | 27.1 | 11.3 | 30 (7.7×) | `ed765e57ef684436` |
+| KQRKB | 231 | 142.2 | 53.1 / 78.7 / 10.4 | 57 = 29 | 58 | 280.0 | 35.5 | 12.6 | 58 (4.0×) | `7f73fca2a02230ec` |
+| KQRKN | 231 | 147.2 | 53.1 / 86.7 / 7.3 | 79 = 40 | 80 | 284.4 | 35.0 | 12.3 | 52 (4.4×) | `044c25f7fd9be4ad` |
+| KQRKQ | 231 | 121.3 | 68.2 / 37.2 / 15.9 | 133 = 67 | 134 | 410.7 | 42.9 | 12.5 | 77 (3.0×) | `11f06758a8510b70` |
+| KQRKR | 231 | 134.7 | 53.3 / 67.0 / 14.5 | 67 = 34 | 70 | 312.2 | 37.6 | 12.4 | 56 (4.1×) | `db37688bf9ae145f` |
+| KQRNK | 231 | 151.5 | 49.0 / 101.0 / 1.5 | 9 = 5 | 32 | 221.2 | 27.1 | 11.3 | 28 (8.3×) | `7838648715ebec28` |
+| KQRRK | 231 | 71.5 | 20.2 / 50.2 / 1.0 | 7 = 4 | 14 | 86.2 | 13.7 | 5.9 | 14 (16.2×) | `d678769751e609b9` |
+| KRBBK | 231 | 82.0 | 30.8 / 49.0 / 2.2 | 23 = 12 | 38 | 139.8 | 14.0 | 6.3 | 30 (7.7×) | `2d0e62ab37a33e57` |
+| KRBKB | 231 | 160.1 | 69.8 / 61.3 / 29.0 | 59 = 30 | 60 | 471.9 | 35.8 | 12.9 | 89 (2.6×) | `4d575853518d17cd` |
+| KRBKN | 231 | 165.1 | 70.3 / 71.4 / 23.4 | 79 = 40 | 80 | 478.3 | 35.7 | 12.7 | 90 (2.6×) | `39d00951cee153f0` |
+| KRBKQ | 231 | 139.2 | 76.0 / 11.7 / 51.5 | 139 = 70 | 140 | 571.7 | 44.9 | 13.6 | 75 (3.1×) | `80b2094027f2c1be` |
+| KRBKR | 231 | 152.6 | 30.0 / 4.2 / 118.5 | 129 = 65 | 129 | 228.3 | 20.0 | 13.1 | 28 (8.4×) | `c67d83f12317d718` |
+| KRBNK | 231 | 167.9 | 65.4 / 102.0 / 0.5 | 57 = 29 | 66 | 304.4 | 27.7 | 11.7 | 45 (5.1×) | `b1f78214b129a2f0` |
+| KRNKB | 231 | 164.0 | 73.2 / 60.2 / 30.5 | 61 = 31 | 62 | 512.8 | 36.4 | 12.9 | 91 (2.5×) | `36b6615f73ba2447` |
+| KRNKN | 231 | 168.9 | 74.2 / 70.9 / 23.9 | 73 = 37 | 80 | 502.9 | 35.4 | 12.3 | 92 (2.5×) | `bcdf9962966d3019` |
+| KRNKQ | 231 | 143.1 | 79.8 / 19.0 / 44.2 | 137 = 69 | 138 | 623.4 | 46.0 | 13.6 | 86 (2.7×) | `2dfcd5142e44c262` |
+| KRNKR | 231 | 156.5 | 30.0 / 2.7 / 123.7 | 81 = 41 | 81 | 229.3 | 19.5 | 13.1 | 28 (8.4×) | `72e07be541898ed6` |
+| KRNNK | 231 | 85.6 | 34.4 / 46.9 / 4.4 | 29 = 15 | 32 | 149.9 | 13.5 | 6.2 | 27 (8.6×) | `7b284d7a765ad7b5` |
+| KRRBK | 231 | 79.0 | 27.8 / 50.8 / 0.4 | 19 = 10 | 32 | 129.6 | 14.4 | 6.4 | 16 (14.8×) | `6ab053ad6e8b66c3` |
+| KRRKB | 231 | 76.3 | 31.6 / 34.6 / 10.2 | 57 = 29 | 58 | 201.9 | 18.9 | 6.2 | 40 (5.7×) | `cc40c5df13e820a2` |
+| KRRKN | 231 | 78.8 | 31.7 / 40.0 / 7.1 | 79 = 40 | 80 | 195.2 | 18.3 | 6.1 | 37 (6.2×) | `f5670bd98e3a1678` |
+| KRRKQ | 231 | 65.9 | 36.2 / 5.4 / 24.3 | 97 = 49 | 98 | 244.1 | 20.7 | 6.4 | 33 (6.9×) | `7e1c69eb8e6ebe80` |
+| KRRKR | 231 | 72.6 | 31.7 / 27.0 / 13.8 | 61 = 31 | 62 | 236.3 | 19.6 | 6.5 | 32 (7.3×) | `59544ee4a2dd269d` |
+| KRRNK | 231 | 80.5 | 29.3 / 50.9 / 0.3 | 19 = 10 | 32 | 134.9 | 14.2 | 5.6 | 15 (15.9×) | `f2d29f1e867e6927` |
+| KRRRK | 231 | 25.2 | 8.1 / 16.9 / 0.2 | 9 = 5 | 14 | 34.6 | 4.9 | 2.3 | 5 (42.5×) | `51e915b368c5a1b5` |
+| KBBKP | 677 | 265.1 | 72.5 / 53.5 / 139.0 | 165 = 83 | 165 | 339.4 | 32.3 | 19.2 | 84 (8.1×) | `2e020d9c3dcd2da9` |
+| KBBPK | 677 | 265.9 | 110.2 / 143.2 / 12.4 | 59 = 30 | 62 | 399.3 | 41.0 | 18.1 | 99 (6.9×) | `75bc3c5b438ca7f1` |
+| KBNKP | 677 | 545.0 | 268.7 / 194.2 / 82.1 | 207 = 104 | 208 | 1317.9 | 97.4 | 36.6 | 326 (2.1×) | `1f81e70c0a562b46` |
+| KBNPK | 677 | 546.5 | 239.0 / 304.9 / 2.6 | 65 = 33 | 66 | 866.9 | 88.5 | 34.6 | 213 (3.2×) | `ebd92a83040f5b03` |
+| KBPKB | 677 | 527.5 | 107.3 / 35.0 / 385.1 | 101 = 51 | 101 | 604.7 | 70.5 | 38.1 | 130 (5.2×) | `f346d62a2caf0698` |
+| KBPKN | 677 | 542.1 | 147.2 / 76.1 / 318.9 | 199 = 100 | 199 | 875.6 | 73.6 | 35.9 | 192 (3.5×) | `28811ff108a4addf` |
+| KBPKQ | 677 | 465.1 | 254.1 / 175.3 / 35.6 | 99 = 50 | 100 | 1345.1 | 125.6 | 40.1 | 254 (2.7×) | `0d5fa8594a808917` |
+| KBPKR | 677 | 504.9 | 137.7 / 13.2 / 354.0 | 89 = 45 | 89 | 1041.7 | 75.9 | 39.7 | 127 (5.3×) | `15169c4c1ccbb36e` |
+| KNNKP | 677 | 279.0 | 59.7 / 23.2 / 196.0 | 229 = 115 | 229 | 373.1 | 32.1 | 18.4 | 114 (5.9×) | `60911ba98b96fc7c` |
+| KNNPK | 677 | 279.7 | 124.0 / 135.3 / 20.5 | 55 = 28 | 56 | 418.1 | 38.1 | 17.6 | 110 (6.2×) | `71012ccc3138cb05` |
+| KNPKB | 677 | 542.1 | 106.6 / 31.9 / 403.6 | 85 = 43 | 85 | 637.6 | 64.2 | 40.4 | 130 (5.2×) | `c71e41cb6d5e8010` |
+| KNPKN | 677 | 556.7 | 135.0 / 64.3 / 357.4 | 193 = 97 | 194 | 784.2 | 67.0 | 34.7 | 172 (3.9×) | `ea24076a0ad0fb74` |
+| KNPKQ | 677 | 479.7 | 248.6 / 193.8 / 37.3 | 109 = 55 | 124 | 1383.9 | 129.7 | 39.9 | 272 (2.5×) | `b1b0a25ceea6df8f` |
+| KNPKR | 677 | 519.5 | 145.0 / 16.3 / 358.2 | 133 = 67 | 133 | 1014.8 | 77.0 | 37.7 | 138 (4.9×) | `13cdabcbbbf4aa95` |
+| KQBKP | 677 | 476.4 | 180.4 / 253.8 / 42.2 | 63 = 32 | 66 | 879.7 | 97.3 | 37.0 | 137 (4.9×) | `631bec864c8f4f30` |
+| KQBPK | 677 | 479.6 | 172.1 / 303.7 / 3.8 | 17 = 9 | 62 | 797.4 | 81.3 | 34.6 | 107 (6.3×) | `1e077f9657bf7a12` |
+| KQNKP | 677 | 487.9 | 194.6 / 248.4 / 44.9 | 59 = 30 | 82 | 901.6 | 93.1 | 37.1 | 153 (4.4×) | `13173702ff6c02ab` |
+| KQNPK | 677 | 491.2 | 183.7 / 304.3 / 3.2 | 17 = 9 | 54 | 816.3 | 80.2 | 34.7 | 107 (6.3×) | `10bf49094145be1b` |
+| KQPKB | 677 | 466.9 | 199.1 / 222.8 / 45.1 | 55 = 28 | 58 | 1065.6 | 107.3 | 38.2 | 210 (3.2×) | `acabeece0b69bd9f` |
+| KQPKN | 677 | 481.6 | 198.6 / 247.0 / 35.9 | 59 = 30 | 60 | 1055.7 | 106.3 | 37.2 | 211 (3.2×) | `a810d786fb8610b0` |
+| KQPKQ | 677 | 404.5 | 208.5 / 28.7 / 167.3 | 247 = 124 | 247 | 1349.3 | 115.7 | 39.7 | 187 (3.6×) | `1254ace34d1ad801` |
+| KQPKR | 677 | 444.3 | 246.8 / 182.0 / 15.6 | 73 = 37 | 86 | 1467.9 | 134.8 | 38.6 | 255 (2.7×) | `cfd15f693d4b8b7b` |
+| KQQKP | 677 | 215.7 | 66.3 / 148.5 / 1.0 | 43 = 22 | 60 | 301.3 | 51.5 | 18.5 | 50 (13.6×) | `03622f01a50df0ec` |
+| KQQPK | 677 | 218.1 | 64.3 / 150.6 / 3.2 | 7 = 4 | 20 | 282.0 | 40.0 | 17.6 | 35 (19.2×) | `217d0b3d41cb3eb9` |
+| KQRKP | 677 | 459.2 | 161.2 / 293.9 / 4.1 | 85 = 43 | 134 | 757.1 | 106.2 | 35.9 | 117 (5.8×) | `98aa719c53818d6a` |
+| KQRPK | 677 | 463.3 | 155.8 / 304.2 / 3.3 | 13 = 7 | 32 | 691.6 | 78.2 | 34.2 | 81 (8.4×) | `9041b5e5d808351a` |
+| KRBKP | 677 | 512.8 | 219.2 / 240.6 / 53.0 | 139 = 70 | 139 | 966.2 | 94.1 | 36.9 | 186 (3.6×) | `f934270018d42bbb` |
+| KRBPK | 677 | 515.3 | 207.8 / 305.6 / 1.9 | 31 = 16 | 62 | 861.7 | 81.3 | 34.9 | 134 (5.1×) | `436749a08f8f9db6` |
+| KRNKP | 677 | 524.1 | 235.2 / 234.3 / 54.6 | 135 = 68 | 135 | 1032.9 | 93.7 | 36.2 | 218 (3.1×) | `70b5f97e425f7909` |
+| KRNPK | 677 | 526.6 | 219.1 / 305.8 / 1.7 | 33 = 17 | 54 | 891.4 | 81.4 | 34.3 | 141 (4.8×) | `e157558ee56a6527` |
+| KRPKB | 677 | 506.0 | 229.7 / 180.4 / 95.8 | 145 = 73 | 146 | 1498.1 | 118.1 | 38.9 | 311 (2.2×) | `7e94161b79efe51a` |
+| KRPKN | 677 | 520.6 | 232.3 / 212.5 / 75.7 | 107 = 54 | 108 | 1452.6 | 112.7 | 36.9 | 305 (2.2×) | `048da519637ab404` |
+| KRPKQ | 677 | 443.5 | 276.7 / 124.0 / 42.8 | 207 = 104 | 207 | 1895.2 | 148.7 | 39.8 | 310 (2.2×) | `de6853cf7896b836` |
+| KRPKR | 677 | 483.4 | 207.8 / 63.6 / 212.0 | 147 = 74 | 148 | 1386.6 | 103.9 | 37.6 | 183 (3.7×) | `bf9c4faea5044fe3` |
+| KRRKP | 677 | 245.2 | 97.3 / 139.4 / 8.5 | 99 = 50 | 99 | 468.9 | 53.7 | 19.2 | 78 (8.7×) | `be17e09f93cee4c3` |
+| KRRPK | 677 | 246.9 | 93.2 / 153.2 / 0.5 | 27 = 14 | 32 | 420.5 | 40.9 | 18.3 | 47 (14.3×) | `1a22fef3d7ebe443` |
+| KBPKP | 507 | 417.4 | 205.1 / 140.7 / 71.6 | 133 = 67 | 134 | 759.1 | 70.9 | 27.2 | 199 (2.6×) | `07a9bdc7c59e05aa` |
+| KBPPK | 507 | 209.0 | 94.1 / 113.3 / 1.7 | 49 = 25 | 64 | 312.8 | 32.1 | 13.4 | 76 (6.7×) | `e21fd507d5d11286` |
+| KNPKP | 507 | 428.0 | 208.8 / 130.2 / 89.1 | 115 = 58 | 115 | 828.5 | 69.8 | 26.0 | 223 (2.3×) | `a0748c8cd02c257a` |
+| KNPPK | 507 | 214.4 | 99.6 / 113.6 / 1.2 | 63 = 32 | 64 | 319.3 | 30.7 | 12.8 | 77 (6.6×) | `cd0fa706d6f44238` |
+| KPPKB | 507 | 208.4 | 58.9 / 24.6 / 124.8 | 85 = 43 | 86 | 305.0 | 27.7 | 14.2 | 70 (7.2×) | `1d9adcc39dfb48e9` |
+| KPPKN | 507 | 213.8 | 70.1 / 39.6 / 104.0 | 99 = 50 | 100 | 381.8 | 31.4 | 12.4 | 88 (5.8×) | `1630b2545112e003` |
+| KPPKQ | 507 | 185.2 | 93.0 / 77.4 / 14.9 | 247 = 124 | 247 | 399.3 | 42.4 | 14.2 | 85 (6.0×) | `c974efeaa1359647` |
+| KPPKR | 507 | 200.0 | 107.3 / 54.3 / 38.4 | 107 = 54 | 107 | 512.3 | 41.1 | 14.8 | 95 (5.4×) | `b41f4e743c946863` |
+| KQPKP | 507 | 372.3 | 156.6 / 199.5 / 16.3 | 209 = 105 | 244 | 639.5 | 81.5 | 28.2 | 129 (3.9×) | `d542a49825cf57d2` |
+| KQPPK | 507 | 187.2 | 72.5 / 114.0 / 0.8 | 17 = 9 | 64 | 289.9 | 32.0 | 13.9 | 39 (13.0×) | `a9bf9c3122e2b7e7` |
+| KRPKP | 507 | 401.2 | 199.3 / 186.8 / 15.1 | 205 = 103 | 205 | 790.0 | 82.5 | 27.7 | 176 (2.9×) | `634dde86a6ea07bb` |
+| KRPPK | 507 | 201.3 | 86.6 / 114.5 / 0.3 | 29 = 15 | 64 | 338.3 | 32.9 | 13.6 | 56 (9.1×) | `558f512241c5cfcb` |
+| KPPKP | 380 | 163.3 | 84.6 / 54.6 / 24.1 | 253 = 127 **Überlauf, ≥ 7 fehlen** | 253 | 287.1 | 29.4 | 10.1 | 87 (4.4×) | `d2f3cdafa0bb5ca5` |
+| KPPPK | 380 | 54.5 | 26.0 / 28.2 / 0.2 | 65 = 33 | 66 | 77.0 | 8.9 | 3.9 | 18 (20.9×) | `5e63e63e36900d6f` |
+
+Was die Tabelle zeigt:
+
+- **Zeit skaliert mit den Bewertungen**, nicht mit der Größe: KNNKB (fast alles Remis, 41 Tsd.
+  Bewertungen) braucht 3 s für 231 MiB, KRPKQ (1,9 Mrd. Bewertungen) 149 s für 677 MiB. Die
+  Rate liegt überall bei 12 bis 13 Mio. Bewertungen pro Sekunde auf 12 Threads.
+- **Prozess-RAM:** Die Rust-Zeile loggt ihn nicht; Go bei KPPKP 5,7 GB, weil die acht
+  Abhängigkeiten (vier Umwandlungen je Seite, je 507 MiB) mitgeladen sind. Ohne Bauern bleibt
+  es bei Tabelle plus Bitsets plus Basis (KBNKQ 845 MB).
+- **Kompression** folgt der Remisquote: fast reine Remis-Tabellen (KNNKB, KNNKN) auf unter
+  1 MiB (250×), dichte DTM-Tabellen mit viel Material beider Seiten (KBNKQ, KBNKP, KRPKx)
+  nur 2,1 bis 2,2×. Bauernlose Tabellen packen im Schnitt besser (6,0×) als die mit Bauern
+  (4,3×): Dort entscheiden Umwandlungen fast alles, die Remis-Flächen sind kleiner.
+- **Ebenen > längstes Matt** (etwa KQBNK 66 Ebenen bei Matt in 13, KQRKP 134 bei 85)
+  sind Verluste, deren Fortsetzung in einer kleineren Tabelle liegt: In KQBNK muss Schwarz
+  manchmal die Dame schlagen und verliert dann das KBNK-Endspiel in 65 Halbzügen (Verlust in
+  66); in KQRKP wandelt der Bauer um und verliert KQRKQ in 133 (Verlust in 134). Das
+  "längste Matt" zählt nur Gewinne innerhalb der Tabelle.
+- **Zwei Bauern derselben Seite** (KBPPK) belegen so viele Indizes wie je ein Bauer (KBPKP),
+  507 MiB, obwohl die Hälfte tot ist (gleiche Steine, nur eine Reihenfolge gültig); die
+  Dreiecks-Indizierung aus "Offen" würde sie sparen.
 
 Die Schätzung "zehn Minuten" war um Faktor 13 zu pessimistisch: 12 Mio.
 Kandidaten-Bewertungen pro Sekunde, der Prozess braucht kaum mehr als die
@@ -241,13 +417,23 @@ Rust schreiben byteidentische Dateien. Ergebnis auf den drei Dateien (unter Last
 | KBBBK | 231 MB | 10 MB | 21× | 6 s (Go), 2,8 s (Rust) | 0,22 s / 0,85 s |
 
 Geschwindigkeiten gelten mit Vorbehalt (Messreihe lief parallel); Go lädt hier
-langsamer als Rust, Ursache noch offen (Allokation, Blockkopie). Erwartung über alle
-Fünf-Steiner: Faktor 2 bis 4.
+langsamer als Rust, Ursache noch offen (Allokation, Blockkopie).
+
+**Alle Fünf-Steiner (2026-10-07, nach dem Messlauf mit `egtb-compress`):**
+47.470.360.896 Byte roh (Basis + 110 Tabellen) → 10.155.980.183 Byte, **Faktor 4,67**,
+rund zehn Minuten für 47 GB auf 12 Threads (Zeitstempel der Dateien, ≈ 80 MB/s, also deutlich
+schneller als die Erzeugung mit 83 min). Bauernlos 13,5 GiB → 2,25 GiB (6,0×), mit Bauern
+30,5 GiB → 7,17 GiB (4,3×); Spanne 2,1× (KBNKQ, KBNKP) bis 252× (KNNKB). Die Erwartung
+"Faktor 2 bis 4" war zu vorsichtig, weil die vielen remis- oder gewinnlastigen Tabellen
+stärker packen als die beiden Stichproben. Je Material in der Anforderungstabelle oben.
 
 ## Offen
 
-- Weitere Fünf-Steiner messen (vor allem die mit Bauern, deren Abhängigkeiten
-  Fünf-Steiner-Promotionen sind), erster Sechs-Steiner zuhause.
+- **KPPKP ist unvollständig** (mindestens 7 Verluste in 254 Halbzügen lesen sich als
+  Remis). Entscheidung offen: Wert 128 (ungültig) aufgeben und Verluste bis 254 zulassen
+  (alle Prüfsummen neu, Neuberechnung aller Tabellen) oder bis zu den zwei Byte pro
+  Stellung warten, die Sechs-Steiner ohnehin brauchen.
+- Erster Sechs-Steiner zuhause (15,5 GB Tabelle, 127 GB RAM).
 - Optimierungsfragen: Skalierung über die Worker (14 zuhause), Speicherbandbreite
   in der Kandidatenphase, zwei Byte pro Stellung für lange Materialien.
 - Syzygy-Leser für alles, was nicht selbst gerechnet wird (Entscheidung M5).
