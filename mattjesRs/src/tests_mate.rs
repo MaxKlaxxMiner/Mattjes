@@ -202,7 +202,7 @@ pub fn matelist_solve(name: &str, max_mate_in: u32, max_plies: u32, max_position
     println!("{}\n", if ok { "  [all ok]" } else { "  [FAILURES]" });
 }
 
-fn pv_string(pv: &[Move]) -> String {
+pub fn pv_string(pv: &[Move]) -> String {
     pv.iter().map(|m| m.uci()).collect::<Vec<_>>().join(" ")
 }
 

@@ -75,8 +75,21 @@ func main() {
 	// egtbGenerate([]string{"all"}, 12, false, true) // 17 s + 9 s verification
 	// egtbLoadOrGenerate(12)
 	// mateabSolveTables(31, 0, false) // four-piece positions are root hits, pawns 464,248 nodes (identical to Rust)
-	mateabSolveTablesNamed("KQ-KBN", 1024, true) // mate in 39 with five pieces: open how long, user runs it
+	// mateabSolveTablesNamed("KQ-KBN", 1024, true) // mate in 39 with five pieces: open how long, user runs it
 	// egtbProbe("8/7k/1p6/1P6/7K/8/8/8 w - - 0 1", "8/7k/1p6/1P6/7K/8/8/8 b - - 0 1") // KP-KP study: win in 49 plies / draw, with the line from the tables
 	// matelistSolve("KP-KP", 0, 200, 30_000_000) // independent check of the table value: mate in 25 in 4 s, 2.9 M positions
+
+	// --- milestone 4, step 4: df-pn (sizeMB, codec "sat"/"float", options m mobility, e/E/x/X epsilon 1/8 1/2 1 2, f final entries, t tables, i iterative) ---
+	// matepnSolve(15, 256, "sat", "mEf") // KQ-KN 181,065 visits in 0.8 s, KR-KR 1,125,947 in 3.6 s
+	// matepnSolveNamed("KBB-K", 1024, "sat", "mEf") // proven after 109.5 M visits, 336 s (Rust), proof tree incomplete (27 M replaced)
+	// --- five pieces with the endgame tables as oracle: the first case where search and tables must cooperate, open how long ---
+	// mateabSolveTablesNamed("KQ-KBN", 1024, true)
+	// matepnSolveNamed("KQ-KBN", 1024, "sat", "mEft")
+
+	// --- list-based search, the best version for finite spaces: KBB-K (11 s, 6.35 M positions), then KQ-KBN with a 16 GB store (400 M positions at 75 %) ---
+	matelistSolve("KBB-K", 0, 200, 30_000_000)
+	// matelistSolve("KQ-KBN", 0, 200, 400_000_000) // 387 M positions at ply 16, aborted at ply 17 after 960 s, 42 GB peak; the space is 700-750 M
+	// matepnSolve(12, 256, "sat", "mEfi") // iterative deepening: the shortest mate, cost of all depths (KQ-KN 7.9 M visits)
+	// mateabSolve(17, 256, false) // the same positions with the depth-first search, for comparison
 	_ = chess.StartFEN // keep the import for the commented experiments above
 }

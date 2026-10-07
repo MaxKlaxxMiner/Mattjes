@@ -22,11 +22,13 @@ mod chess;
 mod egtb;
 mod mateab;
 mod matelist;
+mod matepn;
 mod perft;
 mod tests_egtb;
 mod tests_hash;
 mod tests_mate;
 mod tests_perft;
+mod tests_pn;
 mod tests_tt;
 mod tt;
 mod ttstore;
@@ -80,5 +82,17 @@ fn main() {
     // tests_egtb::egtb_generate(&["all"], 12, false, true); // 15 s + 7 s verification
     // tests_egtb::egtb_load_or_generate(12);
     // tests_mate::mateab_solve_tables(31, 0, false); // four-piece positions are root hits, pawns 464,248 nodes (identical to Go)
-    tests_mate::mateab_solve_tables_named("KQ-KBN", 1024, true); // mate in 39 with five pieces: open how long, user runs it
+    // tests_mate::mateab_solve_tables_named("KQ-KBN", 1024, true); // mate in 39 with five pieces: open how long, user runs it
+
+    // --- milestone 4, step 4: df-pn (size_mb, codec "sat"/"float", options m mobility, e/E/x/X epsilon 1/8 1/2 1 2, f final entries, t tables, i iterative) ---
+    // tests_pn::matepn_solve(15, 256, "sat", "mEf"); // KQ-KN 181,065 visits, KR-KR 1,125,947, identical to Go
+    // tests_pn::matepn_solve_named("KBB-K", 1024, "sat", "mEf"); // proven after 109.5 M visits, 336 s, proof tree incomplete (27 M replaced)
+    // --- five pieces with the endgame tables as oracle: the first case where search and tables must cooperate, open how long ---
+    // tests_mate::mateab_solve_tables_named("KQ-KBN", 1024, true);
+    // tests_pn::matepn_solve_named("KQ-KBN", 1024, "sat", "mEft");
+
+    // --- list-based search, the best version for finite spaces: KBB-K (11 s, 6.35 M positions), then KQ-KBN with a 16 GB store (400 M positions at 75 %) ---
+    tests_mate::matelist_solve("KBB-K", 0, 200, 30_000_000);
+    // tests_mate::matelist_solve("KQ-KBN", 0, 200, 400_000_000); // 387 M positions at ply 16, aborted at ply 17 after 960 s, 42 GB peak; the space is 700-750 M
+    // tests_pn::matepn_solve(12, 256, "sat", "mEfi"); // iterative deepening: the shortest mate, cost of all depths
 }

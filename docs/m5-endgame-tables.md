@@ -106,9 +106,23 @@ Code-Pfad als die Index-Tabellen): 2.878.165 erreichbare Stellungen, 30,2 Mio. K
 Matt in 25 mit derselben Hauptvariante in 4,0 s; Beweisgraph nur 4.125 Stellungen. Die
 Stellung ist als `KP-KP` in `chess/matedata.go` aufgenommen (Matt in 25).
 
-## Offen
+## Offen und geplant (Stand 2026-10-07)
 
-- Fünf Steine: nur optionale Syzygy-Dateien (Entscheidung), kein eigener Generator.
+- **Fünf und sechs Steine ausmessen.** Der Generator kann jedes Material, dessen
+  Abhängigkeiten vorhanden sind. Geplant ist eine Messreihe: Erzeugungszeit,
+  Spitzenspeicher, Endgröße und Prüfsumme pro Material, beginnend mit KQKBN
+  (242.221.056 Indizes = 242 MB, Schätzung zehn Minuten auf 12 Threads), um
+  daraus eine **bekannte statische Tabelle** der Anforderungen zu machen und
+  zu sehen, welche Sechs-Steiner (rund 15 GB pro Material ohne weitere
+  Kompression) noch gehen. Optimierungsfragen dabei: Skalierung über die
+  Worker, Speicherbandbreite, ob viel RAM die Erzeugung beschleunigen kann.
+- **Cache-Ordner statt einer Datei.** Geplantes Layout: Ordner
+  `mattjes-egtb-cache/` neben der Binary, darin `4-all.bin` für alle Drei- und
+  Vier-Steiner (die heutige Datei) und je eine Datei pro größerem Material,
+  zum Beispiel `5-KQKBN.bin`. Fünf-Steiner werden nie mitgeliefert, nur lokal
+  erzeugt; der UCI-Modus könnte sie bei genug RAM on the fly rechnen, während
+  die Suche schon läuft (`m4-mate-search.md`, Schritt 4).
+- Syzygy-Leser für alles, was nicht selbst gerechnet wird (Entscheidung M5).
 - Die Suche verlängert ihre PV noch nicht aus der Tabelle heraus (die PV endet am
   Tabellen-Blatt); `egtbProbe` zeigt, wie billig das ist: pro Halbzug einmal Züge erzeugen
   und das Kind mit Distanz n − 1 wählen.

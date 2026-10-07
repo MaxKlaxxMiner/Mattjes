@@ -285,6 +285,18 @@ Kanten- und Auflösungszahlen. Der Bauerntest (12 Steine) sprengt die Grenze
 bei Ebene 9 mit über 22 Mio. Stellungen: Für viele Steine ist der erreichbare
 Raum nicht endlich genug, dafür bleibt die Vorwärtssuche.
 
+**Fünf Steine sprengen die Liste ebenfalls** (2026-10-06, Zuhause, Rust, Grenze
+400 Mio. = Store 2^30 Slots = 16 GB): KQ-KBN erreicht bei Ebene 16 schon 387 Mio.
+Stellungen und 4,8 Mrd. Kanten, mit 86 bis 96 Mio. neuen Stellungen pro Ebene,
+Abbruch bei Ebene 17 nach 960 s, Spitzenverbrauch 42 GB (16 GB Store, 12 GB
+Sätze, 19 GB Kind-Kanten). Die Abschätzung vorab: 3.612 Königspaare × 62 × 61 ×
+60 × 2 = 1,64 Mrd. Rohstellungen, der Läufer ist farbgebunden (÷ 2), etwa 85 %
+legal, plus Untermaterial, also 700 bis 750 Mio. erreichbare Stellungen. Ohne
+Symmetrie ist das für die Liste nicht machbar (Kanten allein über 100 GB).
+Lehre: Die Rohzahl vor dem Start rechnen. Für KBB-K stimmt sie ebenfalls:
+13,7 Mio. roh, 6,9 Mio. mit ungleichfarbigen Läufern, 86 % davon legal und
+erreichbar = 5,9 Mio. plus 0,45 Mio. Untermaterial = die gemessenen 6,35 Mio.
+
 **Rust ist hier nicht schneller als Go**, sondern 2 bis 10 % langsamer. Das ist
 dasselbe Bild wie bei der Breitensuche mit rohen Brettern in Milestone 1
 (Faktor 1,03): Die Aufzählung ist speichergebunden, pro Kante ein zufälliger
@@ -337,6 +349,8 @@ Graph (der hier gezählte ist eine Obergrenze dafür).
 | KRR-K | 7 | 11.079.632 | 907 (1.194 Kanten) | 0,008 % | 578.963 | 640 | 12.200 |
 | KQ-KN | 12 | 22.292.508 | 2.687 (3.560) | 0,012 % | 12.883.793 | 4.800 | 8.300 |
 | KBN-K | 31 | 12.814.320 | 29.958 (45.788) | 0,23 % | 192.200.797 | 6.400 | 430 |
+| KBB-K | 17 | 6.352.868 | 9.825 (13.047) | 0,15 % | 369.430.716 | 37.600 | 650 |
+| KP-KP | 25 | 2.878.165 | 4.125 (7.504) | 0,14 % | | | 700 |
 
 Die Vermutung, ein Matt in 31 sei inhärent ein großer Beweis, war falsch: Die
 drei bis acht Königszüge des Verteidigers laufen über Transpositionen
@@ -352,3 +366,140 @@ dass es **kein kürzeres** gibt, ist eine Widerlegung über alle Angreiferzüge
 und kann viel größer sein; daran hat sich `mateab` verausgabt. Deshalb die
 Zweistufigkeit aus dem Milestone-Text: Stufe 1 findet beweisgeleitet irgendein
 Matt (Obergrenze), Stufe 2 beweist die Kürze gezielt mit dieser Schranke.
+
+## Schritt 4: `matepn`, df-pn (2026-10-06)
+
+Arbeitsrechner, direkte Tabelle 256 MB (16 Mi Slots, 24 Value-Bits), Go und
+Rust besuchsgenau gleich, Rust 1,5-mal schneller. Algorithmus wie im Entwurf
+3.2: Beweis- und Widerlegungszahlen in der TT, Schwellen aus dem zweitbesten
+Geschwister (Nagai 2002). Drei Fassungen in Folge:
+
+**1. Unbegrenzt ("irgendein Matt").** Zyklen durch Wiederholungsprüfung auf dem
+Pfad abgeschnitten (eine Stellung, die schon auf dem Pfad liegt, ist Remis durch
+Wiederholung, also für den Angreifer widerlegt; ein erzwungenes Matt wiederholt
+nie). Ohne diese Prüfung läuft df-pn mit den veralteten kleinen Zahlen aus der
+TT immer wieder in dieselben Stellungen (KRR-K über 75 Mio. Besuche ohne Ende).
+Mit ihr: KRR-K bewiesen in 0,26 s mit 133 Tsd. Besuchen (Faktor 147 über dem
+Beweisgraph). Aber KQ-KN explodiert: Dauerschach-Linien haben winzige
+Beweiszahlen (der Verteidiger hat kaum Antworten), führen nirgendwohin und
+enden erst an der Tiefenschranke 200, deren Widerlegungen pfadabhängig sind und
+die Tabelle vergiften. Genau die im Entwurf vorhergesagte Schwäche.
+
+**2. Tiefenschranke als Beweisziel: "Matt in höchstens N".** Die Resttiefe steht
+im Key (Salz wie bei `perftTT`), jeder Eintrag ist damit pfadunabhängig und
+Zyklen sind unmöglich (die Tiefe fällt streng). Angreifer bei Resttiefe 1 nur
+mit Schachgeboten. Terminiert immer, findet an der bekannten Tiefe 2N−1 die
+Matts, aber teuer: KQ-KN 2,3 Mio. Besuche, KBB-K nach 54 Mio. abgebrochen. Jeder
+Besuch expandiert alle Kinder neu (Zug erzeugen, `DoMove`, Probe), und die Tiefe
+im Key vervielfacht den Raum ("Stellung × Resttiefe").
+
+**3. Dieselbe Fassung mit drei Stellschrauben**, einzeln gemessen:
+
+| Variante | KRR-K Besuche | KQ-KN Besuche | KQ-KN Zeit |
+|---|---|---|---|
+| Grundfassung | 354.845 | 2.346.909 | 6,8 s |
+| Mobilität (neues Blatt = Anzahl Züge statt 1) | 118.448 | 956.436 | 3,5 s |
+| Mobilität + ε = 1/8 | 71.664 | 598.247 | 2,4 s |
+| Mobilität + tiefenfreie Endeinträge | 119.592 | 837.705 | 3,5 s |
+| Mobilität + ε = 1/8 + Endeinträge | 55.540 | 698.907 | 3,1 s |
+| **Mobilität + ε = 1/2 + Endeinträge** | **86.775** | **181.065** | **0,8 s** |
+| Mobilität + ε = 1 + Endeinträge | 71.498 | 338.925 | 1,4 s |
+| Mobilität + ε = 2 + Endeinträge | 364.111 | 1.214.702 | 5,5 s |
+| ε = 1/2 + Endeinträge ohne Mobilität | 226.607 | 718.042 | 2,1 s |
+
+- **ε-Trick** (Pawlewicz & Lew): Schwelle des Kindes `second·(1+ε)` statt
+  `second+1`. Die Suche kehrt seltener zum Elternknoten zurück und expandiert
+  weniger neu. ε = 1/2 ist das Optimum, ε = 2 ist schon wieder fast Tiefensuche.
+- **Tiefenfreie Endeinträge:** Ein Beweis bei Resttiefe d gilt für jede größere,
+  eine Widerlegung für jede kleinere (dieselbe Semantik wie die `mateab`-Einträge).
+  Unter dem ungesalzenen Key stehen kleinste bewiesene und größte widerlegte
+  Tiefe (7 + 7 Bit). Bringt 10 bis 20 %.
+- **Sättigend gegen Gleitkomma** (12 + 12 Bit): kein messbarer Unterschied,
+  sättigend bleibt.
+
+**Ergebnis der besten Fassung** (Mobilität, ε = 1/2, Endeinträge), Zieltiefe 2N−1:
+
+| Stellung | Matt in | Besuche | Zeit Go | Zeit Rust | Faktor über Beweisgraph | `mateab` + TT (Knoten, Zeit) |
+|---|---|---|---|---|---|---|
+| KRR-K | 7 | 86.775 | 0,29 s | 0,18 s | 96 | 578.963 Expansionen, 0,6 s |
+| KQ-KN | 12 | 181.065 | 0,78 s | 0,52 s | 67 | 82,8 Mio., 20,8 s |
+| KR-KR | 15 | 1.125.947 | 3,6 s | 2,3 s | | 20,2 Mio., 5,0 s |
+| KBB-K | 17 | 109.495.187 (1 GB) | | 336 s | 11.100 | 446,5 Mio., 119 s (Rust 82 s) |
+
+Lesart: Beim **Beweisen** ist df-pn auf dem richtigen Weg, Faktor 67 bis 96 über
+dem Beweisgraph statt 640 bis 4.800 bei `mateab`; KQ-KN 26-mal schneller. KR-KR
+gleichauf. KBB-K (stille Manöver, viele gleichwertige Züge, 33 Halbzüge) wird
+mit 1 GB bewiesen, aber viermal langsamer als `mateab`: 109 Mio. Besuche, 381
+Mio. neue Blätter, Füllgrad 45 % und 27 Mio. Ersetzungen (direkte Tabelle,
+immer ersetzen), weshalb der Beweisbaum in der Tabelle Lücken hat und keine
+Hauptvariante liefert. Die Beweiszahlen bieten dort kaum Führung, weil fast
+alle Verteidigerzüge gleich viele Antworten haben. Hier fehlt eine Heuristik
+für neue Blätter (df-pn+), zum Beispiel Nähe des Verteidigerkönigs zum Rand,
+oder später das Netz aus Milestone 7. Zum Vergleich: Von der Stellung aus sind
+6,35 Mio. Stellungen erreichbar (`matelist`, 9,8 s), die ganze KBBK-Tabelle
+hat 1,5 Mio. legale Indizes (unter 2 s). Die Suche besucht ein Vielfaches des
+Raums, weil für sie "Stellung bei Resttiefe d" für jedes d ein eigener Knoten
+ist. Solange der Raum aufzählbar ist, gewinnt Aufzählen; die Suche muss sich
+ab sechs Steinen oder in Bauernstellungen beweisen.
+
+**Widerlegen bleibt teuer.** Iterative Vertiefung (kürzestes Matt) kostet bei
+KQ-KN 7,9 Mio. Besuche und 37 s, weil "kein Matt in d" immer erschöpfend ist:
+Jeder Angreiferzug muss widerlegt werden, und dafür helfen Beweiszahlen nicht.
+`mateab` brauchte für dieselbe Aussage 82,8 Mio. Knoten und 20,8 s, war also
+pro Knoten billiger. Das bestätigt die Zweistufigkeit und zeigt, wo die
+Endspieltabellen hingehören: Die Kürze ist eine Wissensfrage, keine Suchfrage.
+
+Der Beweisbaum in der Tabelle liefert die Hauptvariante (`proofLength`,
+`proofLine`); mit Mobilität werden Matt-Kinder nie besucht und haben keinen
+Eintrag, sie werden beim Ablauf terminal nachgeprüft.
+
+Offen: Ersetzung nach Wert (Beweise und Endeinträge schonen) statt "immer
+ersetzen", Heuristik für neue Blätter, df-pn und `mateab` mit den
+Endspieltabellen auf KQ-KBN (fünf Steine): der erste Fall, in dem Suche und
+Tabellen zusammenarbeiten müssen.
+
+### Vergleich mit anderen Engines und der nächste Schritt (2026-10-06)
+
+Der Autor hat KQ-KBN (Matt in 39) mehreren Engines vorgelegt. Ergebnis: Alle
+scheitern an einem garantierten "Matt in X". Dank Syzygy wissen sie, dass die
+Stellung gewonnen ist, finden aber keinen Beweis. Lässt man eine Engine 15 bis
+20 Züge gegen sich selbst weiterspielen, findet sie von dort aus ziemlich
+zuverlässig einen unvermeidbaren Gewinn; geht man die gespielten Züge dann
+zurück und lässt weiterrechnen, bleiben die gefundenen Mattwege erhalten und
+die früheren Stellungen werden beweisbar, "quasi wie bei einer
+Rückwärtsanalyse".
+
+Das ist genau die Zweistufigkeit des Entwurfs, beobachtet von außen: Die
+vorgespielte Linie bringt die Suche in die Nähe des Gewinns, dort gelingt der
+Beweis, und weil Beweise tiefenunabhängig in der TT stehen, werden rückwärts
+entlang der Linie immer frühere Stellungen beweisbar. Zwei Lehren daraus:
+
+1. **Beweise dürfen nie aus der TT verdrängt werden.** Der KBB-K-Beweisbaum
+   war genau deshalb lückenhaft. Ersetzung nach Wert: bewiesene und
+   Endeinträge bleiben, offene Zahlen fliegen zuerst.
+2. **Beweisziel "Gewinn" statt "Matt".** Mit den Tabellen als Orakel ist eine
+   gewonnene Tabellenstellung ein Beweis, egal mit welcher Distanz. Für KQ-KBN
+   heißt das: beweise, dass Weiß eine Figur gewinnt und in eine gewonnene KQ-KB-
+   oder KQ-KN-Stellung kommt, ein viel flacherer Baum als das Matt in 39 (die
+   Tiefenschranke ist dann nur Suchhorizont, nicht Mattlänge). Das Ergebnis ist
+   die Garantie "Matt in höchstens k Halbzüge plus Tabellen-DTM" mit
+   vollständiger Variante bis ins Matt. Stufe 2 verbessert die Schranke, solange
+   Zeit da ist, und kann jederzeit abgebrochen werden, ohne die Garantie zu
+   verlieren.
+
+Das trifft das eigentliche Ziel des Autors: eine Suche, die zuerst irgendeine
+garantierte Gewinnvariante findet und danach weitersucht, bis das kürzeste Matt
+feststeht. Nächster Schritt in `matepn`: Ziel "Gewinn", Ersetzung nach Wert,
+Messung an KQ-KBN.
+
+Zwei weitere Ideen aus dem Gespräch, vorerst nur notiert:
+
+- **Tabellen on the fly.** Erlaubt der UCI-Modus viel RAM, kann die Mattsuche
+  die Fünf-Steiner-Tabelle des Wurzelmaterials (KQKBN: 242 MB plus etwa 90 MB
+  Bitsets, grob zehn Minuten) im Hintergrund mitgenerieren und die Suche so
+  lange ohne laufen lassen. Ein lokaler Cache pro Material (nie mitgeliefert)
+  spart die Zeit beim zweiten Mal.
+- **Symmetrie in Liste und TT.** Bauernlose Stellungen vor dem Hashen
+  kanonisieren (die Transformationen aus `egtb` existieren): acht Spiegelbilder
+  werden ein Eintrag. Für KQ-KBN würde das die Liste von 700 Mio. auf rund
+  90 Mio. Stellungen bringen (Spitze um 40 GB, zuhause machbar).

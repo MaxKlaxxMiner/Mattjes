@@ -515,10 +515,13 @@ Benchmarks auf Ansage (Maschine in der Kopfzeile nennen, `docs/machines.md`).
    Deduplizierung, Elternlisten per Zähl-Sortierung, Retrograde-Ebenen. Alle
    Vier-Steiner-Teststellungen in 10 bis 47 s, längste Distanzen im Graphen
    treffen die bekannten Maxima. Ergebnisse in `m4-mate-search.md`.
-4. **`matepn`:** df-pn mit `tt`, pn/dn-Kodierung (zwei Varianten messen),
-   Mobilitätsinitialisierung an/aus. Stellung 8 (fünf Steine) und der
-   Bauerntest als Fälle, in denen der Raum nicht endlich genug für `matelist`
-   ist. Orakelvergleich mit `mateab` auf 1 bis 6.
+4. **`matepn`** ✅ Stufe 1 (2026-10-06): df-pn mit `tt`, Tiefenschranke als
+   Beweisziel und Resttiefe im Key; beide pn/dn-Kodierungen gemessen (gleich),
+   Mobilität (Faktor 2), ε = 1/2 (Faktor 3), tiefenfreie Endeinträge.
+   Beweisen Faktor 67 bis 96 über dem Beweisgraph, Widerlegen bleibt
+   erschöpfend, KBB-K viermal langsamer als `mateab`. Ergebnisse in
+   `m4-mate-search.md`, Schritt 4. Nächster Schritt dort: Beweisziel "Gewinn"
+   (gewonnene Tabellenstellung zählt), Ersetzung nach Wert, Messung an KQ-KBN.
 5. **Beweisspeicher und Verifikation:** `ttstore` für bewiesene Teilbäume,
    unabhängiger Prüfer, Save/Load, Fortsetzen einer abgebrochenen Suche.
 6. **Rust-Port** von 1 bis 5, Gegenprüfung der Knotenzahlen, Benchmarks beider
