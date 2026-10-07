@@ -66,6 +66,13 @@ type Table struct {
 	kk        *kkTable
 	Size      int
 	Values    []Value // nil until generated or loaded
+	// RawChecksum is the checksum of the values as generated (Invalid entries
+	// included); set after generation or read from the cache file header.
+	// Checksum constants in the code refer to this.
+	RawChecksum uint64
+	// filled: Invalid entries were overwritten with their predecessor for
+	// compression ("don't care"); Values no longer hash to RawChecksum.
+	filled bool
 }
 
 func newTable(m Material) *Table {

@@ -20,6 +20,7 @@
 mod bitboard;
 mod chess;
 mod egtb;
+mod lz;
 mod mateab;
 mod matelist;
 mod matepn;
@@ -43,6 +44,18 @@ fn main() {
         let workers = option("--workers").unwrap_or(12);
         match args[0].as_str() {
             "egtb-list" => tests_egtb::egtb_list(args.get(1).and_then(|s| s.parse().ok()).unwrap_or(5)),
+            "egtb-compress" => {
+                // rewrites every raw table file of the cache directory in the compressed format
+                let start = std::time::Instant::now();
+                match egtb::compress_cache_dir(&egtb::default_cache_dir(), workers, &mut |line| println!("{}", line)) {
+                    Ok((n, raw, packed)) if packed > 0 => println!("compressed {} files: {} MB -> {} MB ({:.2}x) in {:.1} s", n, raw >> 20, packed >> 20, raw as f64 / packed as f64, start.elapsed().as_secs_f64()),
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("{}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
             "egtb-measure" => {
                 let verify = args.iter().any(|a| a == "--verify");
                 let mut names = Vec::new();

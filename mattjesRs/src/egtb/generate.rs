@@ -180,6 +180,7 @@ impl Set {
         }
         st.losses += mates;
         st.draws = legal - st.wins - st.losses;
+        t.raw_checksum.store(super::checksum(t.bytes()), std::sync::atomic::Ordering::Relaxed);
         st.duration = start.elapsed();
         progress(&format!(
             "{:<5} wins {:>9}, losses {:>9}, draws {:>9}, longest mate {} plies = {} moves, {:.1} s",
@@ -242,7 +243,8 @@ impl Set {
                         }
                     }
                 }
-                if t.value(idx) != want {
+                // invalid entries are "don't care" (a loaded table has them filled for compression)
+                if want != Value::INVALID && t.value(idx) != want {
                     bad += 1;
                     if reported.fetch_add(1, Ordering::Relaxed) < 5 {
                         report(&format!("  {}: index {} {} stored {}, children say {}", t.mat.name(), idx, t.board(idx).fen(), t.value(idx), want));

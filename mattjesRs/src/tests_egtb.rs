@@ -187,7 +187,7 @@ pub fn egtb_generate(names: &[&str], workers: usize, verbose: bool, verify: bool
         if !t.is_generated() {
             continue;
         }
-        let sum = egtb::checksum(t.bytes());
+        let sum = t.raw_checksum();
         let verdict = match egtb::TABLE_CHECKSUMS.iter().find(|(n, _)| *n == t.mat.name()) {
             Some(&(_, want)) if want == sum => "OK".to_string(),
             Some(&(_, want)) => format!("MISMATCH, expected {:016x}", want),
@@ -232,7 +232,7 @@ pub fn egtb_measure(names: &[&str], workers: usize, verify: bool) {
         let (ti, st, loaded) = set.load_or_generate_table(m.clone(), workers, &mut progress);
         let elapsed = start.elapsed();
         let t = &set.tables[ti];
-        let sum = egtb::checksum(t.bytes());
+        let sum = t.raw_checksum();
         let verdict = match egtb::recorded_checksum(&m.name()) {
             Some(want) if want == sum => "OK".to_string(),
             Some(want) => format!("MISMATCH, expected {:016x}", want),

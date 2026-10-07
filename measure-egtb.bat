@@ -57,3 +57,5 @@ echo %DATE% %TIME% done: %N% materials with %PIECES% pieces >> %LOG%
 echo %DATE% %TIME% done: %N% materials with %PIECES% pieces >> %CONSOLE%
 echo.
 echo done: %N% materials with %PIECES% pieces, see %LOG% and %CONSOLE%
+rem tables written by an older binary are raw; this rewrites them compressed (already compressed files are skipped)
+%EXE% egtb-compress --workers %WORKERS%

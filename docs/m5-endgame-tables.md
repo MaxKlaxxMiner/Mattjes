@@ -151,6 +151,99 @@ pro Material, also 15,5 GB Tabelle plus 5,8 GB Bitsets, und bei gleicher Rate
 rund 50 Minuten bis zwei Stunden pro Material, je nach Ebenenzahl. Das ist
 zuhause (127 GB) machbar, am Arbeitsrechner nicht.
 
+## Nächster Generator-Schritt: Bauern-Scheiben (vorgemerkt 2026-10-07)
+
+Teiltabellen sind exakt, solange die Teilmenge unter Vorwärtszügen abgeschlossen
+ist (jedes Kind liegt in der Teilmenge oder in einer anderen vorhandenen
+Tabelle). Zwei Formen lohnen sich:
+
+- **Läuferfarbe:** ein Läufer wechselt die Feldfarbe nie, 32 statt 64 Felder,
+  dafür nur 4-fache Symmetrie (Spiegelungen vertauschen die Farben, Transposition
+  und 180°-Drehung nicht; 924 Königspaare). Zwei Läufer ergeben zwei Tabellen
+  (gleich-/ungleichfarbig), eine Wurzel braucht nur eine. Faktor 2.
+- **Bauern-Scheiben** (pawn slices, so arbeiten auch Syzygy und Nalimov): Tabelle
+  nach den Bauernfeldern geordnet. Bauern gehen nur vorwärts, nach einem Schlag
+  eine Linie zur Seite, Bauernzüge führen also immer in eine spätere Scheibe.
+  Jede Scheibe ist eine eigene Kandidaten-Retrograde mit den späteren Scheiben
+  als fertigen Kindern (wie heute die Schläge in kleinere Tabellen). Von einer
+  Wurzel aus sind nur die erreichbaren Scheiben nötig (Bauer b5: etwa 10 von 48
+  Feldern), Speicher ist nur eine Scheibe plus die Bytes der späteren. Damit
+  werden Sechs-Steiner mit Bauern für eine konkrete Wurzel machbar (volle
+  Tabelle 45 Mrd. Indizes) und der On-the-fly-Fall im UCI-Modus realistisch.
+  Prüfsummen solcher Teiltabellen sind wurzelabhängig, geprüft wird per
+  Vorwärts-Verifikation.
+
+## Kompression der Cache-Dateien: Vorstudie (2026-10-07)
+
+Wunsch des Autors: etwas Einfaches, nativ geschriebenes (kein zlib), Dekompression
+deutlich über 250 MB/s, Kompression nicht langsamer als die Erzeugung, trotzdem
+möglichst gute Rate. Messung an den drei vorhandenen Dateien (Raten exakt,
+Geschwindigkeiten unter Last und mit naivem Byte-für-Byte-Decoder, nur Richtwerte):
+
+| Datei | Anteil 128 (ungültig) | Entropie 0. Ordnung | 1. Ordnung | Byte-RLE | RLE nach "ungültig = egal" | LZ77 (LZ4-Stil, 64 KB Fenster) | LZ nach "egal" |
+|---|---|---|---|---|---|---|---|
+| 4-all (173 MB) | 25,8 % | 1,92× | 3,49× | 1,19× | 1,55× | 2,38× | **2,67×** |
+| KBNKQ (231 MB, dicht) | 38,1 % | 1,75× | 2,25× | 0,80× | 1,06× | 1,64× | **1,69×** |
+| KBBBK (231 MB, dünn) | 88,4 % | 8,3× | 14,5× | 4,45× | 5,75× | **11,1×** | 10,9× |
+
+Nachtrag mit den Codecs des Autors (`webwerfgo/lz.go`, `rle_test.go`, 2026-10-06):
+PackBits-artiges RLE (Steuerbyte: Literalblock bis 128 oder Lauf 3..130) und ein
+LZ4-Blockformat mit Hash-Ketten (Tiefe 256), Lazy Matching, 4-MB-Blöcken, parallel.
+
+| Datei | RLE-B | RLE-B, ungültig = egal | LZ (Hash-Ketten, lazy) | LZ, ungültig = egal | LZ unpack (12 Threads, unter Last) |
+|---|---|---|---|---|---|
+| 4-all | 1,62× | 1,94× | **4,02×** | **4,61×** | 1,1 bis 2,2 GB/s |
+| KBNKQ | 1,30× | 1,50× | **2,00×** | **2,11×** | 0,9 bis 1,4 GB/s |
+| KBBBK | 6,72× | 7,57× | **20,6×** | **21,1×** | 2,0 bis 2,2 GB/s |
+
+Das LZ mit Hash-Ketten schlägt die Entropie nullter Ordnung (4,0× gegen 1,92× bei
+4-all), weil es die Wiederholungen zwischen den 64-Byte-Zeilen des Index (gleiche
+Könige und erster Stein, Nachbarfeld des letzten) als Matches findet; das naive
+Greedy-LZ oben kam nur auf 2,4×. Packen kostete unter Last 28 bis 115 MB/s mit 12
+Threads, also 2 bis 6 s pro Tabelle, weit unter der Erzeugungszeit.
+
+Erkenntnisse:
+
+- **Naives RLE (Paar Wert/Länge pro Lauf) vergrößert dichte Tabellen**, ein
+  PackBits-Format mit Literalblöcken nicht; aber auch das bringt auf dichten
+  DTM-Tabellen nur 1,3 bis 1,6× (mittlere Lauflänge 1,6 bei KBNKQ). Nur die Remis- und
+  Ungültig-Wüsten dünner Tabellen laufen lang.
+- **"Ungültig = egal":** Der Wert 128 ist vollständig redundant (folgt aus der
+  Geometrie, wird nie nachgeschlagen). Ersetzt man ihn vor der Kompression durch den
+  Vorgängerwert, verlängern sich die Läufe; bringt 10 bis 30 % bei RLE, wenig bei LZ.
+  Nachteil: `Verify` muss ungültige Einträge dann überspringen, und die Prüfsumme der
+  Rohdaten gilt nur für die dekomprimierte Form mit wiederhergestellten 128ern (oder man
+  prüft die komprimierte Datei).
+- **LZ77 im LZ4-Stil** (Token, Literale, 2-Byte-Offset, Läufe als überlappende Matches)
+  liegt mit 1,7× bis 11× nahe an der Entropie nullter Ordnung, nutzt Wiederholungen
+  zwischen den 64-Byte-Zeilen des Index (Nachbarfelder des letzten Steins) und ist
+  mit rund 150 Zeilen pro Sprache einfach. Ein richtiger Decoder (Wort- statt
+  Byte-Kopien, 1-MB-Blöcke parallel) liegt bei über 1 GB/s pro Kern, die Kompression
+  mit Hash-Tabelle bei einigen hundert MB/s, also weit unter der Erzeugungszeit.
+- Mehr als etwa 2× auf dichten Tabellen braucht Kontextmodellierung (1. Ordnung wäre
+  2,25×) oder Huffman auf Literalen; das ist die Stufe von Nalimov/Syzygy und für
+  später.
+
+**Umgesetzt (2026-10-07):** Package `lz` in Go und Rust (das LZ des Autors: LZ4-
+Blockformat, Hash-Ketten Tiefe 256, Lazy Matching, 4-MB-Blöcke parallel, Längen 64 Bit
+für Sechs-Steiner). Dateiformat: 4 Byte Kennung `MEGT`, 8 Byte Roh-Prüfsumme (die
+Konstante aus dem Code, über die Werte mit 128ern, damit bleiben `measure.log` und alle
+Konstanten gültig), dann der LZ-Container. Vor dem Packen werden ungültige Einträge
+durch den Vorgängerwert ersetzt ("ungültig = egal"); die Suche fragt sie nie ab,
+`Verify` überspringt sie. Rohdateien (Größe = Tabellengröße) werden weiter gelesen,
+`egtb-compress` wandelt einen Cache-Ordner um (die .bat ruft es am Ende auf). Go und
+Rust schreiben byteidentische Dateien. Ergebnis auf den drei Dateien (unter Last):
+
+| Datei | roh | gepackt | Faktor | packen (12 Threads) | laden Rust / Go (8 Threads) |
+|---|---|---|---|---|---|
+| 4-all | 173 MB | 37 MB | 4,6× | 14 s (Go) | 0,24 s / 0,2 s |
+| KBNKQ | 231 MB | 109 MB | 2,1× | 23 s (Go) | |
+| KBBBK | 231 MB | 10 MB | 21× | 6 s (Go), 2,8 s (Rust) | 0,22 s / 0,85 s |
+
+Geschwindigkeiten gelten mit Vorbehalt (Messreihe lief parallel); Go lädt hier
+langsamer als Rust, Ursache noch offen (Allokation, Blockkopie). Erwartung über alle
+Fünf-Steiner: Faktor 2 bis 4.
+
 ## Offen
 
 - Weitere Fünf-Steiner messen (vor allem die mit Bauern, deren Abhängigkeiten

@@ -169,6 +169,7 @@ func (s *Set) Generate(t *Table, workers int, progress Progress) Stats {
 	}
 	st.Losses += mates
 	st.Draws = legal - st.Wins - st.Losses
+	t.RawChecksum = Checksum(t.Values)
 	st.Duration = time.Since(start)
 	progress(fmt.Sprintf("%-5s wins %9d, losses %9d, draws %9d, longest mate %d plies = %d moves, %.1f s",
 		t.Mat.Name(), st.Wins, st.Losses, st.Draws, st.MaxWin, st.LongestMate(), st.Duration.Seconds()))
@@ -643,7 +644,8 @@ func (s *Set) Verify(t *Table, workers int, report func(string)) int {
 					}
 				}
 			}
-			if t.Values[idx] != want {
+			// invalid entries are "don't care" (a loaded table has them filled for compression)
+			if want != Invalid && t.Values[idx] != want {
 				bad++
 				if reported.Add(1) <= 5 && report != nil {
 					b := t.Board(idx)

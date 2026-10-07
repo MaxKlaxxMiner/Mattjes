@@ -87,6 +87,13 @@ pub struct Table {
     pub size: usize,
     /// Empty until generated or loaded.
     pub values: Vec<AtomicU8>,
+    /// The checksum of the values as generated (Invalid entries included); set
+    /// after generation or read from the cache file header. Checksum constants
+    /// in the code refer to this. 0 = not computed yet.
+    pub raw_checksum: std::sync::atomic::AtomicU64,
+    /// Invalid entries were overwritten with their predecessor for compression
+    /// ("don't care"); the values no longer hash to raw_checksum.
+    filled: std::sync::atomic::AtomicBool,
 }
 
 impl Table {
@@ -99,7 +106,51 @@ impl Table {
         for s in &sizes {
             size *= s;
         }
-        Table { mat, slots, sizes, equal_prev, pawns, size, values: Vec::new() }
+        Table { mat, slots, sizes, equal_prev, pawns, size, values: Vec::new(), raw_checksum: std::sync::atomic::AtomicU64::new(0), filled: std::sync::atomic::AtomicBool::new(false) }
+    }
+
+    /// The checksum of the generated values, computed when the table was never
+    /// saved or loaded.
+    pub fn raw_checksum(&self) -> u64 {
+        let mut sum = self.raw_checksum.load(Ordering::Relaxed);
+        if sum == 0 && !self.is_filled() && self.is_generated() {
+            sum = super::checksum(self.bytes());
+            self.raw_checksum.store(sum, Ordering::Relaxed);
+        }
+        sum
+    }
+
+    pub fn is_filled(&self) -> bool {
+        self.filled.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn set_filled(&self, filled: bool) {
+        self.filled.store(filled, Ordering::Relaxed);
+    }
+
+    /// Replaces Invalid entries by their predecessor ("don't care"), once.
+    pub(super) fn fill(&self) {
+        if self.is_filled() {
+            return;
+        }
+        self.raw_checksum();
+        let mut prev = Value::DRAW;
+        for v in &self.values {
+            let x = Value(v.load(Ordering::Relaxed));
+            if x == Value::INVALID {
+                v.store(prev.0, Ordering::Relaxed);
+            } else {
+                prev = x;
+            }
+        }
+        self.set_filled(true);
+    }
+
+    /// Resets the table to "not generated".
+    pub(super) fn clear(&mut self) {
+        self.values = Vec::new();
+        self.raw_checksum.store(0, Ordering::Relaxed);
+        self.set_filled(false);
     }
 
     #[inline(always)]
@@ -234,6 +285,12 @@ impl Table {
         // SAFETY: AtomicU8 has the same size and alignment as u8, and the slice
         // is only read while the table is not being generated.
         unsafe { std::slice::from_raw_parts(self.values.as_ptr() as *const u8, self.values.len()) }
+    }
+
+    /// The values as mutable bytes (for loading).
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
+        // SAFETY: as in bytes(); &mut self excludes every other access.
+        unsafe { std::slice::from_raw_parts_mut(self.values.as_mut_ptr() as *mut u8, self.values.len()) }
     }
 }
 
