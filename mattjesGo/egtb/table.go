@@ -162,23 +162,95 @@ func (t *Table) Board(idx int) bitboard.Board {
 	return bitboard.FromPieces(whiteMove, sq, pieces)
 }
 
-// Set is the complete collection of tables for all materials up to four pieces.
+// MaxPieces is the largest material a table can hold (two kings + four pieces:
+// the square arrays and index digits are sized for it).
+const MaxPieces = 6
+
+// Set is the collection of tables: the base of all materials up to four
+// pieces (always complete, one cache file) plus any larger materials added on
+// demand (one file each).
 type Set struct {
-	Tables []*Table
-	bySig  []int8 // signature -> table index, -1 none
+	Tables    []*Table
+	baseCount int    // the first baseCount tables are the four-piece base
+	bySig     []int8 // signature -> table index, -1 none
 }
 
-// NewSet allocates the tables without values; Generate or Load fills them.
+// NewSet allocates the base tables without values; Generate or Load fills them.
 func NewSet() *Set {
 	s := &Set{bySig: make([]int8, signatureSpace)}
 	for i := range s.bySig {
 		s.bySig[i] = -1
 	}
-	for i, m := range All() {
-		s.Tables = append(s.Tables, newTable(m))
-		s.bySig[m.signature()] = int8(i)
+	for _, m := range All() {
+		s.AddMaterial(m)
 	}
+	s.baseCount = len(s.Tables)
 	return s
+}
+
+// Base returns the four-piece tables (the content of the base cache file).
+func (s *Set) Base() []*Table { return s.Tables[:s.baseCount] }
+
+// AddMaterial registers a table for a material beyond the base (up to
+// MaxPieces), without values. Returns the existing table if already present.
+func (s *Set) AddMaterial(m Material) *Table {
+	if t := s.Find(m.Name()); t != nil {
+		return t
+	}
+	if m.Pieces() > MaxPieces || len(s.Tables) >= 127 {
+		panic("egtb: cannot add material " + m.Name())
+	}
+	t := newTable(m)
+	s.bySig[m.signature()] = int8(len(s.Tables))
+	s.Tables = append(s.Tables, t)
+	return t
+}
+
+// Parse reads a material name like "KQKBN" (white pieces, then black pieces,
+// each side led by its king) into canonical form.
+func Parse(name string) (Material, error) {
+	var sides [2][]chess.Piece
+	side := -1
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c == 'K' {
+			side++
+			if side > 1 {
+				return Material{}, fmt.Errorf("egtb: %q has more than two kings", name)
+			}
+			continue
+		}
+		p := chess.PieceFromChar(c).Type()
+		if side < 0 || p == chess.None || p == chess.King {
+			return Material{}, fmt.Errorf("egtb: bad material %q", name)
+		}
+		sides[side] = append(sides[side], p)
+	}
+	if side != 1 {
+		return Material{}, fmt.Errorf("egtb: %q needs two kings", name)
+	}
+	m := canonicalMaterial(sides[0], sides[1])
+	if m.Pieces() > MaxPieces {
+		return Material{}, fmt.Errorf("egtb: %q has more than %d pieces", name, MaxPieces)
+	}
+	return m, nil
+}
+
+// RawPositions estimates the positions of a pawnless material without any
+// symmetry: 3612 legal king pairs, the other pieces on the remaining squares,
+// both sides to move (before removing positions with the opponent in check).
+func (m Material) RawPositions() uint64 {
+	n := uint64(3612) * 2
+	free := uint64(62)
+	for range m.White {
+		n *= free
+		free--
+	}
+	for range m.Black {
+		n *= free
+		free--
+	}
+	return n
 }
 
 // Find returns the table of a material by name, e.g. "KBNK", or nil.
@@ -228,7 +300,7 @@ func (s *Set) Locate(b *bitboard.Board) (t *Table, idx int, ok bool) {
 		return nil, -1, false
 	}
 	occ := b.ByColor[0] | b.ByColor[1]
-	if n := bits.OnesCount64(occ); n > 4 || n < 3 {
+	if n := bits.OnesCount64(occ); n > MaxPieces || n < 3 {
 		return nil, -1, false
 	}
 	sig, flipped := boardSignature(b)

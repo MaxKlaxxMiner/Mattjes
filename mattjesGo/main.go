@@ -87,8 +87,11 @@ func main() {
 	// matepnSolveNamed("KQ-KBN", 1024, "sat", "mEft")
 
 	// --- list-based search, the best version for finite spaces: KBB-K (11 s, 6.35 M positions), then KQ-KBN with a 16 GB store (400 M positions at 75 %) ---
-	matelistSolve("KBB-K", 0, 200, 30_000_000)
+	// matelistSolve("KBB-K", 0, 200, 30_000_000)
 	// matelistSolve("KQ-KBN", 0, 200, 400_000_000) // 387 M positions at ply 16, aborted at ply 17 after 960 s, 42 GB peak; the space is 700-750 M
+
+	// --- milestone 5, measurement series: five- and six-piece tables (time, memory, size, checksum), cache dir mattjes-egtb-cache/ ---
+	egtbMeasure([]string{"KQKBN"}, 12, true) // generated in 47 s, 845 MB process; now loads the file, checks KQ-KBN = win in 77 and verifies every position forward
 	// matepnSolve(12, 256, "sat", "mEfi") // iterative deepening: the shortest mate, cost of all depths (KQ-KN 7.9 M visits)
 	// mateabSolve(17, 256, false) // the same positions with the depth-first search, for comparison
 	_ = chess.StartFEN // keep the import for the commented experiments above

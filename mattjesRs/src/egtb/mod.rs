@@ -13,9 +13,9 @@ pub use generate::{Progress, Stats, KNOWN_MAXIMA};
 #[allow(unused_imports)]
 pub use index::{KK_PAWNLESS, KK_PAWNS};
 #[allow(unused_imports)]
-pub use persist::{checksum, default_path, FILE_CHECKSUM, FILE_NAME, TABLE_CHECKSUMS};
+pub use persist::{checksum, default_cache_dir, default_path, recorded_checksum, BASE_FILE_NAME, CACHE_DIR, FILE_CHECKSUM, TABLE_CHECKSUMS};
 #[allow(unused_imports)]
-pub use table::{Set, Table, Value, MAX_PLIES};
+pub use table::{Set, Table, Value, MAX_PIECES, MAX_PLIES};
 
 use crate::bitboard::Board;
 use crate::chess::Piece;
@@ -115,6 +115,48 @@ impl Material {
         }
         all.sort_by_key(|m| (m.pawns(), m.pieces())); // stable
         all
+    }
+
+    /// Reads a material name like "KQKBN" (white pieces, then black pieces, each
+    /// side led by its king) into canonical form.
+    pub fn parse(name: &str) -> Result<Material, String> {
+        let mut sides: [Vec<Piece>; 2] = [Vec::new(), Vec::new()];
+        let mut side: i32 = -1;
+        for &c in name.as_bytes() {
+            if c == b'K' {
+                side += 1;
+                if side > 1 {
+                    return Err(format!("egtb: {:?} has more than two kings", name));
+                }
+                continue;
+            }
+            let p = Piece::from_char(c).kind();
+            if side < 0 || p == Piece::NONE || p == Piece::KING || p == Piece::BLOCKED {
+                return Err(format!("egtb: bad material {:?}", name));
+            }
+            sides[side as usize].push(p);
+        }
+        if side != 1 {
+            return Err(format!("egtb: {:?} needs two kings", name));
+        }
+        let m = Material::canonical(&sides[0], &sides[1]);
+        if m.pieces() > table::MAX_PIECES {
+            return Err(format!("egtb: {:?} has more than {} pieces", name, table::MAX_PIECES));
+        }
+        Ok(m)
+    }
+
+    /// Estimates the positions of a pawnless material without any symmetry:
+    /// 3612 legal king pairs, the other pieces on the remaining squares, both
+    /// sides to move (before removing positions with the opponent in check).
+    pub fn raw_positions(&self) -> u64 {
+        let mut n: u64 = 3612 * 2;
+        let mut free: u64 = 62;
+        for _ in 0..self.white.len() + self.black.len() {
+            n *= free;
+            free -= 1;
+        }
+        n
     }
 
     /// Sorts both sides and puts the stronger one first.

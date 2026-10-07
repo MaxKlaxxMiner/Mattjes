@@ -227,22 +227,52 @@ impl Table {
     }
 }
 
-/// The complete collection of tables for all materials up to four pieces.
+/// The largest material a table can hold (two kings + four pieces: the square
+/// arrays and index digits are sized for it).
+pub const MAX_PIECES: usize = 6;
+
+/// The collection of tables: the base of all materials up to four pieces
+/// (always complete, one cache file) plus any larger materials added on demand
+/// (one file each).
 pub struct Set {
     pub tables: Vec<Table>,
+    /// The first `base_count` tables are the four-piece base.
+    base_count: usize,
     /// signature -> table index, -1 none
     by_sig: Vec<i8>,
 }
 
 impl Set {
-    /// Allocates the tables without values; `generate_all` or `load` fills them.
+    /// Allocates the base tables without values; `generate_all` or `load` fills them.
     pub fn new() -> Set {
-        let mut s = Set { tables: Vec::new(), by_sig: vec![-1; SIGNATURE_SPACE] };
-        for (i, m) in Material::all().into_iter().enumerate() {
-            s.by_sig[m.signature() as usize] = i as i8;
-            s.tables.push(Table::new(m));
+        let mut s = Set { tables: Vec::new(), base_count: 0, by_sig: vec![-1; SIGNATURE_SPACE] };
+        for m in Material::all() {
+            s.add_material(m);
         }
+        s.base_count = s.tables.len();
         s
+    }
+
+    /// The four-piece tables (the content of the base cache file).
+    pub fn base(&self) -> &[Table] {
+        &self.tables[..self.base_count]
+    }
+
+    /// Registers a table for a material beyond the base (up to MAX_PIECES),
+    /// without values. Returns the index of the existing table if already present.
+    pub fn add_material(&mut self, m: Material) -> usize {
+        if let Some(i) = self.find(&m.name()) {
+            return i;
+        }
+        assert!(m.pieces() <= MAX_PIECES && self.tables.len() < 127, "egtb: cannot add material {}", m.name());
+        self.by_sig[m.signature() as usize] = self.tables.len() as i8;
+        self.tables.push(Table::new(m));
+        self.tables.len() - 1
+    }
+
+    /// The number of bytes of the base file.
+    pub fn base_size(&self) -> usize {
+        self.base().iter().map(|t| t.size).sum()
     }
 
     /// The table of a material by name, e.g. "KBNK".
@@ -284,7 +314,7 @@ impl Set {
         }
         let occ = b.by_color[0] | b.by_color[1];
         let n = occ.count_ones();
-        if !(3..=4).contains(&n) {
+        if !(3..=MAX_PIECES as u32).contains(&n) {
             return None;
         }
         let (sig, flipped) = board_signature(b);

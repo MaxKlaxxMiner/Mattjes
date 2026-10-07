@@ -92,7 +92,10 @@ fn main() {
     // tests_pn::matepn_solve_named("KQ-KBN", 1024, "sat", "mEft");
 
     // --- list-based search, the best version for finite spaces: KBB-K (11 s, 6.35 M positions), then KQ-KBN with a 16 GB store (400 M positions at 75 %) ---
-    tests_mate::matelist_solve("KBB-K", 0, 200, 30_000_000);
+    // tests_mate::matelist_solve("KBB-K", 0, 200, 30_000_000);
     // tests_mate::matelist_solve("KQ-KBN", 0, 200, 400_000_000); // 387 M positions at ply 16, aborted at ply 17 after 960 s, 42 GB peak; the space is 700-750 M
+
+    // --- milestone 5, measurement series: five- and six-piece tables (time, size, checksum), cache dir mattjes-egtb-cache/ ---
+    tests_egtb::egtb_measure(&["KQKBN"], 12, true); // Go: generated in 47 s, 845 MB process, checksum 7b54498535f836cb
     // tests_pn::matepn_solve(12, 256, "sat", "mEfi"); // iterative deepening: the shortest mate, cost of all depths
 }

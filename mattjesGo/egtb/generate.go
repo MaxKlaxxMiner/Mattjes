@@ -21,6 +21,7 @@ type Stats struct {
 	Levels                            int
 	Evaluations                       int // candidate evaluations (forward move generation) over all levels
 	Duration                          time.Duration
+	Overflow                          bool // distances beyond MaxPlies occurred, the table is incomplete
 }
 
 // LongestMate is the longest forced mate in moves (the usual way to quote it).
@@ -107,10 +108,7 @@ func (s *Set) GenerateAll(workers int, progress Progress) {
 // (the parents of positions decided in the previous level).
 func (s *Set) Generate(t *Table, workers int, progress Progress) Stats {
 	for _, d := range t.Mat.dependencies() {
-		dt := s.Find(d.Name())
-		if dt == nil {
-			panic("egtb: no table for " + d.Name())
-		}
+		dt := s.AddMaterial(d) // beyond the base this registers the dependency on the fly
 		if dt.Values == nil {
 			s.Generate(dt, workers, progress)
 		}
@@ -130,6 +128,7 @@ func (s *Set) Generate(t *Table, workers int, progress Progress) Stats {
 	st.Legal, st.Mates = legal, mates
 	progress(fmt.Sprintf("%-5s %10d indices, %10d legal, %8d mates", t.Mat.Name(), t.Size, legal, mates))
 
+	completed := false
 	for level := 1; level <= MaxPlies; level++ {
 		cur := g.cand[level%3]
 		for _, idx := range g.pending[level] {
@@ -152,8 +151,15 @@ func (s *Set) Generate(t *Table, workers int, progress Progress) Stats {
 			progress(fmt.Sprintf("      level %3d: %9d positions, %10d evaluated", level, changed, evals))
 		}
 		if !g.cand[(level+1)%3].any() && !g.cand[(level+2)%3].any() && !g.pendingBeyond(level) {
+			completed = true
 			break
 		}
+	}
+	if !completed {
+		// distances beyond MaxPlies cannot be stored in a byte; the positions
+		// that were still open stay 0 and would read as draws
+		st.Overflow = true
+		progress(fmt.Sprintf("%-5s WARNING: distances exceed %d plies, open positions left as draws", t.Mat.Name(), MaxPlies))
 	}
 	st.Losses += mates
 	st.Draws = legal - st.Wins - st.Losses

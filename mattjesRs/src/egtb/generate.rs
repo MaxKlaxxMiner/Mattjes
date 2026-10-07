@@ -30,6 +30,8 @@ pub struct Stats {
     /// Candidate evaluations (forward move generation) over all levels.
     pub evaluations: usize,
     pub duration: Duration,
+    /// Distances beyond MAX_PLIES occurred, the table is incomplete.
+    pub overflow: bool,
 }
 
 impl Stats {
@@ -119,7 +121,7 @@ impl Set {
     /// missing).
     pub fn generate(&mut self, ti: usize, workers: usize, progress: Progress) -> Stats {
         for d in self.tables[ti].mat.dependencies() {
-            let di = self.find(&d.name()).unwrap_or_else(|| panic!("egtb: no table for {}", d.name()));
+            let di = self.add_material(d); // beyond the base this registers the dependency on the fly
             if !self.tables[di].is_generated() {
                 self.generate(di, workers, progress);
             }
@@ -136,6 +138,7 @@ impl Set {
         st.mates = mates;
         progress(&format!("{:<5} {:>10} indices, {:>10} legal, {:>8} mates", t.mat.name(), t.size, legal, mates));
 
+        let mut completed = false;
         for level in 1..=MAX_PLIES {
             let cur = &g.cand[(level % 3) as usize];
             {
@@ -160,8 +163,15 @@ impl Set {
                 progress(&format!("      level {:>3}: {:>9} positions, {:>10} evaluated", level, changed, evals));
             }
             if !g.cand[((level + 1) % 3) as usize].any() && !g.cand[((level + 2) % 3) as usize].any() && !g.pending_beyond(level) {
+                completed = true;
                 break;
             }
+        }
+        if !completed {
+            // distances beyond MAX_PLIES cannot be stored in a byte; the positions
+            // that were still open stay 0 and would read as draws
+            st.overflow = true;
+            progress(&format!("{:<5} WARNING: distances exceed {} plies, open positions left as draws", t.mat.name(), MAX_PLIES));
         }
         st.losses += mates;
         st.draws = legal - st.wins - st.losses;

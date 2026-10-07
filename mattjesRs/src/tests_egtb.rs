@@ -5,6 +5,7 @@ use std::time::Instant;
 use crate::bitboard::Board;
 use crate::chess::{Piece, Pos, MATE_POSITIONS};
 use crate::egtb::{self, Set};
+use crate::tests_hash::group;
 
 /// Checks the position indexing of every table: decoding an index and encoding
 /// the squares again must give the same index, and every symmetric image of a
@@ -203,4 +204,75 @@ pub fn egtb_load_or_generate(workers: usize) -> Set {
     let set = Set::load_or_generate(&egtb::default_path(), workers, &mut |line| println!("{}", line));
     println!();
     set
+}
+
+/// Generates (or loads) tables beyond the four-piece base, one material per
+/// name like "KQKBN", and reports what the docs table needs: the raw position
+/// count before symmetry, the index space, generation time per level and in
+/// total, the longest mate, the checksum and the file size. `verify`
+/// recomputes every position from its children afterwards (one full forward
+/// pass). Mirrors `egtbMeasure` in Go; Rust has no runtime memory statistics,
+/// so the process memory is not printed here.
+pub fn egtb_measure(names: &[&str], workers: usize, verify: bool) {
+    let mut set = egtb_load_or_generate(workers);
+    let mut progress = |line: &str| println!("{}", line);
+    for name in names {
+        let m = egtb::Material::parse(name).unwrap_or_else(|e| panic!("{}", e));
+        let ti = set.add_material(m.clone());
+        let size = set.tables[ti].size;
+        println!("=== {}: {} pieces, {} raw positions without symmetry, {} indices = {} MB ===", m.name(), m.pieces(), group(m.raw_positions()), group(size as u64), size >> 20);
+        let start = Instant::now();
+        let (ti, st, loaded) = set.load_or_generate_table(m.clone(), workers, &mut progress);
+        let elapsed = start.elapsed();
+        let t = &set.tables[ti];
+        let sum = egtb::checksum(t.bytes());
+        let verdict = match egtb::recorded_checksum(&m.name()) {
+            Some(want) if want == sum => "OK".to_string(),
+            Some(want) => format!("MISMATCH, expected {:016x}", want),
+            None => "(not recorded)".to_string(),
+        };
+        if loaded {
+            println!("    loaded in {:.2} s, checksum {:016x} {}", elapsed.as_secs_f64(), sum, verdict);
+        } else {
+            println!(
+                "    generated in {:.1} s with {} workers: {} legal, {} wins, {} losses, {} draws, longest mate {} plies = {} moves, {} levels, {} evaluations",
+                st.duration.as_secs_f64(),
+                workers,
+                group(st.legal as u64),
+                group(st.wins as u64),
+                group(st.losses as u64),
+                group(st.draws as u64),
+                st.max_win,
+                st.longest_mate(),
+                st.levels,
+                group(st.evaluations as u64)
+            );
+            if st.overflow {
+                println!("    WARNING: distance range exceeded, table incomplete");
+            }
+            println!("    checksum {:016x} {}  (record as (\"{}\", 0x{:016x}),)", sum, verdict, m.name(), sum);
+        }
+        let path = set.table_path(t);
+        if let Ok(info) = std::fs::metadata(&path) {
+            println!("    file {}: {} MB", path.display(), info.len() >> 20);
+        }
+        // reference positions of this material: the table must give exactly 2N-1
+        for p in MATE_POSITIONS {
+            let b = Board::from_fen(p.fen).expect("valid FEN");
+            match set.locate(&b) {
+                Some((lt, _)) if std::ptr::eq(lt, t) => {}
+                _ => continue,
+            }
+            let v = set.lookup(&b).unwrap_or(egtb::Value::DRAW);
+            let want = 2 * p.mate_in - 1;
+            let verdict = if v.is_win() && v.plies() == want { "OK".to_string() } else { format!("MISMATCH, expected win in {}", want) };
+            println!("    test position {}: {}  {}", p.name, v, verdict);
+        }
+        if verify {
+            let start = Instant::now();
+            let bad = set.verify(ti, workers, &|line| println!("{}", line));
+            println!("    verify: {} mismatches in {:.1} s", bad, start.elapsed().as_secs_f64());
+        }
+        println!();
+    }
 }

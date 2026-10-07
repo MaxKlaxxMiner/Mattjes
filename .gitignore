@@ -14,8 +14,9 @@ mattjesRs/target/
 .vs/
 *.iml
 
-# endgame table cache (generated in 20 s, 173 MB)
+# endgame table cache (4-all.bin generated in 20 s, 173 MB; larger materials on demand)
 mattjes-egtb.bin
+mattjes-egtb-cache/
 
 # profiling / benchmark dumps
 *.prof

@@ -106,22 +106,48 @@ Code-Pfad als die Index-Tabellen): 2.878.165 erreichbare Stellungen, 30,2 Mio. K
 Matt in 25 mit derselben Hauptvariante in 4,0 s; Beweisgraph nur 4.125 Stellungen. Die
 Stellung ist als `KP-KP` in `chess/matedata.go` aufgenommen (Matt in 25).
 
-## Offen und geplant (Stand 2026-10-07)
+## Fünf Steine: Messreihe (ab 2026-10-07)
 
-- **Fünf und sechs Steine ausmessen.** Der Generator kann jedes Material, dessen
-  Abhängigkeiten vorhanden sind. Geplant ist eine Messreihe: Erzeugungszeit,
-  Spitzenspeicher, Endgröße und Prüfsumme pro Material, beginnend mit KQKBN
-  (242.221.056 Indizes = 242 MB, Schätzung zehn Minuten auf 12 Threads), um
-  daraus eine **bekannte statische Tabelle** der Anforderungen zu machen und
-  zu sehen, welche Sechs-Steiner (rund 15 GB pro Material ohne weitere
-  Kompression) noch gehen. Optimierungsfragen dabei: Skalierung über die
-  Worker, Speicherbandbreite, ob viel RAM die Erzeugung beschleunigen kann.
-- **Cache-Ordner statt einer Datei.** Geplantes Layout: Ordner
-  `mattjes-egtb-cache/` neben der Binary, darin `4-all.bin` für alle Drei- und
-  Vier-Steiner (die heutige Datei) und je eine Datei pro größerem Material,
-  zum Beispiel `5-KQKBN.bin`. Fünf-Steiner werden nie mitgeliefert, nur lokal
-  erzeugt; der UCI-Modus könnte sie bei genug RAM on the fly rechnen, während
-  die Suche schon läuft (`m4-mate-search.md`, Schritt 4).
+Der Generator kann jedes Material bis sechs Steine, dessen Abhängigkeiten er
+rekursiv selbst erzeugt. Der Cache ist jetzt ein Ordner `mattjes-egtb-cache/`
+neben der Binary: `4-all.bin` für alle Drei- und Vier-Steiner (die bisherige
+Datei) und je eine Datei pro größerem Material, `5-KBNKQ.bin` usw. Größere
+Materialien werden nie mitgeliefert, nur lokal erzeugt; der UCI-Modus könnte
+sie bei genug RAM on the fly rechnen, während die Suche schon läuft. Die
+Kanonisierung nennt die Seite mit mehr Steinen zuerst, deshalb heißt KQKBN
+intern KBNKQ (die Suche dreht die Farben beim Nachschlagen).
+
+Wertebereich: Ein Byte fasst Distanzen bis 126 Halbzüge (63 Züge). Materialien
+mit längeren Gewinnen (KNNKP hat über 100 Züge) meldet der Generator mit
+"distance range exceeded" und lässt die offenen Stellungen als Remis stehen;
+dafür bräuchte es zwei Byte pro Stellung.
+
+Arbeitsrechner (i5, 12 Threads), Go:
+
+| Material | roh ohne Symmetrie | Indizes = Datei | legal | Gewinne / Verluste / Remis | längstes Matt | Ebenen | Bewertungen | Zeit | Prozess-RAM | Prüfsumme |
+|---|---|---|---|---|---|---|---|---|---|---|
+| KBNKQ (= KQKBN) | 1,64 Mrd. | 242.221.056 = 231 MiB | 149.985.528 | 86,9 Mio. / 56,6 Mio. / 6,4 Mio. | 105 Halbzüge = 53 Züge | 106 | 558,7 Mio. | **47,2 s Go / 44,8 s Rust** | 845 MB (355 vorher) | `0x7b54498535f836cb` |
+
+Die Schätzung "zehn Minuten" war um Faktor 13 zu pessimistisch: 12 Mio.
+Kandidaten-Bewertungen pro Sekunde, der Prozess braucht kaum mehr als die
+Tabelle selbst plus die drei Kandidaten-Bitsets (3 × 30 MB) und die Basis.
+Go und Rust erzeugen die Datei **byteidentisch** (`cmp`), Rust nur 5 % schneller:
+Die Kandidatenphase ist speichergebunden wie die Listensuche. Die
+Vorwärts-Verifikation aller 242 Mio. Indizes meldet 0 Abweichungen in 12,7 s.
+Die Teststellung KQ-KBN (Matt in 39, tablebase-geprüft) steht in der fertigen
+Tabelle als "Gewinn in 77 Halbzügen", exakt wie erwartet.
+
+Hochrechnung für sechs Steine ohne Bauern: 462 × 64⁴ × 2 = 15,5 Mrd. Indizes
+pro Material, also 15,5 GB Tabelle plus 5,8 GB Bitsets, und bei gleicher Rate
+rund 50 Minuten bis zwei Stunden pro Material, je nach Ebenenzahl. Das ist
+zuhause (127 GB) machbar, am Arbeitsrechner nicht.
+
+## Offen
+
+- Weitere Fünf-Steiner messen (vor allem die mit Bauern, deren Abhängigkeiten
+  Fünf-Steiner-Promotionen sind), erster Sechs-Steiner zuhause.
+- Optimierungsfragen: Skalierung über die Worker (14 zuhause), Speicherbandbreite
+  in der Kandidatenphase, zwei Byte pro Stellung für lange Materialien.
 - Syzygy-Leser für alles, was nicht selbst gerechnet wird (Entscheidung M5).
 - Die Suche verlängert ihre PV noch nicht aus der Tabelle heraus (die PV endet am
   Tabellen-Blatt); `egtbProbe` zeigt, wie billig das ist: pro Halbzug einmal Züge erzeugen

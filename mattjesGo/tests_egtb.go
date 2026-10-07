@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"runtime"
 	"time"
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
@@ -226,6 +228,79 @@ func pvString2(line []string) string {
 		s += m + " "
 	}
 	return s
+}
+
+// egtbMeasure generates (or loads) tables beyond the four-piece base, one
+// material per name like "KQKBN", and reports what the docs table needs: the
+// raw position count before symmetry, the index space, generation time per
+// level and in total, the process memory, the longest mate, the checksum and
+// the file size. verify recomputes every position from its children afterwards
+// (one full forward pass, minutes for a five-piece table).
+func egtbMeasure(names []string, workers int, verify bool) {
+	set := egtbLoadOrGenerate(workers)
+	progress := func(line string) { fmt.Println(line) }
+	for _, name := range names {
+		m, err := egtb.Parse(name)
+		if err != nil {
+			panic(err)
+		}
+		t := set.AddMaterial(m)
+		fmt.Printf("=== %s: %d pieces, %s raw positions without symmetry, %s indices = %d MB ===\n",
+			m.Name(), m.Pieces(), perftGroup(m.RawPositions()), perftGroup(uint64(t.Size)), t.Size>>20)
+		var before runtime.MemStats
+		runtime.ReadMemStats(&before)
+		start := time.Now()
+		_, st, loaded := set.LoadOrGenerateTable(m, workers, progress)
+		elapsed := time.Since(start)
+		var after runtime.MemStats
+		runtime.ReadMemStats(&after)
+		sum := egtb.Checksum(t.Values)
+		verdict := "(not recorded)"
+		if want, known := egtb.TableChecksums[m.Name()]; known {
+			verdict = "OK"
+			if want != sum {
+				verdict = fmt.Sprintf("MISMATCH, expected %016x", want)
+			}
+		}
+		if loaded {
+			fmt.Printf("    loaded in %.2f s, checksum %016x %s\n", elapsed.Seconds(), sum, verdict)
+		} else {
+			fmt.Printf("    generated in %.1f s with %d workers: %s legal, %s wins, %s losses, %s draws, longest mate %d plies = %d moves, %d levels, %s evaluations\n",
+				st.Duration.Seconds(), workers, perftGroup(uint64(st.Legal)), perftGroup(uint64(st.Wins)), perftGroup(uint64(st.Losses)), perftGroup(uint64(st.Draws)),
+				st.MaxWin, st.LongestMate(), st.Levels, perftGroup(uint64(st.Evaluations)))
+			if st.Overflow {
+				fmt.Println("    WARNING: distance range exceeded, table incomplete")
+			}
+			fmt.Printf("    memory: process %d MB from the OS (%d MB before), heap in use %d MB; table %d MB\n",
+				after.Sys>>20, before.Sys>>20, after.HeapInuse>>20, t.Size>>20)
+			fmt.Printf("    checksum %016x %s  (record as \"%s\": 0x%016x)\n", sum, verdict, m.Name(), sum)
+		}
+		if info, err := os.Stat(set.TablePath(t)); err == nil {
+			fmt.Printf("    file %s: %d MB\n", set.TablePath(t), info.Size()>>20)
+		}
+		// reference positions of this material: the table must give exactly 2N-1
+		for _, p := range chess.MatePositions {
+			b, err := bitboard.FromFEN(p.FEN)
+			if err != nil {
+				panic(err)
+			}
+			if lt, _, ok := set.Locate(&b); !ok || lt != t {
+				continue
+			}
+			v, _ := set.Lookup(&b)
+			verdict := "OK"
+			if !v.IsWin() || v.Plies() != 2*p.MateIn-1 {
+				verdict = fmt.Sprintf("MISMATCH, expected win in %d", 2*p.MateIn-1)
+			}
+			fmt.Printf("    test position %s: %s  %s\n", p.Name, v, verdict)
+		}
+		if verify {
+			start = time.Now()
+			bad := set.Verify(t, workers, progress)
+			fmt.Printf("    verify: %d mismatches in %.1f s\n", bad, time.Since(start).Seconds())
+		}
+		fmt.Println()
+	}
 }
 
 func materialPieces(m egtb.Material) []chess.Piece {
