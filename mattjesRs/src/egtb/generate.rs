@@ -123,7 +123,12 @@ impl Set {
         for d in self.tables[ti].mat.dependencies() {
             let di = self.add_material(d); // beyond the base this registers the dependency on the fly
             if !self.tables[di].is_generated() {
-                self.generate(di, workers, progress);
+                let path = self.table_path(&self.tables[di]);
+                if self.load_table(di, &path).is_ok() {
+                    progress(&format!("egtb: loaded dependency {}", path.display()));
+                } else {
+                    self.generate(di, workers, progress);
+                }
             }
         }
         let start = Instant::now();

@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"time"
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
@@ -239,6 +241,13 @@ func pvString2(line []string) string {
 func egtbMeasure(names []string, workers int, verify bool) {
 	set := egtbLoadOrGenerate(workers)
 	progress := func(line string) { fmt.Println(line) }
+	logPath := filepath.Join(egtb.DefaultCacheDir(), "measure.log")
+	logLine := func(line string) {
+		if f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			fmt.Fprintln(f, line)
+			f.Close()
+		}
+	}
 	for _, name := range names {
 		m, err := egtb.Parse(name)
 		if err != nil {
@@ -294,12 +303,61 @@ func egtbMeasure(names []string, workers int, verify bool) {
 			}
 			fmt.Printf("    test position %s: %s  %s\n", p.Name, v, verdict)
 		}
+		verified := "skipped"
 		if verify {
 			start = time.Now()
 			bad := set.Verify(t, workers, progress)
-			fmt.Printf("    verify: %d mismatches in %.1f s\n", bad, time.Since(start).Seconds())
+			verified = fmt.Sprintf("%d mismatches in %.1f s", bad, time.Since(start).Seconds())
+			fmt.Printf("    verify: %s\n", verified)
+		}
+		if loaded {
+			logLine(fmt.Sprintf("%s pieces=%d indices=%d loaded checksum=%016x %s verify=%s", m.Name(), m.Pieces(), t.Size, sum, verdict, verified))
+		} else {
+			logLine(fmt.Sprintf("%s pieces=%d indices=%d legal=%d wins=%d losses=%d draws=%d longest_plies=%d levels=%d evaluations=%d seconds=%.1f workers=%d overflow=%v memory_mb=%d checksum=%016x %s verify=%s",
+				m.Name(), m.Pieces(), t.Size, st.Legal, st.Wins, st.Losses, st.Draws, st.MaxWin, st.Levels, st.Evaluations, st.Duration.Seconds(), workers, st.Overflow, after.Sys>>20, sum, verdict, verified))
 		}
 		fmt.Println()
+	}
+}
+
+// runCommand is the command line mode of the binary (see main).
+func runCommand(args []string) {
+	workers := 12
+	verify := false
+	var names []string
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--verify":
+			verify = true
+		case "--workers":
+			if i+1 < len(args) {
+				workers, _ = strconv.Atoi(args[i+1])
+				i++
+			}
+		default:
+			names = append(names, args[i])
+		}
+	}
+	switch args[0] {
+	case "egtb-list":
+		pieces := 5
+		if len(names) > 0 {
+			pieces, _ = strconv.Atoi(names[0])
+		}
+		egtbList(pieces)
+	case "egtb-measure":
+		egtbMeasure(names, workers, verify)
+	default:
+		fmt.Fprintln(os.Stderr, "unknown command", args[0])
+		os.Exit(2)
+	}
+}
+
+// egtbList prints the names of all materials with pieces pieces in dependency
+// order, one per line and nothing else (for scripts).
+func egtbList(pieces int) {
+	for _, m := range egtb.Enumerate(pieces) {
+		fmt.Println(m.Name())
 	}
 }
 

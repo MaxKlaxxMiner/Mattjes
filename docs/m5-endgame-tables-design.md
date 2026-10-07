@@ -14,12 +14,16 @@ Suche. Das Byte ist das Ergebnis aus Sicht der Seite am Zug:
 | Wert     | Bedeutung                                   |
 |----------|---------------------------------------------|
 | 0        | Remis (oder während der Berechnung: unbekannt) |
-| 1..127   | Seite am Zug setzt in n Halbzügen matt      |
+| 1..127   | Seite am Zug setzt in 2·Wert − 1 Halbzügen matt (bis 253) |
 | 128      | ungültige Stellung (Felder doppelt belegt, Gegner steht im Schach) |
-| 129..255 | Seite am Zug wird in n = Wert − 129 Halbzügen mattgesetzt, 129 = steht matt |
+| 129..255 | Seite am Zug wird in 2·(Wert − 129) Halbzügen mattgesetzt, 129 = steht matt (bis 252) |
 
-DTM (distance to mate) in Halbzügen, damit ein Treffer in der Suche sofort den Beweis mit
-Distanz liefert. Das längste Vier-Steiner-Matt (KQKR, 35 Züge = 69 Halbzüge) passt locker.
+DTM (distance to mate), damit ein Treffer in der Suche sofort den Beweis mit Distanz liefert.
+Gespeichert wird die Zugzahl, nicht die Halbzugzahl: Ein Gewinn der Seite am Zug braucht
+immer eine ungerade, ein Verlust immer eine gerade Zahl Halbzüge, also geht keine
+Information verloren, und die Reichweite verdoppelt sich auf 253 Halbzüge. (Die erste
+Fassung speicherte Halbzüge und lief bei 126 über; KBBKN braucht 131, Thompsons berühmte
+66 Züge.) Das längste Vier-Steiner-Matt (KQKR, 35 Züge = 69 Halbzüge) passt ohnehin.
 
 ## 2. Indizierung
 

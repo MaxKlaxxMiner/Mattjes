@@ -23,25 +23,25 @@ const (
 // regression test of the generator: a changed generator that still produces
 // this value produces the same tables. 0 means "not yet recorded" (the first
 // generation prints the value to put here).
-const FileChecksum uint64 = 0x865d59cc4efc880b
+const FileChecksum uint64 = 0x7df825b0564bbe7e
 
-// TableChecksums are the checksums of the single tables, recorded once from
-// the Go generator (2026-10-05) and compared by both generators after every
-// generation. Larger materials are added as they are measured.
+// TableChecksums are the checksums of the single tables (format v2, recorded
+// 2026-10-07 from the Rust generator, Go identical) and compared after every
+// generation and load. Larger materials are added as they are measured.
 var TableChecksums = map[string]uint64{
-	"KQK": 0x426e5bcfec52d05a, "KRK": 0x6ebfdb596a00048f, "KBK": 0x87e64ca38cea838f, "KNK": 0x289514f64bac1d0f,
-	"KQQK": 0x8508ca59e98829f3, "KQRK": 0x8e05463b5ff01aec, "KQBK": 0xc530420b344a7195, "KQNK": 0x5d69959d3de7dbad,
-	"KRRK": 0xdcc21130b554325a, "KRBK": 0x309970b951da8967, "KRNK": 0xc0edd92ed250667b, "KBBK": 0x8958cfb6fd19de80,
-	"KBNK": 0xb1a138142ed9cdbe, "KNNK": 0x70171309263830f1,
-	"KQKQ": 0x372ac8be4859c45a, "KQKR": 0xcf68ccf411a0e752, "KQKB": 0xe5ded49325b2e363, "KQKN": 0x57701e4d919b3f82,
-	"KRKR": 0x895350eb52831767, "KRKB": 0x4f1733d5c4fb6500, "KRKN": 0x4bc8f873d71d6518, "KBKB": 0xce7ed588fe9c163b,
+	"KQK": 0xc46f0039d9183a89, "KRK": 0xb242548554aa6f9b, "KBK": 0x87e64ca38cea838f, "KNK": 0x289514f64bac1d0f,
+	"KQQK": 0x924b1b4b52caf42e, "KQRK": 0x6c8a08fc3c1365bf, "KQBK": 0x71626d49da26e26f, "KQNK": 0x5ee4cd974f5fcc68,
+	"KRRK": 0x31a4c5182277769c, "KRBK": 0x07352bb55b72623b, "KRNK": 0x5192db5ddc19851b, "KBBK": 0x5366a78b60d00d20,
+	"KBNK": 0xc044466bf38479fc, "KNNK": 0x70171309263830f1,
+	"KQKQ": 0xbfdacb5f1f211bdc, "KQKR": 0xdcf2a1f4a0ab2684, "KQKB": 0xd201a4bd72abe6ac, "KQKN": 0xe121d7a8d8cb7799,
+	"KRKR": 0x45f769817ad860bc, "KRKB": 0x1738e67a374583fd, "KRKN": 0x69f5936f1a695510, "KBKB": 0xce7ed588fe9c163b,
 	"KBKN": 0xa4f14c3ecd9f1b9c, "KNKN": 0xa42e774051095f94,
-	"KPK":  0x54ca397ab9f573fe,
-	"KQPK": 0xf4e064a417fad31b, "KRPK": 0xe338e13091c22c21, "KBPK": 0x69d6ff4cc467b63a, "KNPK": 0xb943826d8ef75909,
-	"KQKP": 0xee37cff419c86800, "KRKP": 0x1dadf3c74939058f, "KBKP": 0xac967d51e02db1cd, "KNKP": 0x1f1a6259674a3d69,
-	"KPPK": 0xd7cc08bb6c92e81b, "KPKP": 0x4efb9e3c5e9f75fb,
-	// five pieces (2026-10-07, Go, 47 s on 12 threads)
-	"KBNKQ": 0x7b54498535f836cb,
+	"KPK":  0xe7bf5853573f7e18,
+	"KQPK": 0xc44b15fda79131aa, "KRPK": 0x1f2a1dea38c16ef6, "KBPK": 0x7fdf1834a126aecd, "KNPK": 0xb375a451fa224576,
+	"KQKP": 0xdc68d6d275d18fe9, "KRKP": 0xf47d41f96cf7c962, "KBKP": 0xa357723843c99501, "KNKP": 0x6bee17ca085a8e37,
+	"KPPK": 0x8e7fbcb01d11a97a, "KPKP": 0x531a4a773b5355b5,
+	// five pieces (2026-10-07, Rust 12 threads: KBBBK 4 s, KBNKQ 46 s; Go identical)
+	"KBBBK": 0x985cad50bec78a9d, "KBNKQ": 0xb52d6cdf4e9bee6f,
 }
 
 // Checksum is a 64-bit hash over 8-byte little-endian words (FNV-1a style

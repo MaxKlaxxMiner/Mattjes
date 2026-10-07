@@ -117,16 +117,25 @@ sie bei genug RAM on the fly rechnen, während die Suche schon läuft. Die
 Kanonisierung nennt die Seite mit mehr Steinen zuerst, deshalb heißt KQKBN
 intern KBNKQ (die Suche dreht die Farben beim Nachschlagen).
 
-Wertebereich: Ein Byte fasst Distanzen bis 126 Halbzüge (63 Züge). Materialien
-mit längeren Gewinnen (KNNKP hat über 100 Züge) meldet der Generator mit
-"distance range exceeded" und lässt die offenen Stellungen als Remis stehen;
-dafür bräuchte es zwei Byte pro Stellung.
+Wertebereich: Die erste Fassung speicherte Halbzüge und fasste 126; beim ersten
+Durchlauf aller Fünf-Steiner meldete KBBKN "distances exceed 126 plies" (der
+längste Gewinn dort sind Thompsons 66 Züge = 131 Halbzüge), die tiefsten
+Gewinne wären als Remis in der Tabelle gestanden. Seit dem 2026-10-07 speichert
+das Byte die **Zugzahl** (Gewinne sind immer ungerade, Verluste immer gerade
+Halbzüge), Reichweite 253 Halbzüge, alle Fünf-Steiner passen. Alle Prüfsummen
+wurden dabei neu; der Cache wurde geleert und neu erzeugt. Erst die längsten
+Sechs-Steiner (KRNKNN mit 262 Zügen) sprengen auch das; der Generator meldet es
+mit "distance range exceeded" und lässt die offenen Stellungen als Remis stehen.
 
 Arbeitsrechner (i5, 12 Threads), Go:
 
 | Material | roh ohne Symmetrie | Indizes = Datei | legal | Gewinne / Verluste / Remis | längstes Matt | Ebenen | Bewertungen | Zeit | Prozess-RAM | Prüfsumme |
 |---|---|---|---|---|---|---|---|---|---|---|
-| KBNKQ (= KQKBN) | 1,64 Mrd. | 242.221.056 = 231 MiB | 149.985.528 | 86,9 Mio. / 56,6 Mio. / 6,4 Mio. | 105 Halbzüge = 53 Züge | 106 | 558,7 Mio. | **47,2 s Go / 44,8 s Rust** | 845 MB (355 vorher) | `0x7b54498535f836cb` |
+| KBNKQ (= KQKBN) | 1,64 Mrd. | 242.221.056 = 231 MiB | 149.985.528 | 86,9 Mio. / 56,6 Mio. / 6,4 Mio. | 105 Halbzüge = 53 Züge | 106 | 558,7 Mio. | **47,2 s Go / 44,8 s Rust** | 845 MB (355 vorher) | `0xb52d6cdf4e9bee6f` |
+| KBBBK | 1,64 Mrd. | 242.221.056 = 231 MiB | 28.017.470 | 8,1 Mio. / 11,7 Mio. / 8,2 Mio. | 31 Halbzüge = 16 Züge | 38 | 34,8 Mio. | 4,0 s Rust | | `0x985cad50bec78a9d` |
+
+(Prüfsummen im Zugzahl-Format; die weiteren 108 Fünf-Steiner misst der Autor mit
+`measure-egtb.bat`, Ergebnisse folgen hier.)
 
 Die Schätzung "zehn Minuten" war um Faktor 13 zu pessimistisch: 12 Mio.
 Kandidaten-Bewertungen pro Sekunde, der Prozess braucht kaum mehr als die

@@ -9,26 +9,32 @@ use crate::bitboard::Board;
 use crate::chess::{Piece, Pos};
 
 /// The table entry of a position from the point of view of the side to move:
-/// 0 draw, 1..127 mates in n plies, 128 invalid position, 129..255 gets mated in
-/// n-129 plies (129 = is mated right now).
+/// 0 draw, 1..127 mates in 2v-1 plies, 128 invalid position, 129..255 gets mated
+/// in 2(v-129) plies (129 = is mated right now). A win always takes an odd
+/// number of plies and a loss an even one, so storing the move count instead of
+/// the ply count doubles the range for free: up to 253 plies, which covers every
+/// five-piece ending (KBBKN needs 131). Format v2; v1 stored plies and
+/// overflowed at 126.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[repr(transparent)]
 pub struct Value(pub u8);
 
 const LOSS_BASE: u8 = 129;
-/// The longest distance either side can express.
-pub const MAX_PLIES: u32 = 126;
+/// The longest distance a table can express (wins 253, losses 252).
+pub const MAX_PLIES: u32 = 253;
 
 impl Value {
     pub const DRAW: Value = Value(0);
     pub const INVALID: Value = Value(128);
 
+    /// A win in `plies` (odd).
     pub fn win_in(plies: u32) -> Value {
-        Value(plies as u8)
+        Value(plies.div_ceil(2) as u8)
     }
 
+    /// A loss in `plies` (even).
     pub fn loss_in(plies: u32) -> Value {
-        Value(LOSS_BASE + plies as u8)
+        Value(LOSS_BASE + (plies / 2) as u8)
     }
 
     pub fn is_win(self) -> bool {
@@ -42,9 +48,9 @@ impl Value {
     /// The distance to mate for a win or a loss, 0 otherwise.
     pub fn plies(self) -> u32 {
         if self.is_win() {
-            self.0 as u32
+            2 * self.0 as u32 - 1
         } else if self.is_loss() {
-            (self.0 - LOSS_BASE) as u32
+            2 * (self.0 - LOSS_BASE) as u32
         } else {
             0
         }
@@ -150,8 +156,12 @@ impl Table {
         let mut s = [0usize; 4];
         for i in 0..self.sizes.len() {
             s[i] = xf[sq[2 + i].idx()].idx();
-            if self.equal_prev[i] && s[i] < s[i - 1] {
-                s.swap(i, i - 1);
+            // keep every run of equal pieces sorted by square (insertion sort: a
+            // single neighbour swap is a full sort for pairs, but not for triples)
+            let mut j = i;
+            while j > 0 && self.equal_prev[j] && s[j] < s[j - 1] {
+                s.swap(j, j - 1);
+                j -= 1;
             }
         }
         for (i, &size) in self.sizes.iter().enumerate() {

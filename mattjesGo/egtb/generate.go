@@ -110,7 +110,13 @@ func (s *Set) Generate(t *Table, workers int, progress Progress) Stats {
 	for _, d := range t.Mat.dependencies() {
 		dt := s.AddMaterial(d) // beyond the base this registers the dependency on the fly
 		if dt.Values == nil {
-			s.Generate(dt, workers, progress)
+			if path := s.TablePath(dt); s.LoadTable(dt, path) == nil {
+				if progress != nil {
+					progress("egtb: loaded dependency " + path)
+				}
+			} else {
+				s.Generate(dt, workers, progress)
+			}
 		}
 	}
 	if progress == nil {

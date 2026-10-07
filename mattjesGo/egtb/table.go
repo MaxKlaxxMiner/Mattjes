@@ -9,20 +9,25 @@ import (
 )
 
 // Value is the table entry of a position from the point of view of the side
-// to move: 0 draw, 1..127 mates in n plies, 128 invalid position, 129..255
-// gets mated in n-129 plies (129 = is mated right now).
+// to move: 0 draw, 1..127 mates in 2v-1 plies, 128 invalid position, 129..255
+// gets mated in 2(v-129) plies (129 = is mated right now). A win always takes
+// an odd number of plies and a loss an even one, so storing the move count
+// instead of the ply count doubles the range for free: up to 253 plies, which
+// covers every five-piece ending (KBBKN needs 131). Format v2; v1 stored plies
+// and overflowed at 126.
 type Value uint8
 
 const (
 	Draw     Value = 0
 	Invalid  Value = 128
 	lossBase       = 129
-	// MaxPlies is the longest distance either side can express.
-	MaxPlies = 126
+	// MaxPlies is the longest distance a table can express (wins 253, losses 252).
+	MaxPlies = 253
 )
 
-func WinIn(plies int) Value  { return Value(plies) }
-func LossIn(plies int) Value { return Value(lossBase + plies) }
+// WinIn encodes a win in plies (odd); LossIn a loss in plies (even).
+func WinIn(plies int) Value  { return Value((plies + 1) / 2) }
+func LossIn(plies int) Value { return Value(lossBase + plies/2) }
 
 func (v Value) IsWin() bool  { return v >= 1 && v < Invalid }
 func (v Value) IsLoss() bool { return v > Invalid }
@@ -31,9 +36,9 @@ func (v Value) IsLoss() bool { return v > Invalid }
 func (v Value) Plies() int {
 	switch {
 	case v.IsWin():
-		return int(v)
+		return 2*int(v) - 1
 	case v.IsLoss():
-		return int(v) - lossBase
+		return 2 * (int(v) - lossBase)
 	}
 	return 0
 }
@@ -116,8 +121,10 @@ func (t *Table) digits(idx, tf int, sq []chess.Pos) int {
 	var s [4]int
 	for i := range t.sizes {
 		s[i] = int(xform[tf][sq[2+i]])
-		if t.equalPrev[i] && s[i] < s[i-1] {
-			s[i], s[i-1] = s[i-1], s[i]
+		// keep every run of equal pieces sorted by square (insertion sort: a
+		// single neighbour swap is a full sort for pairs, but not for triples)
+		for j := i; j > 0 && t.equalPrev[j] && s[j] < s[j-1]; j-- {
+			s[j], s[j-1] = s[j-1], s[j]
 		}
 	}
 	for i, size := range t.sizes {

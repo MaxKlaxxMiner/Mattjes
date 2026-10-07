@@ -117,6 +117,42 @@ impl Material {
         all
     }
 
+    /// All materials with exactly `pieces` pieces (kings included) in
+    /// dependency order: fewer pawns first (promotions lead to fewer pawns),
+    /// then by name. Captures lead to fewer pieces, which are always available.
+    pub fn all_with(pieces: usize) -> Vec<Material> {
+        let types = [Piece::QUEEN, Piece::ROOK, Piece::BISHOP, Piece::KNIGHT, Piece::PAWN];
+        fn multisets(types: &[Piece], k: usize, start: usize, cur: &mut Vec<Piece>, out: &mut Vec<Vec<Piece>>) {
+            if cur.len() == k {
+                out.push(cur.clone());
+                return;
+            }
+            for i in start..types.len() {
+                cur.push(types[i]);
+                multisets(types, k, i, cur, out);
+                cur.pop();
+            }
+        }
+        let n = pieces - 2;
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for k in 0..=n {
+            let (mut whites, mut blacks) = (Vec::new(), Vec::new());
+            multisets(&types, k, 0, &mut Vec::new(), &mut whites);
+            multisets(&types, n - k, 0, &mut Vec::new(), &mut blacks);
+            for w in &whites {
+                for b in &blacks {
+                    let m = Material::canonical(w, b);
+                    if seen.insert(m.name()) {
+                        out.push(m);
+                    }
+                }
+            }
+        }
+        out.sort_by_key(|m| (m.pawns(), m.name()));
+        out
+    }
+
     /// Reads a material name like "KQKBN" (white pieces, then black pieces, each
     /// side led by its king) into canonical form.
     pub fn parse(name: &str) -> Result<Material, String> {

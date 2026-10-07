@@ -18,6 +18,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 	"runtime/debug"
 
@@ -30,6 +31,14 @@ func main() {
 	// reserve for nothing; 1 % keeps the headroom small. The hot paths do not
 	// allocate, so the more frequent GC cycles cost nothing there.
 	debug.SetGCPercent(1)
+
+	// Command line mode for scripts (measure-egtb.bat): no banner, one task, exit.
+	//   egtb-list <pieces>                                names of all materials with that many pieces
+	//   egtb-measure <name>... [--verify] [--workers N]   generate or load the tables, log to the cache dir
+	if len(os.Args) > 1 {
+		runCommand(os.Args[1:])
+		return
+	}
 
 	fmt.Printf("Mattjes (Go) %s on %s/%s, %d CPUs\n\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU())
 
@@ -91,7 +100,8 @@ func main() {
 	// matelistSolve("KQ-KBN", 0, 200, 400_000_000) // 387 M positions at ply 16, aborted at ply 17 after 960 s, 42 GB peak; the space is 700-750 M
 
 	// --- milestone 5, measurement series: five- and six-piece tables (time, memory, size, checksum), cache dir mattjes-egtb-cache/ ---
-	egtbMeasure([]string{"KQKBN"}, 12, true) // generated in 47 s, 845 MB process; now loads the file, checks KQ-KBN = win in 77 and verifies every position forward
+	egtbLoadOrGenerate(12) // the bare binary only makes sure the four-piece base exists (17 s once, then 0.2 s); larger materials via measure-egtb.bat
+	// egtbMeasure([]string{"KQKBN"}, 12, true) // generated in 47 s, 845 MB process; loads the file, checks KQ-KBN = win in 77 and verifies every position forward
 	// matepnSolve(12, 256, "sat", "mEfi") // iterative deepening: the shortest mate, cost of all depths (KQ-KN 7.9 M visits)
 	// mateabSolve(17, 256, false) // the same positions with the depth-first search, for comparison
 	_ = chess.StartFEN // keep the import for the commented experiments above

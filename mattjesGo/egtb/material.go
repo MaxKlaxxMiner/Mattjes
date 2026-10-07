@@ -128,6 +128,47 @@ func All() []Material {
 	return all
 }
 
+// Enumerate returns all materials with exactly pieces pieces (kings included)
+// in dependency order: fewer pawns first (promotions lead to fewer pawns),
+// then by name. Captures lead to fewer pieces, which are always available.
+func Enumerate(pieces int) []Material {
+	types := []chess.Piece{chess.Queen, chess.Rook, chess.Bishop, chess.Knight, chess.Pawn}
+	var multisets func(k, start int, cur []chess.Piece, out *[][]chess.Piece)
+	multisets = func(k, start int, cur []chess.Piece, out *[][]chess.Piece) {
+		if len(cur) == k {
+			*out = append(*out, append([]chess.Piece{}, cur...))
+			return
+		}
+		for i := start; i < len(types); i++ {
+			multisets(k, i, append(cur, types[i]), out)
+		}
+	}
+	n := pieces - 2
+	seen := map[string]bool{}
+	var out []Material
+	for k := 0; k <= n; k++ {
+		var whites, blacks [][]chess.Piece
+		multisets(k, 0, nil, &whites)
+		multisets(n-k, 0, nil, &blacks)
+		for _, w := range whites {
+			for _, b := range blacks {
+				m := canonicalMaterial(w, b)
+				if !seen[m.Name()] {
+					seen[m.Name()] = true
+					out = append(out, m)
+				}
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Pawns() != out[j].Pawns() {
+			return out[i].Pawns() < out[j].Pawns()
+		}
+		return out[i].Name() < out[j].Name()
+	})
+	return out
+}
+
 // Signature identifies a material by piece counts: two bits per type and
 // color, white in the low ten bits. A board's signature and the signature with
 // swapped colors are both cheap to compute, which is all a lookup needs.

@@ -216,6 +216,13 @@ pub fn egtb_load_or_generate(workers: usize) -> Set {
 pub fn egtb_measure(names: &[&str], workers: usize, verify: bool) {
     let mut set = egtb_load_or_generate(workers);
     let mut progress = |line: &str| println!("{}", line);
+    let log_path = egtb::default_cache_dir().join("measure.log");
+    let log = |line: &str| {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&log_path) {
+            let _ = writeln!(f, "{}", line);
+        }
+    };
     for name in names {
         let m = egtb::Material::parse(name).unwrap_or_else(|e| panic!("{}", e));
         let ti = set.add_material(m.clone());
@@ -268,11 +275,44 @@ pub fn egtb_measure(names: &[&str], workers: usize, verify: bool) {
             let verdict = if v.is_win() && v.plies() == want { "OK".to_string() } else { format!("MISMATCH, expected win in {}", want) };
             println!("    test position {}: {}  {}", p.name, v, verdict);
         }
+        let mut verified = "skipped".to_string();
         if verify {
             let start = Instant::now();
             let bad = set.verify(ti, workers, &|line| println!("{}", line));
-            println!("    verify: {} mismatches in {:.1} s", bad, start.elapsed().as_secs_f64());
+            verified = format!("{} mismatches in {:.1} s", bad, start.elapsed().as_secs_f64());
+            println!("    verify: {}", verified);
+        }
+        if loaded {
+            log(&format!("{} pieces={} indices={} loaded checksum={:016x} {} verify={}", m.name(), m.pieces(), size, sum, verdict, verified));
+        } else {
+            log(&format!(
+                "{} pieces={} indices={} legal={} wins={} losses={} draws={} longest_plies={} levels={} evaluations={} seconds={:.1} workers={} overflow={} checksum={:016x} {} verify={}",
+                m.name(),
+                m.pieces(),
+                size,
+                st.legal,
+                st.wins,
+                st.losses,
+                st.draws,
+                st.max_win,
+                st.levels,
+                st.evaluations,
+                st.duration.as_secs_f64(),
+                workers,
+                st.overflow,
+                sum,
+                verdict,
+                verified
+            ));
         }
         println!();
+    }
+}
+
+/// Prints the names of all materials with `pieces` pieces in dependency order,
+/// one per line and nothing else (for scripts).
+pub fn egtb_list(pieces: usize) {
+    for m in egtb::Material::all_with(pieces) {
+        println!("{}", m.name());
     }
 }
