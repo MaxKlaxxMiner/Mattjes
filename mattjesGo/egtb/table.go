@@ -189,11 +189,14 @@ type Set struct {
 	Tables    []*Table
 	baseCount int    // the first baseCount tables are the four-piece base
 	bySig     []int8 // signature -> table index, -1 none
+	// CacheDir holds the cache files (BaseFileName and one file per larger
+	// material); next to the binary unless changed.
+	CacheDir string
 }
 
 // NewSet allocates the base tables without values; Generate or Load fills them.
 func NewSet() *Set {
-	s := &Set{bySig: make([]int8, signatureSpace)}
+	s := &Set{bySig: make([]int8, signatureSpace), CacheDir: DefaultCacheDir()}
 	for i := range s.bySig {
 		s.bySig[i] = -1
 	}
@@ -206,6 +209,50 @@ func NewSet() *Set {
 
 // Base returns the four-piece tables (the content of the base cache file).
 func (s *Set) Base() []*Table { return s.Tables[:s.baseCount] }
+
+// Fork returns a new set with copies of every generated table, so that a
+// background generation can work on it while this set stays untouched (the
+// copies cost the size of the tables once, 173 MB for the base).
+func (s *Set) Fork() *Set {
+	n := NewSet()
+	n.CacheDir = s.CacheDir
+	for _, t := range s.Tables {
+		nt := n.AddMaterial(t.Mat)
+		if t.Values != nil {
+			nt.Values = append([]Value(nil), t.Values...)
+			nt.RawChecksum = t.RawChecksum
+			nt.filled = t.filled
+		}
+	}
+	return n
+}
+
+// Adopt moves every generated table this set lacks over from another set
+// (the result of a forked generation).
+func (s *Set) Adopt(from *Set) {
+	for _, ft := range from.Tables {
+		if ft.Values == nil {
+			continue
+		}
+		t := s.AddMaterial(ft.Mat)
+		if t.Values == nil {
+			t.Values, t.RawChecksum, t.filled, t.invalid = ft.Values, ft.RawChecksum, ft.filled, ft.invalid
+			ft.Values, ft.invalid = nil, nil
+		}
+	}
+}
+
+// GenerationBytes estimates the RAM a generation of t needs: the table, four
+// bitsets of 1/8 each and the direct dependencies that are not loaded yet.
+func (s *Set) GenerationBytes(t *Table) int {
+	n := t.Size + t.Size/2
+	for _, d := range t.Mat.dependencies() {
+		if dt := s.Find(d.Name()); dt == nil || dt.Values == nil {
+			n += newTable(d).Size
+		}
+	}
+	return n
+}
 
 // AddMaterial registers a table for a material beyond the base (up to
 // MaxPieces), without values. Returns the existing table if already present.

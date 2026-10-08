@@ -3,11 +3,14 @@
 //! by retrograde analysis and kept in RAM. Direct port of `mattjesGo/egtb`;
 //! the design is explained in docs/m5-endgame-tables-design.md.
 
+mod control;
 mod generate;
 mod index;
 mod persist;
 mod table;
 
+#[allow(unused_imports)]
+pub use control::Control;
 #[allow(unused_imports)]
 pub use generate::{Progress, Stats, KNOWN_MAXIMA};
 #[allow(unused_imports)]

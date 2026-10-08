@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -147,8 +148,15 @@ func DefaultPath() string { return filepath.Join(DefaultCacheDir(), BaseFileName
 
 // TablePath is the cache file of a material beyond the base, e.g. "5-KBNKQ.bin".
 func (s *Set) TablePath(t *Table) string {
-	return filepath.Join(DefaultCacheDir(), fmt.Sprintf("%d-%s.bin", t.Mat.Pieces(), t.Mat.Name()))
+	return filepath.Join(s.CacheDir, fmt.Sprintf("%d-%s.bin", t.Mat.Pieces(), t.Mat.Name()))
 }
+
+// BasePath is the base cache file in the set's cache directory.
+func (s *Set) BasePath() string { return filepath.Join(s.CacheDir, BaseFileName) }
+
+// Fill replaces dead and illegal entries by their predecessor and drops the
+// generator's bitset (what writing the table does; for tables kept in RAM only).
+func (t *Table) Fill() { t.fill() }
 
 // writeFile writes header + compressed values. The tables are filled first.
 func writeFile(path string, tables []*Table, rawChecksum uint64, workers int) error {
@@ -289,12 +297,15 @@ func (s *Set) LoadTable(t *Table, path string) error {
 
 // LoadOrGenerate returns the complete base set: from the cache file when it
 // is present and correct, otherwise freshly generated, checked against the
-// constants and written. progress gets a line per step (nil = silent).
-func LoadOrGenerate(path string, workers int, progress Progress) *Set {
+// constants and, when write is set, written. progress gets a line per step
+// and two per generated table (nil = silent). The set's cache directory is
+// the directory of path.
+func LoadOrGenerate(path string, workers int, write bool, progress Progress) *Set {
 	if progress == nil {
 		progress = func(string) {}
 	}
 	s := NewSet()
+	s.CacheDir = filepath.Dir(path)
 	start := time.Now()
 	if err := s.Load(path); err == nil {
 		progress(fmt.Sprintf("egtb: loaded %d MB from %s in %.2f s", s.BaseSize()>>20, path, time.Since(start).Seconds()))
@@ -302,9 +313,21 @@ func LoadOrGenerate(path string, workers int, progress Progress) *Set {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		progress("egtb: " + err.Error())
 	}
-	s.GenerateAll(workers, nil)
+	done := 0
+	s.GenerateAll(workers, func(line string) {
+		if strings.Contains(line, " wins ") { // one summary line per table, no levels
+			done++
+			progress(fmt.Sprintf("(%d / %d) %s", done, len(s.Base()), line))
+		}
+	})
 	progress(fmt.Sprintf("egtb: generated %d tables in %.1f s", len(s.Base()), time.Since(start).Seconds()))
 	s.CheckChecksums(progress)
+	if !write {
+		for _, t := range s.Base() {
+			t.fill()
+		}
+		return s
+	}
 	if err := s.Save(path); err != nil {
 		progress("egtb: " + err.Error())
 	} else {

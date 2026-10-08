@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use super::control::Control;
 use super::table::{Set, Table, Value, MAX_PLIES};
 use super::Material;
 use crate::bitboard::{piece_attacks, Board};
@@ -35,6 +36,8 @@ pub struct Stats {
     /// Positions with distance MAX_PLIES+1 (or waiting for deeper cross-table
     /// children): a lower bound of what is missing.
     pub beyond: usize,
+    /// The Control aborted the generation, the table is empty.
+    pub aborted: bool,
 }
 
 impl Stats {
@@ -71,7 +74,7 @@ pub const KNOWN_MAXIMA: &[(&str, u32)] = &[
 impl Material {
     /// The materials a table looks up: captures (one piece of either side
     /// removed), promotions (a pawn becomes a piece) and both at once.
-    fn dependencies(&self) -> Vec<Material> {
+    pub(super) fn dependencies(&self) -> Vec<Material> {
         let mut deps = Vec::new();
         let mut add = |w: &[Piece], b: &[Piece]| {
             if !w.is_empty() || !b.is_empty() {
@@ -129,6 +132,13 @@ impl Set {
     /// Computes one table (and first the tables it depends on, if they are
     /// missing).
     pub fn generate(&mut self, ti: usize, workers: usize, progress: Progress) -> Stats {
+        self.generate_controlled(ti, workers, None, progress)
+    }
+
+    /// `generate` with a Control that can pause or abort the work from another
+    /// thread. After an abort the table (and a dependency that was being
+    /// generated) is left empty and `Stats.aborted` set.
+    pub fn generate_controlled(&mut self, ti: usize, workers: usize, ctrl: Option<&Control>, progress: Progress) -> Stats {
         for d in self.tables[ti].mat.dependencies() {
             let di = self.add_material(d); // beyond the base this registers the dependency on the fly
             if !self.tables[di].is_generated() {
@@ -136,7 +146,10 @@ impl Set {
                 if self.load_table(di, &path).is_ok() {
                     progress(&format!("egtb: loaded dependency {}", path.display()));
                 } else {
-                    self.generate(di, workers, progress);
+                    let st = self.generate_controlled(di, workers, ctrl, progress);
+                    if st.aborted {
+                        return st;
+                    }
                 }
             }
         }
@@ -144,13 +157,21 @@ impl Set {
         self.tables[ti].values = (0..self.tables[ti].size).map(|_| std::sync::atomic::AtomicU8::new(0)).collect();
         let set: &Set = self;
         let t = &set.tables[ti];
-        let g = Generator::new(set, t, true);
+        let g = Generator::new(set, t, true, ctrl);
+        let aborted = || ctrl.is_some_and(|c| c.aborted());
 
         let mut st = Stats::default();
-        let (legal, mates) = parallel_chunks(workers, t.size, 1 << 16, &|lo, hi| g.init_range(lo, hi));
+        let (legal, mates) = parallel_chunks(workers, t.size, 1 << 16, g.ctrl, &|lo, hi| g.init_range(lo, hi));
+        if aborted() {
+            drop(g);
+            self.tables[ti].clear();
+            return Stats { aborted: true, ..Stats::default() };
+        }
         st.legal = legal;
         st.mates = mates;
-        progress(&format!("{:<5} {:>10} indices, {:>10} legal, {:>8} mates", t.mat.name(), t.size, legal, mates));
+        // one compact status line per step; the level lines below are the only
+        // frequent ones and are throttled by the UCI layer
+        progress(&format!("{:<5} {:>13} indices, {:>13} legal, {:>10} mates", t.mat.name(), group(t.size), group(legal), group(mates)));
 
         let mut completed = false;
         for level in 1..=MAX_PLIES {
@@ -162,7 +183,12 @@ impl Set {
                 }
                 pending[level as usize].clear();
             }
-            let (changed, evals) = parallel_bits(workers, cur, &|idx| g.scan_candidate(level, idx));
+            let (changed, evals) = parallel_bits(workers, cur, g.ctrl, &|idx| g.scan_candidate(level, idx));
+            if aborted() {
+                drop(g);
+                self.tables[ti].clear();
+                return Stats { aborted: true, ..Stats::default() };
+            }
             st.evaluations += evals;
             cur.clear();
             if changed > 0 {
@@ -174,7 +200,7 @@ impl Set {
                     st.losses += changed;
                     st.max_loss = level;
                 }
-                progress(&format!("      level {:>3}: {:>9} positions, {:>10} evaluated", level, changed, evals));
+                progress(&format!("      level {:>3}: {:>12} positions, {:>13} evaluated", level, group(changed), group(evals)));
             }
             if !g.cand[((level + 1) % 3) as usize].any() && !g.cand[((level + 2) % 3) as usize].any() && !g.pending_beyond(level) {
                 completed = true;
@@ -195,11 +221,11 @@ impl Set {
                 }
                 pending[level as usize].clear();
             }
-            let (beyond, evals) = parallel_bits(workers, cur, &|idx| g.scan_candidate(level, idx));
+            let (beyond, evals) = parallel_bits(workers, cur, g.ctrl, &|idx| g.scan_candidate(level, idx));
             st.evaluations += evals;
             st.beyond = beyond + g.beyond.load(Ordering::Relaxed);
             st.overflow = true;
-            progress(&format!("{:<5} WARNING: distances exceed {} plies, at least {} positions left as draws", t.mat.name(), MAX_PLIES, st.beyond));
+            progress(&format!("{:<5} WARNING: distances exceed {} plies, at least {} positions left as draws", t.mat.name(), MAX_PLIES, group(st.beyond)));
         }
         st.losses += mates;
         st.draws = legal - st.wins - st.losses;
@@ -208,11 +234,11 @@ impl Set {
         t.set_invalid(invalid); // kept until the table is written (fill), 1/8 of the table
         st.duration = start.elapsed();
         progress(&format!(
-            "{:<5} wins {:>9}, losses {:>9}, draws {:>9}, longest mate {} plies = {} moves, {:.1} s",
+            "{:<5} wins {:>12}, losses {:>12}, draws {:>12}, longest mate {} plies = {} moves, {:.1} s",
             t.mat.name(),
-            st.wins,
-            st.losses,
-            st.draws,
+            group(st.wins),
+            group(st.losses),
+            group(st.draws),
             st.max_win,
             st.longest_mate(),
             st.duration.as_secs_f64()
@@ -225,9 +251,9 @@ impl Set {
     /// positions whose stored value disagrees. The first few are reported.
     pub fn verify(&self, ti: usize, workers: usize, report: &(dyn Fn(&str) + Sync)) -> usize {
         let t = &self.tables[ti];
-        let g = Generator::new(self, t, false);
+        let g = Generator::new(self, t, false, None);
         let reported = AtomicU32::new(0);
-        let (bad, _) = parallel_chunks(workers, t.size, 1 << 16, &|lo, hi| {
+        let (bad, _) = parallel_chunks(workers, t.size, 1 << 16, None, &|lo, hi| {
             let mut sq = [Pos::NONE; 6];
             let mut buf = new_buffer();
             let n = g.pieces.len();
@@ -299,12 +325,14 @@ struct Generator<'a> {
     /// (captures, promotions) with a larger distance.
     /// 64 bit: six-piece tables have up to 45 G indices.
     pending: Mutex<Vec<Vec<usize>>>,
+    /// Pause/abort from outside (None = never).
+    ctrl: Option<&'a Control>,
     /// Positions waiting for a level beyond MAX_PLIES+1 (cannot be stored).
     beyond: AtomicUsize,
 }
 
 impl<'a> Generator<'a> {
-    fn new(set: &'a Set, t: &'a Table, with_candidates: bool) -> Generator<'a> {
+    fn new(set: &'a Set, t: &'a Table, with_candidates: bool, ctrl: Option<&'a Control>) -> Generator<'a> {
         let mut pieces = vec![Piece::WHITE_KING, Piece::BLACK_KING];
         pieces.extend_from_slice(&t.slots);
         let white_pawns = t.slots.contains(&Piece::WHITE_PAWN);
@@ -318,6 +346,7 @@ impl<'a> Generator<'a> {
             cand: [Bitset::new(n), Bitset::new(n), Bitset::new(n)],
             invalid: Bitset::new(n),
             pending: Mutex::new(vec![Vec::new(); MAX_PLIES as usize + 2]),
+            ctrl,
             beyond: AtomicUsize::new(0),
         }
     }
@@ -671,13 +700,18 @@ impl Bitset {
 }
 
 /// Runs f over the index range in chunks on `workers` threads and sums its two results.
-fn parallel_chunks(workers: usize, size: usize, chunk: usize, f: &(dyn Fn(usize, usize) -> (usize, usize) + Sync)) -> (usize, usize) {
+fn parallel_chunks(workers: usize, size: usize, chunk: usize, ctrl: Option<&Control>, f: &(dyn Fn(usize, usize) -> (usize, usize) + Sync)) -> (usize, usize) {
     let workers = workers.max(1);
     let next = AtomicI64::new(0);
     let (a, b) = (AtomicI64::new(0), AtomicI64::new(0));
     std::thread::scope(|s| {
         for _ in 0..workers {
             s.spawn(|| loop {
+                if let Some(c) = ctrl {
+                    if !c.wait() {
+                        return; // blocks while paused
+                    }
+                }
                 let lo = next.fetch_add(chunk as i64, Ordering::Relaxed) as usize;
                 if lo >= size {
                     return;
@@ -691,9 +725,22 @@ fn parallel_chunks(workers: usize, size: usize, chunk: usize, f: &(dyn Fn(usize,
     (a.load(Ordering::Relaxed) as usize, b.load(Ordering::Relaxed) as usize)
 }
 
+/// Formats a count with thousands separators ("242,221,056").
+pub fn group(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Runs f over the set bits of a candidate set in chunks of words.
-fn parallel_bits(workers: usize, bits: &Bitset, f: &(dyn Fn(usize) -> (usize, usize) + Sync)) -> (usize, usize) {
-    parallel_chunks(workers, bits.0.len(), 1 << 10, &|lo, hi| {
+fn parallel_bits(workers: usize, bits: &Bitset, ctrl: Option<&Control>, f: &(dyn Fn(usize) -> (usize, usize) + Sync)) -> (usize, usize) {
+    parallel_chunks(workers, bits.0.len(), 1 << 10, ctrl, &|lo, hi| {
         let (mut x, mut y) = (0, 0);
         for w in lo..hi {
             let mut word = bits.0[w].load(Ordering::Relaxed);

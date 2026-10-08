@@ -44,7 +44,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     if args.is_empty() {
-        uci::run(std::io::stdin().lock(), std::io::stdout().lock(), &format!("Mattjes {} (Rust)", uci::VERSION), cpus);
+        uci::run(std::io::stdin(), std::io::stdout(), &format!("Mattjes {} (Rust)", uci::VERSION), cpus);
         return;
     }
     {

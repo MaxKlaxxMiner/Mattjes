@@ -192,7 +192,12 @@ impl Set {
 
     /// The cache file of a material beyond the base, e.g. "5-KBNKQ.bin".
     pub fn table_path(&self, t: &Table) -> PathBuf {
-        default_cache_dir().join(format!("{}-{}.bin", t.mat.pieces(), t.mat.name()))
+        self.cache_dir.join(format!("{}-{}.bin", t.mat.pieces(), t.mat.name()))
+    }
+
+    /// The base cache file in the set's cache directory.
+    pub fn base_path(&self) -> PathBuf {
+        self.cache_dir.join(BASE_FILE_NAME)
     }
 
     fn clear_base(&mut self) {
@@ -268,8 +273,11 @@ impl Set {
     /// The complete base set: from the cache file when it is present and
     /// correct, otherwise freshly generated, checked against the constants and
     /// written.
-    pub fn load_or_generate(path: &Path, workers: usize, progress: Progress) -> Set {
+    pub fn load_or_generate(path: &Path, workers: usize, write: bool, progress: Progress) -> Set {
         let mut s = Set::new();
+        if let Some(dir) = path.parent() {
+            s.cache_dir = dir.to_path_buf();
+        }
         let start = Instant::now();
         match s.load(path) {
             Ok(()) => {
@@ -279,9 +287,21 @@ impl Set {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => progress(&format!("egtb: {}", e)),
             Err(_) => {}
         }
-        s.generate_all(workers, &mut |_| {});
+        let (mut done, total) = (0, s.base().len());
+        s.generate_all(workers, &mut |line| {
+            if line.contains(" wins ") {
+                done += 1; // one summary line per table, no levels
+                progress(&format!("({} / {}) {}", done, total, line));
+            }
+        });
         progress(&format!("egtb: generated {} tables in {:.1} s", s.base().len(), start.elapsed().as_secs_f64()));
         s.check_checksums(progress);
+        if !write {
+            for t in s.base() {
+                t.fill();
+            }
+            return s;
+        }
         match s.save(path) {
             Ok(()) => progress(&format!("egtb: written to {}", path.display())),
             Err(e) => progress(&format!("egtb: {}", e)),

@@ -1,19 +1,30 @@
-//! The Universal Chess Interface (milestone 6, stage a), direct port of
+//! The Universal Chess Interface (milestone 6, stages a and b), direct port of
 //! `mattjesGo/uci`: positions covered by the endgame tables are answered
 //! straight from them, with the exact distance to mate and the complete
 //! winning line; every root move gets its own value, so MultiPV lists them
 //! all. Positions without a table get a legal move and an "info string" for
-//! now; the search algorithms come in later stages.
+//! now; the search algorithms come in a later stage.
 //!
-//! Protocol subset: uci, isready, setoption (MultiPV, Threads), ucinewgame,
-//! position, go (all parameters ignored, the answer is immediate), stop, quit,
-//! d (debug: print the FEN).
+//! Tables beyond the four-piece base are loaded from the cache directory when
+//! a file exists. When the options allow it, a missing table is generated in
+//! the background, but only while a "go infinite" is running: "stop" pauses
+//! the generation, the next "go infinite" resumes it, and once the table is
+//! complete the held-back answer is recomputed with it. Commands come from a
+//! reader thread and the finished generation from its own thread, both over
+//! one channel, so the command loop never blocks on either.
+//!
+//! Protocol subset: uci, isready, setoption, ucinewgame, position, go (only
+//! "infinite" is looked at, the answer is immediate), stop, quit, d (debug:
+//! print the FEN).
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::PathBuf;
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::bitboard::Board;
-use crate::chess::{new_buffer, Move};
-use crate::egtb::{self, Material, Set, Value, MAX_PLIES};
+use crate::chess::{new_buffer, Move, Piece};
+use crate::egtb::{self, Control, Material, Set, Value, MAX_PLIES};
 
 /// Reported in "id name"; it follows the milestone that is being worked on.
 pub const VERSION: &str = "0.6";
@@ -21,31 +32,92 @@ pub const VERSION: &str = "0.6";
 /// The banner line printed at startup (unprompted, as most engines do).
 pub const ABOUT: &str = "Mattjes 0.6 by Max Klaxx Miner, a mate and draw search engine with its own endgame tables, GPLv3";
 
+/// Limits the per-level progress of a background generation to one info
+/// string every few seconds (a table has up to 254 levels).
+const PROGRESS_INTERVAL: Duration = Duration::from_secs(5);
+
+enum Event {
+    Line(String),
+    Eof,
+    Done(Set),
+}
+
 /// The state between commands.
-pub struct Engine<W: Write> {
-    out: W,
+pub struct Engine<W: Write + Send + 'static> {
+    /// The generation thread reports through the same writer.
+    out: Arc<Mutex<W>>,
     set: Option<Set>,
     board: Board,
     multi_pv: usize,
     workers: usize,
     name: String,
+    // options
+    write_cache: bool, // EgtbWriteCache: write generated tables to the cache directory
+    generate5: bool,   // EgtbGenerate5: build missing five-piece tables during go infinite
+    generate6: bool,   // EgtbGenerate6: the same for six pieces
+    cache_dir: PathBuf, // EgtbPath
+    // a "go infinite" holds the best move back until "stop"
+    infinite: bool,
+    pending_best: String,
+    job: Option<Job>,
+    tx: mpsc::Sender<Event>,
+}
+
+/// A background generation of one material (with its dependencies) in a
+/// forked set.
+struct Job {
+    mat: Material,
+    ctrl: Arc<Control>,
 }
 
 /// Reads commands from `input` until quit or EOF. `name` is the engine name
 /// reported to the GUI (the Go and Rust binaries differ).
-pub fn run<R: BufRead, W: Write>(input: R, out: W, name: &str, workers: usize) {
-    let mut e = Engine { out, set: None, board: Board::new(), multi_pv: 1, workers, name: name.to_string() };
+pub fn run<R: Read + Send + 'static, W: Write + Send + 'static>(input: R, out: W, name: &str, workers: usize) {
+    let (tx, rx) = mpsc::channel();
+    let mut e = Engine {
+        out: Arc::new(Mutex::new(out)),
+        set: None,
+        board: Board::new(),
+        multi_pv: 1,
+        workers,
+        name: name.to_string(),
+        write_cache: false,
+        generate5: false,
+        generate6: false,
+        cache_dir: egtb::default_cache_dir(),
+        infinite: false,
+        pending_best: String::new(),
+        job: None,
+        tx: tx.clone(),
+    };
     e.send(ABOUT);
-    let _ = e.out.flush();
-    for line in input.lines() {
-        let Ok(line) = line else { break };
-        let words: Vec<&str> = line.split_whitespace().collect();
-        if !e.command(&words) {
-            break;
+    e.flush();
+    std::thread::spawn(move || {
+        for line in BufReader::new(input).lines() {
+            let Ok(line) = line else { break };
+            if tx.send(Event::Line(line)).is_err() {
+                return;
+            }
         }
-        let _ = e.out.flush();
+        let _ = tx.send(Event::Eof);
+    });
+    while let Ok(event) = rx.recv() {
+        match event {
+            Event::Line(line) => {
+                let words: Vec<&str> = line.split_whitespace().collect();
+                if !e.command(&words) {
+                    break;
+                }
+            }
+            Event::Eof => break,
+            Event::Done(set) => e.finish_job(set),
+        }
+        e.flush();
     }
-    let _ = e.out.flush();
+    if let Some(j) = &e.job {
+        j.ctrl.abort();
+    }
+    e.flush();
 }
 
 /// One root move with its value from the side to move's view.
@@ -56,9 +128,14 @@ struct RootMove {
     pv: Vec<Move>,
 }
 
-impl<W: Write> Engine<W> {
-    fn send(&mut self, line: &str) {
-        let _ = writeln!(self.out, "{}", line);
+impl<W: Write + Send + 'static> Engine<W> {
+    fn send(&self, line: &str) {
+        let mut o = self.out.lock().unwrap();
+        let _ = writeln!(o, "{}", line);
+    }
+
+    fn flush(&self) {
+        let _ = self.out.lock().unwrap().flush();
     }
 
     /// Handles one line; false means quit.
@@ -66,11 +143,14 @@ impl<W: Write> Engine<W> {
         let Some(&cmd) = words.first() else { return true };
         match cmd {
             "uci" => {
-                let name = self.name.clone();
-                self.send(&format!("id name {}", name));
+                self.send(&format!("id name {}", self.name));
                 self.send("id author Max Klaxx Miner");
                 self.send("option name MultiPV type spin default 1 min 1 max 256");
                 self.send(&format!("option name Threads type spin default {} min 1 max 64", self.workers));
+                self.send("option name EgtbWriteCache type check default false");
+                self.send("option name EgtbGenerate5 type check default false");
+                self.send("option name EgtbGenerate6 type check default false");
+                self.send(&format!("option name EgtbPath type string default {}", self.cache_dir.display()));
                 self.send("uciok");
             }
             // Winboard probes from a GUI's auto-detection: stay silent, so that only UCI answers are seen
@@ -84,9 +164,29 @@ impl<W: Write> Engine<W> {
             "position" => self.position(&words[1..]),
             "go" => {
                 self.ensure_tables();
+                self.infinite = words.contains(&"infinite");
                 self.search();
+                if self.infinite {
+                    self.maybe_generate();
+                } else {
+                    let best = self.pending_best.clone();
+                    self.send(&format!("bestmove {}", best));
+                }
             }
-            "stop" => {} // the answer is always sent at once, nothing runs in the background yet
+            "stop" => {
+                if let Some(j) = &self.job {
+                    if !j.ctrl.paused() {
+                        j.ctrl.pause();
+                        let name = j.mat.name();
+                        self.send(&format!("info string egtb: generation of {} paused, the next go infinite resumes it", name));
+                    }
+                }
+                if self.infinite {
+                    let best = self.pending_best.clone();
+                    self.send(&format!("bestmove {}", best));
+                    self.infinite = false;
+                }
+            }
             "d" => {
                 let fen = self.board.fen();
                 self.send(&fen);
@@ -98,35 +198,88 @@ impl<W: Write> Engine<W> {
     }
 
     fn set_option(&mut self, words: &[&str]) {
-        // setoption name <id> [value <x>]
-        let (mut name, mut value) = ("", "");
-        for i in 0..words.len() {
+        // setoption name <id> [value <x>]; the value may contain spaces (a path)
+        let (mut name, mut value) = ("", String::new());
+        let mut i = 0;
+        while i < words.len() {
             match words[i] {
                 "name" => name = words.get(i + 1).copied().unwrap_or(""),
-                "value" => value = words.get(i + 1).copied().unwrap_or(""),
+                "value" => {
+                    value = words[i + 1..].join(" ");
+                    break;
+                }
                 _ => {}
             }
+            i += 1;
         }
-        match value.parse::<usize>() {
-            Err(_) => self.send(&format!("info string option {}: bad value {:?}", name, value)),
-            Ok(n) if name.eq_ignore_ascii_case("MultiPV") => self.multi_pv = n.max(1),
-            Ok(n) if name.eq_ignore_ascii_case("Threads") => self.workers = n.max(1),
-            Ok(_) => self.send(&format!("info string unknown option {}", name)),
+        let number = value.parse::<usize>();
+        let flag = value.eq_ignore_ascii_case("true");
+        if name.eq_ignore_ascii_case("MultiPV") && number.is_ok() {
+            self.multi_pv = number.unwrap_or(1).max(1);
+        } else if name.eq_ignore_ascii_case("Threads") && number.is_ok() {
+            self.workers = number.unwrap_or(1).max(1);
+        } else if name.eq_ignore_ascii_case("EgtbWriteCache") {
+            self.write_cache = flag;
+            if flag && self.set.is_some() {
+                self.save_tables();
+            }
+        } else if name.eq_ignore_ascii_case("EgtbGenerate5") {
+            self.generate5 = flag;
+        } else if name.eq_ignore_ascii_case("EgtbGenerate6") {
+            self.generate6 = flag;
+        } else if name.eq_ignore_ascii_case("EgtbPath") {
+            self.cache_dir = PathBuf::from(&value);
+            if let Some(set) = self.set.as_mut() {
+                set.cache_dir = self.cache_dir.clone();
+            }
+        } else {
+            self.send(&format!("info string unknown option {} or bad value {:?}", name, value));
         }
     }
 
     /// Loads the four-piece base once (generating it on the first start, which
-    /// takes about 17 s and is reported as info strings).
+    /// takes about 17 s and is reported as info strings; written to the cache
+    /// only with EgtbWriteCache).
     fn ensure_tables(&mut self) {
         if self.set.is_some() {
             return;
         }
-        let out = &mut self.out;
-        let set = Set::load_or_generate(&egtb::default_path(), self.workers, &mut |line| {
-            let _ = writeln!(out, "info string {}", line);
-            let _ = out.flush();
+        let out = self.out.clone();
+        let path = self.cache_dir.join(egtb::BASE_FILE_NAME);
+        let set = Set::load_or_generate(&path, self.workers, self.write_cache, &mut |line| {
+            let mut o = out.lock().unwrap();
+            let _ = writeln!(o, "info string {}", compact(line));
+            let _ = o.flush();
         });
         self.set = Some(set);
+    }
+
+    /// Writes every table that lives in RAM only (generated while
+    /// EgtbWriteCache was off) to the cache directory, the base included.
+    fn save_tables(&mut self) {
+        let set = self.set.as_ref().expect("checked by the caller");
+        let mut results = Vec::new();
+        if set.base()[0].is_generated() {
+            let base = set.base_path();
+            if !base.exists() {
+                results.push((base.clone(), set.save(&base)));
+            }
+        }
+        for ti in set.base().len()..set.tables.len() {
+            if set.tables[ti].is_generated() {
+                let path = set.table_path(&set.tables[ti]);
+                if !path.exists() {
+                    results.push((path.clone(), set.save_table(ti, &path)));
+                }
+            }
+        }
+        for (path, result) in results {
+            match result {
+                Ok(()) => self.send(&format!("info string egtb: written to {}", path.display())),
+                Err(e) => self.send(&format!("info string egtb: {}", e)),
+            }
+            self.flush();
+        }
     }
 
     /// position [startpos | fen <6 fields>] [moves <uci>...]
@@ -168,12 +321,13 @@ impl<W: Write> Engine<W> {
 
     /// Answers the current position from the tables: every root move is
     /// valued, sorted (shortest win, draw, unknown, longest loss) and the first
-    /// MultiPV lines are printed with their complete lines to mate.
+    /// MultiPV lines are printed with their complete lines to mate. The best
+    /// move is kept in `pending_best`; the caller decides when to send it.
     fn search(&mut self) {
         let mut buf = new_buffer();
         let n = self.board.gen_moves(&mut buf);
         if n == 0 {
-            self.send("bestmove 0000");
+            self.pending_best = "0000".to_string();
             return;
         }
         let root = self.board;
@@ -199,18 +353,107 @@ impl<W: Write> Engine<W> {
         }
         for (i, r) in moves.iter().enumerate().take(self.multi_pv) {
             if !r.known {
-                let _ = writeln!(self.out, "info depth 1 multipv {} score cp 0 pv {}", i + 1, r.mv.uci());
+                self.send(&format!("info depth 1 multipv {} score cp 0 pv {}", i + 1, r.mv.uci()));
                 continue;
             }
             let pv: Vec<String> = r.pv.iter().map(|m| m.uci()).collect();
-            let _ = writeln!(self.out, "info depth {} multipv {} score {} pv {}", r.pv.len(), i + 1, score(r.value), pv.join(" "));
+            self.send(&format!("info depth {} multipv {} score {} pv {}", r.pv.len(), i + 1, score(r.value), pv.join(" ")));
         }
-        let best = moves[0].mv.uci();
-        self.send(&format!("bestmove {}", best));
+        self.pending_best = moves[0].mv.uci();
+    }
+
+    /// Starts (or resumes) the background generation of the root material's
+    /// table during a "go infinite", when the options allow it.
+    fn maybe_generate(&mut self) {
+        let Some(m) = Material::of_board(&self.board) else { return };
+        if m.pieces() <= 4 || self.board.castling != 0 {
+            return;
+        }
+        let set = self.set.as_ref().expect("tables are loaded before searching");
+        if let Some(i) = set.find(&m.name()) {
+            if set.tables[i].is_generated() {
+                return;
+            }
+        }
+        if m.pieces() == 5 && !self.generate5 || m.pieces() == 6 && !self.generate6 {
+            self.send(&format!("info string egtb: no table for {} (EgtbGenerate{} would build it during go infinite)", m.name(), m.pieces()));
+            return;
+        }
+        if let Some(j) = &self.job {
+            if j.mat.name() == m.name() {
+                if j.ctrl.paused() {
+                    j.ctrl.resume();
+                    self.send(&format!("info string egtb: generation of {} resumed", m.name()));
+                }
+                return;
+            }
+            j.ctrl.abort();
+            let name = j.mat.name();
+            self.send(&format!("info string egtb: generation of {} dropped", name));
+            self.job = None;
+        }
+        self.start_job(m);
+    }
+
+    fn start_job(&mut self, m: Material) {
+        let ctrl = Arc::new(Control::new());
+        self.job = Some(Job { mat: m.clone(), ctrl: ctrl.clone() });
+        let mut fork = self.set.as_ref().expect("tables are loaded before searching").fork();
+        let ti = fork.add_material(m.clone());
+        let (size, bytes) = (fork.tables[ti].size, fork.generation_bytes(ti));
+        self.send(&format!("info string egtb: generating {} ({} MB table, about {} MB RAM), stop pauses it", m.name(), size >> 20, bytes >> 20));
+        let (out, tx, workers, write) = (self.out.clone(), self.tx.clone(), self.workers, self.write_cache);
+        std::thread::spawn(move || {
+            // level lines come up to 254 times per table: at most one every few seconds
+            let mut last_level: Option<Instant> = None;
+            let mut progress = |line: &str| {
+                if line.starts_with(' ') {
+                    if last_level.is_some_and(|t| t.elapsed() < PROGRESS_INTERVAL) {
+                        return;
+                    }
+                    last_level = Some(Instant::now());
+                }
+                let mut o = out.lock().unwrap();
+                let _ = writeln!(o, "info string egtb: {}", compact(line));
+                let _ = o.flush();
+            };
+            let st = fork.generate_controlled(ti, workers, Some(&ctrl), &mut progress);
+            if st.aborted {
+                return;
+            }
+            for gi in fork.base().len()..fork.tables.len() {
+                if !fork.tables[gi].is_generated() {
+                    continue;
+                }
+                if write {
+                    let path = fork.table_path(&fork.tables[gi]);
+                    if !path.exists() {
+                        match fork.save_table(gi, &path) {
+                            Ok(()) => progress(&format!("written to {}", path.display())),
+                            Err(e) => progress(&e.to_string()),
+                        }
+                    }
+                }
+                fork.tables[gi].fill(); // drops the generator's bitset
+            }
+            let _ = tx.send(Event::Done(fork));
+        });
+    }
+
+    /// Takes the generated tables over and, during a "go infinite", answers
+    /// again with them.
+    fn finish_job(&mut self, set: Set) {
+        let Some(j) = self.job.take() else { return };
+        let name = j.mat.name();
+        self.set.as_mut().expect("tables are loaded before a job runs").adopt(set);
+        self.send(&format!("info string egtb: {} ready", name));
+        if self.infinite {
+            self.search();
+        }
     }
 
     /// Registers the material of a position beyond the base and loads its
-    /// table from the cache directory if a file exists (never generates).
+    /// table from the cache directory if a file exists (never generates here).
     fn load_material(&mut self, b: &Board) {
         if piece_count(b) <= 4 || b.castling != 0 {
             return;
@@ -227,8 +470,9 @@ impl<W: Write> Engine<W> {
         }
         match set.load_table(ti, &path) {
             Ok(()) => {
-                let _ = writeln!(self.out, "info string egtb: loaded {}", path.display());
-                let _ = self.out.flush();
+                let mut o = self.out.lock().unwrap();
+                let _ = writeln!(o, "info string egtb: loaded {}", path.display());
+                let _ = o.flush();
             }
             Err(e) => self.send(&format!("info string {}: {}", path.display(), e)),
         }
@@ -337,6 +581,12 @@ fn parent_value(cv: Value) -> Value {
     }
 }
 
+/// Joins the words of a console status line with single spaces: the column
+/// alignment of the generator is noise in a GUI's proportional font.
+fn compact(line: &str) -> String {
+    line.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn piece_count(b: &Board) -> usize {
-    b.squares.iter().filter(|&&p| p != crate::chess::Piece::NONE).count()
+    b.squares.iter().filter(|&&p| p != Piece::NONE).count()
 }

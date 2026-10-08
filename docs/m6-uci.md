@@ -55,11 +55,56 @@ Variante und Remis für Schwarz, KQ-KBN Matt in 39 nach dem Laden der Fünf-Stei
 KBB-K nach einem Nebenzug Matt in −17 für Schwarz, Mattstellung `bestmove 0000`,
 KQ-K Matt in 5.
 
+## Stufe b: Tabellen im Hintergrund erzeugen (2026-10-08)
+
+Vier Optionen, alle mit Vorgabe aus:
+
+| Option | Wirkung |
+|---|---|
+| `EgtbWriteCache` | erzeugte Tabellen in den Cache-Ordner schreiben; die Basis wird in jedem Fall erzeugt, vorhandene Dateien werden immer gelesen. Wird die Option später eingeschaltet, schreibt die Engine sofort alles, was nur im RAM liegt und noch keine Datei hat (Basis eingeschlossen) |
+| `EgtbGenerate5` | fehlende Fünf-Steiner bei Bedarf erzeugen (Sekunden bis zwei Minuten, bis 6 GB RAM bei Bauern-Materialien) |
+| `EgtbGenerate6` | fehlende Sechs-Steiner (Stunden, 23 bis 68 GB RAM), nur mit viel RAM sinnvoll |
+| `EgtbPath` | Cache-Ordner, Vorgabe `mattjes-egtb-cache` neben der Binary |
+
+Ablauf: Eine Erzeugung startet **nur bei `go infinite`**, wenn die Tabelle des
+Wurzelmaterials fehlt und die Option es erlaubt. Die Engine antwortet zuerst wie bisher
+(ohne Tabelle: erster legaler Zug), hält `bestmove` wie bei `go infinite` üblich zurück
+und meldet `info string egtb: generating KBBBK (231 MB table, about 346 MB RAM), stop
+pauses it`. Die Erzeugung läuft in einem eigenen Thread auf einer Kopie der geladenen
+Tabellen (`Set.Fork`, 173 MB für die Basis), damit die Hauptschleife jederzeit `isready`
+beantwortet und weitere Kommandos liest. `stop` schickt das zurückgehaltene `bestmove`
+und **pausiert** die Erzeugung: Die Worker halten an der nächsten Chunk-Grenze an
+(Millisekunden), alles Gerechnete bleibt im RAM. Das nächste `go infinite` mit demselben
+Material setzt genau dort fort; ein anderes Material verwirft den pausierten Job. Ist die
+Tabelle fertig, übernimmt die Hauptschleife sie (`Set.Adopt`), schreibt sie bei
+`EgtbWriteCache` in den Cache und rechnet bei laufendem `go infinite` die Antwort neu:
+
+```
+info string egtb: generating KBBBK (231 MB table, about 346 MB RAM), stop pauses it
+info string egtb: generation of KBBBK paused, the next go infinite resumes it
+bestmove a1a2
+info string egtb: generation of KBBBK resumed
+info string egtb: KBBBK  242221056 indices,   28017470 legal,    21487 mates
+info string egtb: KBBBK wins   8089520, losses  11681659, draws   8246291, longest mate 31 plies = 16 moves, 6.4 s
+info string egtb: KBBBK ready
+info depth 23 multipv 1 score mate 12 pv a1b2 e5d6 b2c3 ...
+```
+
+**Wenige, kompakte Statuszeilen** (Vorgabe des Autors, 2026-10-08): eine Start- und eine
+Abschlusszeile pro Tabelle, die bis zu 254 Ebenen-Zeilen werden auf eine alle fünf
+Sekunden gedrosselt (`progressInterval`), die Erzeugung der Basis beim ersten `isready`
+meldet jede der 35 Tabellen mit einer Zeile. Die Spaltenausrichtung der Konsole wird für
+die GUI auf einfache Leerzeichen zusammengezogen (`compact`), Arena zeigt keine
+Festbreitenschrift.
+Go und Rust verhalten sich in beiden Läufen (mit und ohne Schreiben) gleich, die
+geschriebene Datei ist byteidentisch mit der aus `egtb-measure`.
+
+Vorgemerkt: Während einer Erzeugung sollen Hash und reguläre Suche ihren RAM komplett
+freigeben; dazu statische Anforderungsdaten je Material (RAM, Platte, Zeit) im Code, aus
+denen die Engine vor dem Start warnt, wenn der Rechner das nicht schafft.
+
 ## Offen
 
-- Stufe b: Fünf-Steiner-Tabelle im Hintergrund erzeugen, wenn die Datei fehlt
-  (`info string` mit Fortschritt, bis dahin ohne Tabelle antworten). Eine Minute und
-  bis zu 6 GB für ein Bauern-Material, also nur im Analyse-Modus sinnvoll.
 - Stufe c: Suche für Stellungen ohne Tabellenwert als UCI-Option (`mateab`,
   `matelist`, `matepn`), Zeitkontrolle (`go movetime`, `wtime`), `stop` aus einem
   laufenden Thread heraus, `info nodes nps` mit Fortschritt.

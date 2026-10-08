@@ -149,8 +149,9 @@ impl Table {
     }
 
     /// Replaces dead and illegal entries by their predecessor ("don't care"),
-    /// once, and drops the generator's bitset afterwards.
-    pub(super) fn fill(&self) {
+    /// once, and drops the generator's bitset afterwards (what writing the
+    /// table does; also for tables kept in RAM only).
+    pub fn fill(&self) {
         if self.is_filled() {
             return;
         }
@@ -330,12 +331,65 @@ pub struct Set {
     base_count: usize,
     /// signature -> table index, -1 none
     by_sig: Vec<i8>,
+    /// Holds the cache files (the base file and one per larger material);
+    /// next to the binary unless changed.
+    pub cache_dir: std::path::PathBuf,
 }
 
 impl Set {
+    /// A new set with copies of every generated table, so that a background
+    /// generation can work on it while this set stays untouched (the copies
+    /// cost the size of the tables once, 173 MB for the base).
+    pub fn fork(&self) -> Set {
+        let mut n = Set::new();
+        n.cache_dir = self.cache_dir.clone();
+        for t in &self.tables {
+            let i = n.add_material(t.mat.clone());
+            if t.is_generated() {
+                let nt = &mut n.tables[i];
+                nt.values = t.bytes().iter().map(|&b| AtomicU8::new(b)).collect();
+                nt.raw_checksum.store(t.raw_checksum.load(Ordering::Relaxed), Ordering::Relaxed);
+                nt.set_filled(t.is_filled());
+            }
+        }
+        n
+    }
+
+    /// Moves every generated table this set lacks over from another set (the
+    /// result of a forked generation).
+    pub fn adopt(&mut self, from: Set) {
+        for mut ft in from.tables {
+            if !ft.is_generated() {
+                continue;
+            }
+            let i = self.add_material(ft.mat.clone());
+            let t = &mut self.tables[i];
+            if !t.is_generated() {
+                t.values = std::mem::take(&mut ft.values);
+                t.raw_checksum.store(ft.raw_checksum.load(Ordering::Relaxed), Ordering::Relaxed);
+                t.set_filled(ft.is_filled());
+                *t.invalid.lock().unwrap() = ft.invalid.lock().unwrap().take();
+            }
+        }
+    }
+
+    /// Estimates the RAM a generation of the table needs: the table, four
+    /// bitsets of 1/8 each and the direct dependencies that are not loaded yet.
+    pub fn generation_bytes(&self, ti: usize) -> usize {
+        let t = &self.tables[ti];
+        let mut n = t.size + t.size / 2;
+        for d in t.mat.dependencies() {
+            match self.find(&d.name()) {
+                Some(i) if self.tables[i].is_generated() => {}
+                _ => n += Table::new(d).size,
+            }
+        }
+        n
+    }
+
     /// Allocates the base tables without values; `generate_all` or `load` fills them.
     pub fn new() -> Set {
-        let mut s = Set { tables: Vec::new(), base_count: 0, by_sig: vec![-1; SIGNATURE_SPACE] };
+        let mut s = Set { tables: Vec::new(), base_count: 0, by_sig: vec![-1; SIGNATURE_SPACE], cache_dir: super::persist::default_cache_dir() };
         for m in Material::all() {
             s.add_material(m);
         }

@@ -160,7 +160,7 @@ func egtbGenerate(names []string, workers int, verbose bool, verify bool) {
 // binary is loaded when present and correct, otherwise all tables are
 // generated, checked against the checksum constants and written.
 func egtbLoadOrGenerate(workers int) *egtb.Set {
-	set := egtb.LoadOrGenerate(egtb.DefaultPath(), workers, func(line string) { fmt.Println(line) })
+	set := egtb.LoadOrGenerate(egtb.DefaultPath(), workers, true, func(line string) { fmt.Println(line) })
 	fmt.Println()
 	return set
 }

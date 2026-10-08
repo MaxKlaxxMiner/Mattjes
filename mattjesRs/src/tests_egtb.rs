@@ -201,7 +201,7 @@ pub fn egtb_generate(names: &[&str], workers: usize, verbose: bool, verify: bool
 /// present and correct, otherwise all tables are generated, checked against the
 /// checksum constants and written.
 pub fn egtb_load_or_generate(workers: usize) -> Set {
-    let set = Set::load_or_generate(&egtb::default_path(), workers, &mut |line| println!("{}", line));
+    let set = Set::load_or_generate(&egtb::default_path(), workers, true, &mut |line| println!("{}", line));
     println!();
     set
 }

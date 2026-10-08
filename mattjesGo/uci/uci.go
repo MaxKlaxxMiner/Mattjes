@@ -1,13 +1,19 @@
-// Package uci speaks the Universal Chess Interface (milestone 6, stage a):
-// positions covered by the endgame tables are answered straight from them,
+// Package uci speaks the Universal Chess Interface (milestone 6, stages a and
+// b): positions covered by the endgame tables are answered straight from them,
 // with the exact distance to mate and the complete winning line; every root
 // move gets its own value, so MultiPV lists them all. Positions without a
 // table get a legal move and an "info string" for now; the search algorithms
-// come in later stages.
+// come in a later stage.
 //
-// Protocol subset: uci, isready, setoption (MultiPV, Threads), ucinewgame,
-// position, go (all parameters ignored, the answer is immediate), stop, quit,
-// d (debug: print the FEN).
+// Tables beyond the four-piece base are loaded from the cache directory when
+// a file exists. When the options allow it, a missing table is generated in
+// the background, but only while a "go infinite" is running: "stop" pauses
+// the generation, the next "go infinite" resumes it, and once the table is
+// complete the held-back answer is recomputed with it.
+//
+// Protocol subset: uci, isready, setoption, ucinewgame, position, go (only
+// "infinite" is looked at, the answer is immediate), stop, quit, d (debug:
+// print the FEN).
 package uci
 
 import (
@@ -15,9 +21,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
@@ -31,35 +41,80 @@ const Version = "0.6"
 // About is the banner line printed at startup (unprompted, as most engines do).
 const About = "Mattjes " + Version + " by Max Klaxx Miner, a mate and draw search engine with its own endgame tables, GPLv3"
 
+// progressInterval limits the per-level progress of a background generation
+// to one info string every few seconds (a table has up to 254 levels).
+const progressInterval = 5 * time.Second
+
 // Engine is the state between commands.
 type Engine struct {
 	out     *bufio.Writer
+	outMu   sync.Mutex // the generation goroutine reports through the same writer
 	set     *egtb.Set
 	board   bitboard.Board
 	multiPV int
 	workers int
 	name    string
+	// options
+	writeCache bool   // EgtbWriteCache: write generated tables to the cache directory
+	generate5  bool   // EgtbGenerate5: build missing five-piece tables during go infinite
+	generate6  bool   // EgtbGenerate6: the same for six pieces
+	cacheDir   string // EgtbPath
+	// a "go infinite" holds the best move back until "stop"
+	infinite    bool
+	pendingBest string
+	job         *job
+	jobDone     chan *egtb.Set
+}
+
+// job is a background generation of one material (with its dependencies) in
+// a forked set.
+type job struct {
+	mat  egtb.Material
+	ctrl *egtb.Control
 }
 
 // Run reads commands from in until quit or EOF. name is the engine name
 // reported to the GUI (the Go and Rust binaries differ).
 func Run(in io.Reader, out io.Writer, name string, workers int) {
-	e := &Engine{out: bufio.NewWriter(out), board: bitboard.New(), multiPV: 1, workers: workers, name: name}
+	e := &Engine{out: bufio.NewWriter(out), board: bitboard.New(), multiPV: 1, workers: workers, name: name, cacheDir: egtb.DefaultCacheDir(), jobDone: make(chan *egtb.Set, 1)}
 	e.send("%s", About)
-	e.out.Flush()
-	scanner := bufio.NewScanner(in)
-	scanner.Buffer(make([]byte, 1<<16), 1<<20)
-	for scanner.Scan() {
-		if !e.command(strings.Fields(scanner.Text())) {
-			break
+	e.flush()
+	lines := make(chan string)
+	go func() {
+		scanner := bufio.NewScanner(in)
+		scanner.Buffer(make([]byte, 1<<16), 1<<20)
+		for scanner.Scan() {
+			lines <- scanner.Text()
 		}
-		e.out.Flush()
+		close(lines)
+	}()
+	for {
+		select {
+		case line, ok := <-lines:
+			if !ok || !e.command(strings.Fields(line)) {
+				if e.job != nil {
+					e.job.ctrl.Abort()
+				}
+				e.flush()
+				return
+			}
+		case set := <-e.jobDone:
+			e.finishJob(set)
+		}
+		e.flush()
 	}
-	e.out.Flush()
 }
 
 func (e *Engine) send(format string, args ...any) {
+	e.outMu.Lock()
 	fmt.Fprintf(e.out, format+"\n", args...)
+	e.outMu.Unlock()
+}
+
+func (e *Engine) flush() {
+	e.outMu.Lock()
+	e.out.Flush()
+	e.outMu.Unlock()
 }
 
 // command handles one line; false means quit.
@@ -73,6 +128,10 @@ func (e *Engine) command(words []string) bool {
 		e.send("id author Max Klaxx Miner")
 		e.send("option name MultiPV type spin default 1 min 1 max 256")
 		e.send("option name Threads type spin default %d min 1 max 64", e.workers)
+		e.send("option name EgtbWriteCache type check default false")
+		e.send("option name EgtbGenerate5 type check default false")
+		e.send("option name EgtbGenerate6 type check default false")
+		e.send("option name EgtbPath type string default %s", e.cacheDir)
 		e.send("uciok")
 	case "xboard", "protover", "new", "force":
 		// Winboard probes from a GUI's auto-detection: stay silent, so that only UCI answers are seen
@@ -86,9 +145,22 @@ func (e *Engine) command(words []string) bool {
 		e.position(words[1:])
 	case "go":
 		e.ensureTables()
+		e.infinite = slices.Contains(words, "infinite")
 		e.search()
+		if e.infinite {
+			e.maybeGenerate()
+		} else {
+			e.send("bestmove %s", e.pendingBest)
+		}
 	case "stop":
-		// the answer is always sent at once, nothing runs in the background yet
+		if e.job != nil && !e.job.ctrl.Paused() {
+			e.job.ctrl.Pause()
+			e.send("info string egtb: generation of %s paused, the next go infinite resumes it", e.job.mat.Name())
+		}
+		if e.infinite {
+			e.send("bestmove %s", e.pendingBest)
+			e.infinite = false
+		}
 	case "d":
 		e.send("%s", e.board.FEN())
 	case "quit":
@@ -100,7 +172,7 @@ func (e *Engine) command(words []string) bool {
 }
 
 func (e *Engine) setOption(words []string) {
-	// setoption name <id> [value <x>]
+	// setoption name <id> [value <x>]; the value may contain spaces (a path)
 	name, value := "", ""
 	for i := 0; i < len(words); i++ {
 		switch words[i] {
@@ -109,35 +181,78 @@ func (e *Engine) setOption(words []string) {
 				name = words[i+1]
 			}
 		case "value":
-			if i+1 < len(words) {
-				value = words[i+1]
-			}
+			value = strings.Join(words[i+1:], " ")
+			i = len(words)
 		}
 	}
 	n, err := strconv.Atoi(value)
+	flag := strings.EqualFold(value, "true")
 	switch {
-	case err != nil:
-		e.send("info string option %s: bad value %q", name, value)
-	case strings.EqualFold(name, "MultiPV"):
+	case strings.EqualFold(name, "MultiPV") && err == nil:
 		e.multiPV = max(1, n)
-	case strings.EqualFold(name, "Threads"):
+	case strings.EqualFold(name, "Threads") && err == nil:
 		e.workers = max(1, n)
+	case strings.EqualFold(name, "EgtbWriteCache"):
+		e.writeCache = flag
+		if flag && e.set != nil {
+			e.saveTables()
+		}
+	case strings.EqualFold(name, "EgtbGenerate5"):
+		e.generate5 = flag
+	case strings.EqualFold(name, "EgtbGenerate6"):
+		e.generate6 = flag
+	case strings.EqualFold(name, "EgtbPath"):
+		e.cacheDir = value
+		if e.set != nil {
+			e.set.CacheDir = value
+		}
 	default:
-		e.send("info string unknown option %s", name)
+		e.send("info string unknown option %s or bad value %q", name, value)
 	}
 }
 
 // ensureTables loads the four-piece base once (generating it on the first
-// start, which takes about 17 s and is reported as info strings).
+// start, which takes about 17 s and is reported as info strings; written to
+// the cache only with EgtbWriteCache).
 func (e *Engine) ensureTables() {
 	if e.set != nil {
 		return
 	}
-	e.set = egtb.LoadOrGenerate(egtb.DefaultPath(), e.workers, func(line string) {
-		e.send("info string %s", line)
-		e.out.Flush()
+	e.set = egtb.LoadOrGenerate(filepath.Join(e.cacheDir, egtb.BaseFileName), e.workers, e.writeCache, func(line string) {
+		e.send("info string %s", compact(line))
+		e.flush()
 	})
 }
+
+// saveTables writes every table that lives in RAM only (generated while
+// EgtbWriteCache was off) to the cache directory, the base included.
+func (e *Engine) saveTables() {
+	write := func(path string, save func() error) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if err := save(); err != nil {
+			e.send("info string egtb: %v", err)
+		} else {
+			e.send("info string egtb: written to %s", path)
+		}
+		e.flush()
+	}
+	if e.set.Base()[0].Values != nil {
+		base := e.set.BasePath()
+		write(base, func() error { return e.set.Save(base) })
+	}
+	for _, t := range e.set.Tables[len(e.set.Base()):] {
+		if t.Values != nil {
+			path := e.set.TablePath(t)
+			write(path, func() error { return e.set.SaveTable(t, path) })
+		}
+	}
+}
+
+// compact joins the words of a console status line with single spaces: the
+// column alignment of the generator is noise in a GUI's proportional font.
+func compact(line string) string { return strings.Join(strings.Fields(line), " ") }
 
 // position [startpos | fen <6 fields>] [moves <uci>...]
 func (e *Engine) position(words []string) {
@@ -192,12 +307,13 @@ type rootMove struct {
 
 // search answers the current position from the tables: every root move is
 // valued, sorted (shortest win, draw, unknown, longest loss) and the first
-// MultiPV lines are printed with their complete lines to mate.
+// MultiPV lines are printed with their complete lines to mate. The best move
+// is kept in pendingBest; the caller decides when to send it.
 func (e *Engine) search() {
 	var buf chess.MoveBuffer
 	n := e.board.GenMoves(&buf)
 	if n == 0 {
-		e.send("bestmove 0000")
+		e.pendingBest = "0000"
 		return
 	}
 	e.loadMaterial(&e.board)
@@ -231,7 +347,94 @@ func (e *Engine) search() {
 		}
 		e.send("info depth %d multipv %d score %s pv%s", len(r.pv), i+1, score(r.value), sb.String())
 	}
-	e.send("bestmove %s", moves[0].move.UCI())
+	e.pendingBest = moves[0].move.UCI()
+}
+
+// maybeGenerate starts (or resumes) the background generation of the root
+// material's table during a "go infinite", when the options allow it.
+func (e *Engine) maybeGenerate() {
+	m, ok := egtb.MaterialOf(&e.board)
+	if !ok || m.Pieces() <= 4 || e.board.Castling != 0 {
+		return
+	}
+	if t := e.set.Find(m.Name()); t != nil && t.Values != nil {
+		return
+	}
+	if m.Pieces() == 5 && !e.generate5 || m.Pieces() == 6 && !e.generate6 {
+		e.send("info string egtb: no table for %s (EgtbGenerate%d would build it during go infinite)", m.Name(), m.Pieces())
+		return
+	}
+	if e.job != nil {
+		if e.job.mat.Name() == m.Name() {
+			if e.job.ctrl.Paused() {
+				e.job.ctrl.Resume()
+				e.send("info string egtb: generation of %s resumed", m.Name())
+			}
+			return
+		}
+		e.job.ctrl.Abort()
+		e.send("info string egtb: generation of %s dropped", e.job.mat.Name())
+		e.job = nil
+	}
+	e.startJob(m)
+}
+
+func (e *Engine) startJob(m egtb.Material) {
+	j := &job{mat: m, ctrl: egtb.NewControl()}
+	e.job = j
+	set := e.set.Fork()
+	t := set.AddMaterial(m)
+	e.send("info string egtb: generating %s (%d MB table, about %d MB RAM), stop pauses it", m.Name(), t.Size>>20, set.GenerationBytes(t)>>20)
+	workers, write := e.workers, e.writeCache
+	go func() {
+		// level lines come up to 254 times per table: at most one every few seconds
+		var lastLevel time.Time
+		progress := func(line string) {
+			if strings.HasPrefix(line, " ") {
+				if time.Since(lastLevel) < progressInterval {
+					return
+				}
+				lastLevel = time.Now()
+			}
+			e.send("info string egtb: %s", compact(line))
+			e.flush()
+		}
+		st := set.GenerateControlled(t, workers, j.ctrl, progress)
+		if st.Aborted {
+			return
+		}
+		for _, gt := range set.Tables[len(set.Base()):] {
+			if gt.Values == nil {
+				continue
+			}
+			if path := set.TablePath(gt); write {
+				if _, err := os.Stat(path); err != nil {
+					if err := set.SaveTable(gt, path); err != nil {
+						progress(err.Error())
+					} else {
+						progress("written to " + path)
+					}
+				}
+			}
+			gt.Fill() // drops the generator's bitset
+		}
+		e.jobDone <- set
+	}()
+}
+
+// finishJob takes the generated tables over and, during a "go infinite",
+// answers again with them.
+func (e *Engine) finishJob(set *egtb.Set) {
+	if e.job == nil {
+		return
+	}
+	name := e.job.mat.Name()
+	e.job = nil
+	e.set.Adopt(set)
+	e.send("info string egtb: %s ready", name)
+	if e.infinite {
+		e.search()
+	}
 }
 
 // rank orders root moves: wins by shortest distance, then draws, then moves
@@ -271,7 +474,7 @@ func parentValue(cv egtb.Value) egtb.Value {
 }
 
 // loadMaterial registers the material of a position beyond the base and loads
-// its table from the cache directory if a file exists (never generates).
+// its table from the cache directory if a file exists (never generates here).
 func (e *Engine) loadMaterial(b *bitboard.Board) {
 	if pieceCount(b) <= 4 || b.Castling != 0 {
 		return
@@ -290,7 +493,7 @@ func (e *Engine) loadMaterial(b *bitboard.Board) {
 		return
 	}
 	e.send("info string egtb: loaded %s", path)
-	e.out.Flush()
+	e.flush()
 }
 
 // eval values a position from the side to move's view: from the table, or,

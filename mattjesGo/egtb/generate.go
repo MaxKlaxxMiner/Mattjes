@@ -23,6 +23,7 @@ type Stats struct {
 	Duration                          time.Duration
 	Overflow                          bool // distances beyond MaxPlies occurred, the table is incomplete
 	Beyond                            int  // positions with distance MaxPlies+1 (or waiting for deeper cross-table children): a lower bound of what is missing
+	Aborted                           bool // the Control aborted the generation, the table is empty
 }
 
 // LongestMate is the longest forced mate in moves (the usual way to quote it).
@@ -110,6 +111,13 @@ func (s *Set) GenerateAll(workers int, progress Progress) {
 // move generator; un-moves only tell which positions are worth looking at
 // (the parents of positions decided in the previous level).
 func (s *Set) Generate(t *Table, workers int, progress Progress) Stats {
+	return s.GenerateControlled(t, workers, nil, progress)
+}
+
+// GenerateControlled is Generate with a Control that can pause or abort the
+// work from another goroutine (nil = neither). After an abort the table (and
+// a dependency that was being generated) is left empty and Stats.Aborted set.
+func (s *Set) GenerateControlled(t *Table, workers int, ctrl *Control, progress Progress) Stats {
 	for _, d := range t.Mat.dependencies() {
 		dt := s.AddMaterial(d) // beyond the base this registers the dependency on the fly
 		if dt.Values == nil {
@@ -117,8 +125,8 @@ func (s *Set) Generate(t *Table, workers int, progress Progress) Stats {
 				if progress != nil {
 					progress("egtb: loaded dependency " + path)
 				}
-			} else {
-				s.Generate(dt, workers, progress)
+			} else if st := s.GenerateControlled(dt, workers, ctrl, progress); st.Aborted {
+				return st
 			}
 		}
 	}
@@ -128,16 +136,26 @@ func (s *Set) Generate(t *Table, workers int, progress Progress) Stats {
 	start := time.Now()
 	t.Values = make([]Value, t.Size)
 	g := newGenerator(s, t)
+	g.ctrl = ctrl
 	for i := range g.cand {
 		g.cand[i] = newBitset(t.Size)
 	}
 	g.invalid = newBitset(t.Size)
 	t.invalid = g.invalid // kept until the table is written (fill), 1/8 of the table
+	abort := func() Stats {
+		t.Values, t.invalid = nil, nil
+		return Stats{Aborted: true}
+	}
 
 	var st Stats
 	legal, mates := g.parallelRange(workers, g.initRange)
+	if ctrl.Aborted() {
+		return abort()
+	}
 	st.Legal, st.Mates = legal, mates
-	progress(fmt.Sprintf("%-5s %10d indices, %10d legal, %8d mates", t.Mat.Name(), t.Size, legal, mates))
+	// one compact status line per step; the level lines below are the only
+	// frequent ones and are throttled by the UCI layer
+	progress(fmt.Sprintf("%-5s %13s indices, %13s legal, %10s mates", t.Mat.Name(), Group(t.Size), Group(legal), Group(mates)))
 
 	completed := false
 	for level := 1; level <= MaxPlies; level++ {
@@ -148,6 +166,9 @@ func (s *Set) Generate(t *Table, workers int, progress Progress) Stats {
 		g.pending[level] = nil
 		g.level = level
 		changed, evals := g.parallelBits(workers, cur, g.scanCandidates)
+		if ctrl.Aborted() {
+			return abort()
+		}
 		st.Evaluations += evals
 		cur.clear()
 		if changed > 0 {
@@ -159,7 +180,7 @@ func (s *Set) Generate(t *Table, workers int, progress Progress) Stats {
 				st.Losses += changed
 				st.MaxLoss = level
 			}
-			progress(fmt.Sprintf("      level %3d: %9d positions, %10d evaluated", level, changed, evals))
+			progress(fmt.Sprintf("      level %3d: %12s positions, %13s evaluated", level, Group(changed), Group(evals)))
 		}
 		if !g.cand[(level+1)%3].any() && !g.cand[(level+2)%3].any() && !g.pendingBeyond(level) {
 			completed = true
@@ -182,15 +203,24 @@ func (s *Set) Generate(t *Table, workers int, progress Progress) Stats {
 		st.Evaluations += evals
 		st.Beyond = beyond + int(g.beyond.Load())
 		st.Overflow = true
-		progress(fmt.Sprintf("%-5s WARNING: distances exceed %d plies, at least %d positions left as draws", t.Mat.Name(), MaxPlies, st.Beyond))
+		progress(fmt.Sprintf("%-5s WARNING: distances exceed %d plies, at least %s positions left as draws", t.Mat.Name(), MaxPlies, Group(st.Beyond)))
 	}
 	st.Losses += mates
 	st.Draws = legal - st.Wins - st.Losses
 	t.RawChecksum = Checksum(t.Values)
 	st.Duration = time.Since(start)
-	progress(fmt.Sprintf("%-5s wins %9d, losses %9d, draws %9d, longest mate %d plies = %d moves, %.1f s",
-		t.Mat.Name(), st.Wins, st.Losses, st.Draws, st.MaxWin, st.LongestMate(), st.Duration.Seconds()))
+	progress(fmt.Sprintf("%-5s wins %12s, losses %12s, draws %12s, longest mate %d plies = %d moves, %.1f s",
+		t.Mat.Name(), Group(st.Wins), Group(st.Losses), Group(st.Draws), st.MaxWin, st.LongestMate(), st.Duration.Seconds()))
 	return st
+}
+
+// Group formats a count with thousands separators ("242,221,056").
+func Group(n int) string {
+	s := fmt.Sprint(n)
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	return s
 }
 
 type generator struct {
@@ -199,6 +229,7 @@ type generator struct {
 	pieces            []chess.Piece // white king, black king, slots
 	enPassantPossible bool          // pawns of both colors: a double step can create an en passant right
 	level             int
+	ctrl              *Control // pause/abort from outside (nil = never)
 	// cand[level%3] holds the candidates of a level: positions with a child
 	// decided in the previous level (and, with en passant, two levels back).
 	cand [3]bitset
@@ -274,12 +305,12 @@ func (b bitset) any() bool {
 
 // parallelRange runs fn over the index range in chunks and sums its results.
 func (g *generator) parallelRange(workers int, fn func(lo, hi int) (int, int)) (int, int) {
-	return parallelChunks(workers, g.t.Size, 1<<16, fn)
+	return parallelChunks(workers, g.t.Size, 1<<16, g.ctrl, fn)
 }
 
 // parallelBits runs fn over the set bits of a candidate set in chunks of words.
 func (g *generator) parallelBits(workers int, b bitset, fn func(idx int) (int, int)) (int, int) {
-	return parallelChunks(workers, len(b), 1<<10, func(lo, hi int) (int, int) {
+	return parallelChunks(workers, len(b), 1<<10, g.ctrl, func(lo, hi int) (int, int) {
 		x, y := 0, 0
 		for w := lo; w < hi; w++ {
 			for bits := b[w]; bits != 0; bits &= bits - 1 {
@@ -292,7 +323,7 @@ func (g *generator) parallelBits(workers int, b bitset, fn func(idx int) (int, i
 	})
 }
 
-func parallelChunks(workers, size, chunk int, fn func(lo, hi int) (int, int)) (int, int) {
+func parallelChunks(workers, size, chunk int, ctrl *Control, fn func(lo, hi int) (int, int)) (int, int) {
 	if workers < 1 {
 		workers = 1
 	}
@@ -303,6 +334,9 @@ func parallelChunks(workers, size, chunk int, fn func(lo, hi int) (int, int)) (i
 		go func() {
 			defer wg.Done()
 			for {
+				if !ctrl.wait() { // blocks while paused
+					return
+				}
 				lo := int(next.Add(int64(chunk))) - chunk
 				if lo >= size {
 					return

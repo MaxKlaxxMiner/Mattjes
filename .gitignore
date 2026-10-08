@@ -2,6 +2,7 @@
 runMattjesGo.exe
 runMattjesRs.exe
 *.exe
+*.exe.old
 *.dll
 *.so
 *.dylib
