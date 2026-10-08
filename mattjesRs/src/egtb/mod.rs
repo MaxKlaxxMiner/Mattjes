@@ -195,6 +195,29 @@ impl Material {
         n
     }
 
+    /// The material of a board (kings excluded) in canonical form; None when a
+    /// side has no king or the material exceeds MAX_PIECES.
+    pub fn of_board(b: &Board) -> Option<Material> {
+        let (mut w, mut bl) = (Vec::new(), Vec::new());
+        let mut kings = 0;
+        for &p in &b.squares {
+            if p == Piece::NONE {
+                continue;
+            }
+            if p.is(Piece::KING) {
+                kings += 1;
+            } else if p.color() == Piece::WHITE {
+                w.push(p.kind());
+            } else {
+                bl.push(p.kind());
+            }
+        }
+        if kings != 2 || 2 + w.len() + bl.len() > table::MAX_PIECES {
+            return None;
+        }
+        Some(Material::canonical(&w, &bl))
+    }
+
     /// Sorts both sides and puts the stronger one first.
     pub fn canonical(w: &[Piece], b: &[Piece]) -> Material {
         let (mut w, mut b) = (w.to_vec(), b.to_vec());

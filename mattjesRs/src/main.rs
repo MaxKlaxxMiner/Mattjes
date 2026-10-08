@@ -33,16 +33,26 @@ mod tests_pn;
 mod tests_tt;
 mod tt;
 mod ttstore;
+mod uci;
 
 fn main() {
-    // Command line mode for scripts (measure-egtb.bat): no banner, one task, exit.
-    //   egtb-list <pieces>                       names of all materials with that many pieces
+    // The bare binary is the UCI engine, as a chess GUI expects (module uci,
+    // threads via the UCI option). Arguments select tests and actions:
+    //   test                                              the experiment block in experiments()
+    //   egtb-list <pieces>                                names of all materials with that many pieces
     //   egtb-measure <name>... [--verify] [--workers N]   generate or load the tables, log to the cache dir
+    //   egtb-compress [--workers N]                       rewrite raw cache files compressed
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if !args.is_empty() {
+    let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    if args.is_empty() {
+        uci::run(std::io::stdin().lock(), std::io::stdout().lock(), "Mattjes (Rust)", cpus);
+        return;
+    }
+    {
         let option = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<usize>().ok());
         let workers = option("--workers").unwrap_or(12);
         match args[0].as_str() {
+            "test" => experiments(),
             "egtb-list" => tests_egtb::egtb_list(args.get(1).and_then(|s| s.parse().ok()).unwrap_or(5)),
             "egtb-compress" => {
                 // rewrites every raw table file of the cache directory in the compressed format
@@ -76,9 +86,12 @@ fn main() {
                 std::process::exit(2);
             }
         }
-        return;
     }
+}
 
+/// The console test bench: enable one line at a time, build, then start the
+/// binary with "test".
+fn experiments() {
     println!(
         "Mattjes (Rust) on {}/{}, {} CPUs\n",
         std::env::consts::OS,
@@ -141,7 +154,7 @@ fn main() {
     // tests_mate::matelist_solve("KQ-KBN", 0, 200, 400_000_000); // 387 M positions at ply 16, aborted at ply 17 after 960 s, 42 GB peak; the space is 700-750 M
 
     // --- milestone 5, measurement series: five- and six-piece tables (time, size, checksum), cache dir mattjes-egtb-cache/ ---
-    tests_egtb::egtb_load_or_generate(12); // the bare binary only makes sure the four-piece base exists (15 s once, then 0.2 s); larger materials via measure-egtb.bat
+    tests_egtb::egtb_load_or_generate(12); // makes sure the four-piece base exists (15 s once, then 0.2 s); larger materials via measure-egtb.bat
     // tests_egtb::egtb_measure(&["KQKBN"], 12, true); // generated in 45 s, checksum 7b54498535f836cb, byte-identical to Go
     // tests_pn::matepn_solve(12, 256, "sat", "mEfi"); // iterative deepening: the shortest mate, cost of all depths
 }

@@ -176,6 +176,28 @@ type Signature uint32
 
 const signatureSpace = 1 << 20
 
+// MaterialOf reads the material of a board (kings excluded) in canonical form.
+// ok is false when a side has no king or the material exceeds MaxPieces.
+func MaterialOf(b *bitboard.Board) (m Material, ok bool) {
+	var w, bl []chess.Piece
+	kings := 0
+	for _, p := range b.Squares {
+		switch {
+		case p == chess.None:
+		case p.Is(chess.King):
+			kings++
+		case p.Color() == chess.White:
+			w = append(w, p.Type())
+		default:
+			bl = append(bl, p.Type())
+		}
+	}
+	if kings != 2 || 2+len(w)+len(bl) > MaxPieces {
+		return Material{}, false
+	}
+	return canonicalMaterial(w, bl), true
+}
+
 func typeBit(p chess.Piece) uint {
 	return 2 * uint(pieceOrder(p)-1) // pawn 0, knight 2, bishop 4, rook 6, queen 8
 }

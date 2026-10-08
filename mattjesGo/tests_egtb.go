@@ -346,6 +346,8 @@ func runCommand(args []string) {
 		}
 	}
 	switch args[0] {
+	case "test":
+		experiments()
 	case "egtb-list":
 		pieces := 5
 		if len(names) > 0 {

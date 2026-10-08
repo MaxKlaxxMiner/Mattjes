@@ -23,6 +23,7 @@ import (
 	"runtime/debug"
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/uci"
 )
 
 func main() {
@@ -32,14 +33,22 @@ func main() {
 	// allocate, so the more frequent GC cycles cost nothing there.
 	debug.SetGCPercent(1)
 
-	// Command line mode for scripts (measure-egtb.bat): no banner, one task, exit.
+	// The bare binary is the UCI engine, as a chess GUI expects (package uci,
+	// threads via the UCI option). Arguments select tests and actions:
+	//   test                                              the experiment block in experiments()
 	//   egtb-list <pieces>                                names of all materials with that many pieces
 	//   egtb-measure <name>... [--verify] [--workers N]   generate or load the tables, log to the cache dir
-	if len(os.Args) > 1 {
-		runCommand(os.Args[1:])
+	//   egtb-compress [--workers N]                       rewrite raw cache files compressed
+	if len(os.Args) == 1 {
+		uci.Run(os.Stdin, os.Stdout, "Mattjes (Go)", runtime.NumCPU())
 		return
 	}
+	runCommand(os.Args[1:])
+}
 
+// experiments is the console test bench: enable one line at a time, build,
+// then start the binary with "test".
+func experiments() {
 	fmt.Printf("Mattjes (Go) %s on %s/%s, %d CPUs\n\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU())
 
 	// --- milestone 1: move generator + perft (enable one at a time) ---
@@ -100,7 +109,7 @@ func main() {
 	// matelistSolve("KQ-KBN", 0, 200, 400_000_000) // 387 M positions at ply 16, aborted at ply 17 after 960 s, 42 GB peak; the space is 700-750 M
 
 	// --- milestone 5, measurement series: five- and six-piece tables (time, memory, size, checksum), cache dir mattjes-egtb-cache/ ---
-	egtbLoadOrGenerate(12) // the bare binary only makes sure the four-piece base exists (17 s once, then 0.2 s); larger materials via measure-egtb.bat
+	egtbLoadOrGenerate(12) // makes sure the four-piece base exists (17 s once, then 0.2 s); larger materials via measure-egtb.bat
 	// egtbMeasure([]string{"KQKBN"}, 12, true) // generated in 47 s, 845 MB process; loads the file, checks KQ-KBN = win in 77 and verifies every position forward
 	// matepnSolve(12, 256, "sat", "mEfi") // iterative deepening: the shortest mate, cost of all depths (KQ-KN 7.9 M visits)
 	// mateabSolve(17, 256, false) // the same positions with the depth-first search, for comparison
