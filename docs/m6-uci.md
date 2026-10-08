@@ -8,8 +8,9 @@ nach wachsender Gewissheit) steht in `CLAUDE.md`; hier geht es um das, was läuf
 
 Package `uci/` in Go, Modul `src/uci/` in Rust. **Die blanke Binary ist die Engine**,
 wie jede GUI es erwartet: `runMattjesGo.exe` oder `runMattjesRs.exe` ohne Argument
-spricht UCI auf stdin/stdout. Argumente wählen Tests und Aktionen (`test` für den
-Experiment-Block aus `main`, `egtb-list`, `egtb-measure`, `egtb-compress`). Threads
+spricht UCI auf stdin/stdout und meldet sich ungefragt mit einer Zeile ("Mattjes 0.6 by
+Max Klaxx Miner, ..."), wie die meisten Engines. Argumente wählen Tests und Aktionen
+(`test` für den Experiment-Block aus `main`, `egtb-list`, `egtb-measure`). Threads
 werden nicht per Argument gesetzt, sondern über die UCI-Option `Threads` (Vorgabe: alle
 CPUs, nur für das Erzeugen von Tabellen relevant). Das Arbeitsverzeichnis muss das
 Repo-Root sein, weil der Cache-Ordner `mattjes-egtb-cache/` neben der Binary liegt;

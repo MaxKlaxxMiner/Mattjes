@@ -18,8 +18,8 @@ use crate::egtb::{self, Material, Set, Value, MAX_PLIES};
 /// Reported in "id name"; it follows the milestone that is being worked on.
 pub const VERSION: &str = "0.6";
 
-/// The UCI_EngineAbout option, shown by GUIs as the engine description.
-pub const ABOUT: &str = "Mattjes 0.6 by Max Klaxx Miner, a mate and draw search engine with its own endgame tables, GPLv3, https://github.com/MaxKlaxxMiner/Mattjes";
+/// The banner line printed at startup (unprompted, as most engines do).
+pub const ABOUT: &str = "Mattjes 0.6 by Max Klaxx Miner, a mate and draw search engine with its own endgame tables, GPLv3";
 
 /// The state between commands.
 pub struct Engine<W: Write> {
@@ -35,6 +35,8 @@ pub struct Engine<W: Write> {
 /// reported to the GUI (the Go and Rust binaries differ).
 pub fn run<R: BufRead, W: Write>(input: R, out: W, name: &str, workers: usize) {
     let mut e = Engine { out, set: None, board: Board::new(), multi_pv: 1, workers, name: name.to_string() };
+    e.send(ABOUT);
+    let _ = e.out.flush();
     for line in input.lines() {
         let Ok(line) = line else { break };
         let words: Vec<&str> = line.split_whitespace().collect();
@@ -69,7 +71,6 @@ impl<W: Write> Engine<W> {
                 self.send("id author Max Klaxx Miner");
                 self.send("option name MultiPV type spin default 1 min 1 max 256");
                 self.send(&format!("option name Threads type spin default {} min 1 max 64", self.workers));
-                self.send(&format!("option name UCI_EngineAbout type string default {}", ABOUT));
                 self.send("uciok");
             }
             // Winboard probes from a GUI's auto-detection: stay silent, so that only UCI answers are seen
@@ -105,9 +106,6 @@ impl<W: Write> Engine<W> {
                 "value" => value = words.get(i + 1).copied().unwrap_or(""),
                 _ => {}
             }
-        }
-        if name.eq_ignore_ascii_case("UCI_EngineAbout") {
-            return;
         }
         match value.parse::<usize>() {
             Err(_) => self.send(&format!("info string option {}: bad value {:?}", name, value)),

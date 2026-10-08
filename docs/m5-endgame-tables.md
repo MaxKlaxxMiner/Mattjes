@@ -136,7 +136,7 @@ Arbeitsrechner (i5, 12 Threads), Go:
 
 ### Alle 110 Fünf-Steiner (Messlauf 2026-10-07)
 
-`measure-egtb.bat 5 12` auf dem Arbeitsrechner (i5, 12 Threads), Rust-Binary, ein Prozess
+Batch-Skript (seit Format v3 entfallen, siehe unten) auf dem Arbeitsrechner (i5, 12 Threads), Rust-Binary, ein Prozess
 pro Material, jede Tabelle anschließend vorwärts verifiziert. Start 16:37, Ende 18:36.
 Weder `panicked` noch `MISMATCH` im Konsolenlog, alle 110 Verifikationen melden 0
 Abweichungen. Alle Prüfsummen stehen seitdem als Konstanten im Code
@@ -326,6 +326,30 @@ Hochrechnung für sechs Steine ohne Bauern: 462 × 64⁴ × 2 = 15,5 Mrd. Indize
 pro Material, also 15,5 GB Tabelle plus 5,8 GB Bitsets, und bei gleicher Rate
 rund 50 Minuten bis zwei Stunden pro Material, je nach Ebenenzahl. Das ist
 zuhause (127 GB) machbar, am Arbeitsrechner nicht.
+
+### Format v3: kein Ungültig-Wert mehr, Verluste bis 254 (2026-10-08)
+
+Der Autor hatte den Fünf-Steiner-Cache ohnehin gelöscht, damit war die Formatänderung
+frei (keine Versionierung, keine Rohdatei-Kompatibilität mehr nötig). Das Byte kodiert
+jetzt 0 Remis, 1..127 Gewinn in 2v − 1 Halbzügen, 128..255 Verlust in 2(v − 128)
+Halbzügen; der Wert 128 für "ungültig" ist weg, dafür reicht der Verlust bis 254 und
+KPPKP ist vollständig. Tote Indizes (doppelt belegt, gleiche Steine in anderer
+Reihenfolge, Diagonal-Zwilling) und illegale Stellungen (Gegner im Schach) führt der
+Generator in einem Bitset: 1 Bit pro Index, also 1/8 der Tabelle (30 MB bei 231 MB,
+1,9 GB beim Sechs-Steiner), nur während der Erzeugung und bis zum Schreiben. Ihr Wert
+bleibt 0, vor dem Packen werden sie wie bisher mit dem Vorgänger gefüllt, `Verify`
+erkennt sie selbst (Index-Roundtrip, `OpponentInCheck`) und überspringt sie, und die
+Suche fragt sie nie ab. Datei und geladene Tabelle werden nicht größer.
+
+Alle Prüfsummen sind damit neu. Basis: `FileChecksum` 0x64fe872c7e217f6e, 35
+Tabellenwerte im Code, KBK und KNK sind jetzt identisch (beide komplett 0, vorher
+unterschieden sie sich nur in den Ungültig-Markierungen). Go und Rust erzeugen die
+Basisdatei byteidentisch (39.413.202 Byte), KBBBK ebenfalls (`a552a70f5be1c3db`,
+Verifikation 0 Abweichungen in beiden). Die Fünf-Steiner werden nicht in einem Rutsch
+neu gerechnet: Die Konstanten kommen nach und nach aus `egtb-measure`-Läufen, die
+Messtabelle oben bleibt als Anforderungstabelle gültig (Zeiten, Größen und Zählungen
+ändern sich durch das Format nicht, nur die Prüfsummen). `measure-egtb.bat` und
+`egtb-compress` sind entfallen.
 
 ## Nächster Generator-Schritt: Bauern-Scheiben (vorgemerkt 2026-10-07)
 

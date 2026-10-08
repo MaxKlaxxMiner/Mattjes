@@ -356,17 +356,6 @@ func runCommand(args []string) {
 		egtbList(pieces)
 	case "egtb-measure":
 		egtbMeasure(names, workers, verify)
-	case "egtb-compress":
-		// rewrites every raw table file of the cache directory in the compressed format
-		start := time.Now()
-		n, raw, packed, err := egtb.CompressCacheDir(egtb.DefaultCacheDir(), workers, func(line string) { fmt.Println(line) })
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		if packed > 0 {
-			fmt.Printf("compressed %d files: %d MB -> %d MB (%.2fx) in %.1f s\n", n, raw>>20, packed>>20, float64(raw)/float64(packed), time.Since(start).Seconds())
-		}
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command", args[0])
 		os.Exit(2)

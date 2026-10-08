@@ -158,7 +158,7 @@ impl Set {
             {
                 let mut pending = g.pending.lock().unwrap();
                 for &idx in &pending[level as usize] {
-                    cur.set(idx as usize);
+                    cur.set(idx);
                 }
                 pending[level as usize].clear();
             }
@@ -191,7 +191,7 @@ impl Set {
             {
                 let mut pending = g.pending.lock().unwrap();
                 for &idx in &pending[level as usize] {
-                    cur.set(idx as usize);
+                    cur.set(idx);
                 }
                 pending[level as usize].clear();
             }
@@ -204,6 +204,8 @@ impl Set {
         st.losses += mates;
         st.draws = legal - st.wins - st.losses;
         t.raw_checksum.store(super::checksum(t.bytes()), std::sync::atomic::Ordering::Relaxed);
+        let Generator { invalid, .. } = g;
+        t.set_invalid(invalid); // kept until the table is written (fill), 1/8 of the table
         st.duration = start.elapsed();
         progress(&format!(
             "{:<5} wins {:>9}, losses {:>9}, draws {:>9}, longest mate {} plies = {} moves, {:.1} s",
@@ -233,41 +235,39 @@ impl Set {
             for idx in lo..hi {
                 let sl = &mut sq[..n];
                 let white_move = t.decode(idx, sl);
-                let mut want = Value::DRAW;
+                // dead and illegal entries are "don't care" (a loaded table has them filled for compression)
                 if !distinct_squares(sl) || t.index(white_move, sl) != idx as i64 {
-                    want = Value::INVALID;
+                    continue;
+                }
+                let b = Board::from_pieces(white_move, sl, &g.pieces);
+                if b.opponent_in_check() {
+                    continue;
+                }
+                let mut want = Value::DRAW;
+                let m = b.gen_moves(&mut buf);
+                if m == 0 {
+                    if b.in_check() {
+                        want = Value::loss_in(0);
+                    }
                 } else {
-                    let b = Board::from_pieces(white_move, sl, &g.pieces);
-                    if b.opponent_in_check() {
-                        want = Value::INVALID;
-                    } else {
-                        let m = b.gen_moves(&mut buf);
-                        if m == 0 {
-                            if b.in_check() {
-                                want = Value::loss_in(0);
-                            }
+                    let (mut min_loss, mut max_win, mut all_win) = (u32::MAX, -1i64, true);
+                    for &mv in &buf[..m] {
+                        let v = g.child(&b, sl, mv);
+                        if v.is_loss() {
+                            min_loss = min_loss.min(v.plies());
+                        } else if v.is_win() {
+                            max_win = max_win.max(v.plies() as i64);
                         } else {
-                            let (mut min_loss, mut max_win, mut all_win) = (u32::MAX, -1i64, true);
-                            for &mv in &buf[..m] {
-                                let v = g.child(&b, sl, mv);
-                                if v.is_loss() {
-                                    min_loss = min_loss.min(v.plies());
-                                } else if v.is_win() {
-                                    max_win = max_win.max(v.plies() as i64);
-                                } else {
-                                    all_win = false;
-                                }
-                            }
-                            if min_loss < u32::MAX {
-                                want = Value::win_in(min_loss + 1);
-                            } else if all_win {
-                                want = Value::loss_in(max_win as u32 + 1);
-                            }
+                            all_win = false;
                         }
                     }
+                    if min_loss < u32::MAX {
+                        want = Value::win_in(min_loss + 1);
+                    } else if all_win {
+                        want = Value::loss_in(max_win as u32 + 1);
+                    }
                 }
-                // invalid entries are "don't care" (a loaded table has them filled for compression)
-                if want != Value::INVALID && t.value(idx) != want {
+                if t.value(idx) != want {
                     bad += 1;
                     if reported.fetch_add(1, Ordering::Relaxed) < 5 {
                         report(&format!("  {}: index {} {} stored {}, children say {}", t.mat.name(), idx, t.board(idx).fen(), t.value(idx), want));
@@ -290,10 +290,15 @@ struct Generator<'a> {
     /// `cand[level % 3]` holds the candidates of a level: positions with a child
     /// decided in the previous level (and, with en passant, two levels back).
     cand: [Bitset; 3],
+    /// Dead indices (doubly occupied, equal pieces in the other order, diagonal
+    /// twin) and illegal positions (opponent in check): their value stays 0
+    /// and is never looked up.
+    invalid: Bitset,
     /// `pending[level]` lists positions whose decision waits for a level that no
     /// in-table child will trigger: their decisive children lie in smaller tables
     /// (captures, promotions) with a larger distance.
-    pending: Mutex<Vec<Vec<u32>>>,
+    /// 64 bit: six-piece tables have up to 45 G indices.
+    pending: Mutex<Vec<Vec<usize>>>,
     /// Positions waiting for a level beyond MAX_PLIES+1 (cannot be stored).
     beyond: AtomicUsize,
 }
@@ -311,6 +316,7 @@ impl<'a> Generator<'a> {
             pieces,
             en_passant_possible: white_pawns && black_pawns,
             cand: [Bitset::new(n), Bitset::new(n), Bitset::new(n)],
+            invalid: Bitset::new(n),
             pending: Mutex::new(vec![Vec::new(); MAX_PLIES as usize + 2]),
             beyond: AtomicUsize::new(0),
         }
@@ -321,7 +327,7 @@ impl<'a> Generator<'a> {
             self.beyond.fetch_add(1, Ordering::Relaxed); // beyond the value range: counted for the overflow report
             return;
         }
-        self.pending.lock().unwrap()[level as usize].push(idx as u32);
+        self.pending.lock().unwrap()[level as usize].push(idx);
     }
 
     fn pending_beyond(&self, level: u32) -> bool {
@@ -342,12 +348,12 @@ impl<'a> Generator<'a> {
             let s = &mut sq[..n];
             let white_move = t.decode(idx, s);
             if !distinct_squares(s) || t.index(white_move, s) != idx as i64 {
-                t.set_value(idx, Value::INVALID); // doubly occupied or dead (equal pieces in the other order)
+                self.invalid.set(idx); // doubly occupied or dead (equal pieces in the other order)
                 continue;
             }
             let b = Board::from_pieces(white_move, s, &self.pieces);
             if b.opponent_in_check() {
-                t.set_value(idx, Value::INVALID);
+                self.invalid.set(idx);
                 continue;
             }
             legal += 1;
@@ -395,8 +401,8 @@ impl<'a> Generator<'a> {
     /// (1 if decided, 1 evaluation).
     fn scan_candidate(&self, level: u32, idx: usize) -> (usize, usize) {
         let t = self.t;
-        if t.value(idx) != Value::DRAW {
-            return (0, 0);
+        if t.value(idx) != Value::DRAW || self.invalid.get(idx) {
+            return (0, 0); // decided already, or an illegal parent reached by an un-move
         }
         let mut sq = [Pos::NONE; 6];
         let mut buf = new_buffer();
@@ -470,8 +476,8 @@ impl<'a> Generator<'a> {
     /// Sets the candidate bit of every position that reaches the position (sq,
     /// white_move) with a quiet move: a piece of the side that just moved is put
     /// back on an empty square it could have come from. Illegal parents are
-    /// harmless (their index is INVALID or they get re-evaluated), what matters
-    /// is that no legal parent is missed. Un-captures and un-promotions do not
+    /// harmless (the invalid bitset filters them), what matters is that no
+    /// legal parent is missed. Un-captures and un-promotions do not
     /// exist inside one table.
     fn mark_parents(&self, sq: &[Pos], white_move: bool, into: &Bitset) {
         let mover = if white_move { Piece::BLACK } else { Piece::WHITE };
@@ -639,13 +645,18 @@ fn distinct_squares(sq: &[Pos]) -> bool {
 pub struct Bitset(Vec<AtomicU64>);
 
 impl Bitset {
-    fn new(n: usize) -> Bitset {
+    pub(super) fn new(n: usize) -> Bitset {
         Bitset((0..n.div_ceil(64)).map(|_| AtomicU64::new(0)).collect())
     }
 
     #[inline(always)]
-    fn set(&self, i: usize) {
+    pub(super) fn set(&self, i: usize) {
         self.0[i >> 6].fetch_or(1 << (i & 63), Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub(super) fn get(&self, i: usize) -> bool {
+        self.0[i >> 6].load(Ordering::Relaxed) & (1 << (i & 63)) != 0
     }
 
     fn clear(&self) {

@@ -2,30 +2,33 @@
 
 use std::fmt;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Mutex;
 
+use super::generate::Bitset;
 use super::index::{KkTable, PAWN_OFFSET, PAWN_SQUARES, PIECE_SQUARES, SYMMETRY};
 use super::{board_signature, Material, SIGNATURE_SPACE};
 use crate::bitboard::Board;
 use crate::chess::{Piece, Pos};
 
 /// The table entry of a position from the point of view of the side to move:
-/// 0 draw, 1..127 mates in 2v-1 plies, 128 invalid position, 129..255 gets mated
-/// in 2(v-129) plies (129 = is mated right now). A win always takes an odd
-/// number of plies and a loss an even one, so storing the move count instead of
-/// the ply count doubles the range for free: up to 253 plies, which covers every
-/// five-piece ending (KBBKN needs 131). Format v2; v1 stored plies and
-/// overflowed at 126.
+/// 0 draw, 1..127 mates in 2v-1 plies, 128..255 gets mated in 2(v-128) plies
+/// (128 = is mated right now). A win always takes an odd number of plies and a
+/// loss an even one, so storing the move count instead of the ply count doubles
+/// the range for free: wins up to 253 plies, losses up to 254, which covers
+/// every five-piece ending (KPPKP needs a loss in 254). Dead and illegal
+/// indices have no value of their own: the generator keeps them in a bitset,
+/// stores 0 and fills them with their predecessor before compression; they are
+/// never looked up.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[repr(transparent)]
 pub struct Value(pub u8);
 
-const LOSS_BASE: u8 = 129;
-/// The longest distance a table can express (wins 253, losses 252).
-pub const MAX_PLIES: u32 = 253;
+const LOSS_BASE: u8 = 128;
+/// The longest distance a table can express (wins 253, losses 254).
+pub const MAX_PLIES: u32 = 254;
 
 impl Value {
     pub const DRAW: Value = Value(0);
-    pub const INVALID: Value = Value(128);
 
     /// A win in `plies` (odd).
     pub fn win_in(plies: u32) -> Value {
@@ -38,11 +41,11 @@ impl Value {
     }
 
     pub fn is_win(self) -> bool {
-        self.0 >= 1 && self.0 < Value::INVALID.0
+        self.0 >= 1 && self.0 < LOSS_BASE
     }
 
     pub fn is_loss(self) -> bool {
-        self.0 > Value::INVALID.0
+        self.0 >= LOSS_BASE
     }
 
     /// The distance to mate for a win or a loss, 0 otherwise.
@@ -61,8 +64,6 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if *self == Value::DRAW {
             write!(f, "draw")
-        } else if *self == Value::INVALID {
-            write!(f, "invalid")
         } else if self.is_win() {
             write!(f, "win in {}", self.plies())
         } else {
@@ -87,12 +88,15 @@ pub struct Table {
     pub size: usize,
     /// Empty until generated or loaded.
     pub values: Vec<AtomicU8>,
-    /// The checksum of the values as generated (Invalid entries included); set
-    /// after generation or read from the cache file header. Checksum constants
-    /// in the code refer to this. 0 = not computed yet.
+    /// The checksum of the values as generated (dead and illegal entries as 0);
+    /// set after generation or read from the cache file header. Checksum
+    /// constants in the code refer to this. 0 = not computed yet.
     pub raw_checksum: std::sync::atomic::AtomicU64,
-    /// Invalid entries were overwritten with their predecessor for compression
-    /// ("don't care"); the values no longer hash to raw_checksum.
+    /// The dead and illegal indices after generation (None for a loaded
+    /// table); only `fill` reads it, so a mutex costs nothing.
+    invalid: Mutex<Option<Bitset>>,
+    /// Dead and illegal entries were overwritten with their predecessor for
+    /// compression ("don't care"); the values no longer hash to raw_checksum.
     filled: std::sync::atomic::AtomicBool,
 }
 
@@ -106,7 +110,23 @@ impl Table {
         for s in &sizes {
             size *= s;
         }
-        Table { mat, slots, sizes, equal_prev, pawns, size, values: Vec::new(), raw_checksum: std::sync::atomic::AtomicU64::new(0), filled: std::sync::atomic::AtomicBool::new(false) }
+        Table {
+            mat,
+            slots,
+            sizes,
+            equal_prev,
+            pawns,
+            size,
+            values: Vec::new(),
+            raw_checksum: std::sync::atomic::AtomicU64::new(0),
+            invalid: Mutex::new(None),
+            filled: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Hands the generator's bitset of dead and illegal indices to the table.
+    pub(super) fn set_invalid(&self, invalid: Bitset) {
+        *self.invalid.lock().unwrap() = Some(invalid);
     }
 
     /// The checksum of the generated values, computed when the table was never
@@ -128,19 +148,21 @@ impl Table {
         self.filled.store(filled, Ordering::Relaxed);
     }
 
-    /// Replaces Invalid entries by their predecessor ("don't care"), once.
+    /// Replaces dead and illegal entries by their predecessor ("don't care"),
+    /// once, and drops the generator's bitset afterwards.
     pub(super) fn fill(&self) {
         if self.is_filled() {
             return;
         }
         self.raw_checksum();
-        let mut prev = Value::DRAW;
-        for v in &self.values {
-            let x = Value(v.load(Ordering::Relaxed));
-            if x == Value::INVALID {
-                v.store(prev.0, Ordering::Relaxed);
-            } else {
-                prev = x;
+        if let Some(invalid) = self.invalid.lock().unwrap().take() {
+            let mut prev = Value::DRAW;
+            for (i, v) in self.values.iter().enumerate() {
+                if invalid.get(i) {
+                    v.store(prev.0, Ordering::Relaxed);
+                } else {
+                    prev = Value(v.load(Ordering::Relaxed));
+                }
             }
         }
         self.set_filled(true);
@@ -150,6 +172,7 @@ impl Table {
     pub(super) fn clear(&mut self) {
         self.values = Vec::new();
         self.raw_checksum.store(0, Ordering::Relaxed);
+        *self.invalid.lock().unwrap() = None;
         self.set_filled(false);
     }
 
@@ -363,11 +386,8 @@ impl Set {
             return Some(Value::DRAW);
         }
         let (t, idx) = self.locate(b)?;
-        if !t.is_generated() {
-            return None;
-        }
-        if idx < 0 {
-            return Some(Value::INVALID);
+        if !t.is_generated() || idx < 0 {
+            return None; // idx < 0: adjacent kings, never reached from a legal position
         }
         Some(t.value(idx as usize))
     }

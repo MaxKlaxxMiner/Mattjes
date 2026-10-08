@@ -131,6 +131,8 @@ func (s *Set) Generate(t *Table, workers int, progress Progress) Stats {
 	for i := range g.cand {
 		g.cand[i] = newBitset(t.Size)
 	}
+	g.invalid = newBitset(t.Size)
+	t.invalid = g.invalid // kept until the table is written (fill), 1/8 of the table
 
 	var st Stats
 	legal, mates := g.parallelRange(workers, g.initRange)
@@ -200,10 +202,14 @@ type generator struct {
 	// cand[level%3] holds the candidates of a level: positions with a child
 	// decided in the previous level (and, with en passant, two levels back).
 	cand [3]bitset
+	// invalid marks dead indices (doubly occupied, equal pieces in the other
+	// order, diagonal twin) and illegal positions (opponent in check); their
+	// value stays 0 and is never looked up.
+	invalid bitset
 	// pending[level] lists positions whose decision waits for a level that no
 	// in-table child will trigger: their decisive children lie in smaller
 	// tables (captures, promotions) with a larger distance.
-	pending   [MaxPlies + 2][]uint32
+	pending   [MaxPlies + 2][]int64 // 64 bit: six-piece tables have up to 45 G indices
 	pendingMu sync.Mutex
 	beyond    atomic.Int64 // positions waiting for a level beyond MaxPlies+1 (cannot be stored)
 }
@@ -229,7 +235,7 @@ func (g *generator) registerPending(level, idx int) {
 		return
 	}
 	g.pendingMu.Lock()
-	g.pending[level] = append(g.pending[level], uint32(idx))
+	g.pending[level] = append(g.pending[level], int64(idx))
 	g.pendingMu.Unlock()
 }
 
@@ -248,6 +254,8 @@ type bitset []uint64
 func newBitset(n int) bitset { return make(bitset, (n+63)/64) }
 
 func (b bitset) set(i int) { atomic.OrUint64(&b[i>>6], 1<<(uint(i)&63)) }
+
+func (b bitset) get(i int) bool { return b[i>>6]&(1<<(uint(i)&63)) != 0 }
 
 func (b bitset) clear() {
 	for i := range b {
@@ -321,12 +329,12 @@ func (g *generator) initRange(lo, hi int) (int, int) {
 		s := sq[:len(g.pieces)]
 		whiteMove := t.Decode(idx, s)
 		if !distinctSquares(s) || t.Index(whiteMove, s) != idx {
-			t.Values[idx] = Invalid // doubly occupied or dead (equal pieces in the other order)
+			g.invalid.set(idx) // doubly occupied or dead (equal pieces in the other order)
 			continue
 		}
 		b := bitboard.FromPieces(whiteMove, s, g.pieces)
 		if b.OpponentInCheck() {
-			t.Values[idx] = Invalid
+			g.invalid.set(idx)
 			continue
 		}
 		legal++
@@ -375,8 +383,8 @@ func (g *generator) initRange(lo, hi int) (int, int) {
 // scan is dry: it only counts what the byte cannot hold.
 func (g *generator) scanCandidates(idx int) (int, int) {
 	t := g.t
-	if t.Values[idx] != 0 {
-		return 0, 0
+	if t.Values[idx] != 0 || g.invalid.get(idx) {
+		return 0, 0 // decided already, or an illegal parent reached by an un-move
 	}
 	level := g.level
 	dry := level > MaxPlies
@@ -453,8 +461,8 @@ moves:
 // markParents sets the candidate bit of every position that reaches the
 // position (sq, whiteMove) with a quiet move: a piece of the side that just
 // moved is put back on an empty square it could have come from. Illegal
-// parents are harmless (their index is Invalid or they get re-evaluated),
-// what matters is that no legal parent is missed. Un-captures and
+// parents are harmless (the invalid bitset filters them), what matters is
+// that no legal parent is missed. Un-captures and
 // un-promotions do not exist inside one table.
 func (g *generator) markParents(sq []chess.Pos, whiteMove bool, into bitset) {
 	mover := chess.Black
@@ -639,38 +647,38 @@ func (s *Set) Verify(t *Table, workers int, report func(string)) int {
 		for idx := lo; idx < hi; idx++ {
 			sl := sq[:len(g.pieces)]
 			whiteMove := t.Decode(idx, sl)
-			want := Draw
+			// dead and illegal entries are "don't care" (a loaded table has them filled for compression)
 			if !distinctSquares(sl) || t.Index(whiteMove, sl) != idx {
-				want = Invalid
+				continue
+			}
+			b := bitboard.FromPieces(whiteMove, sl, g.pieces)
+			if b.OpponentInCheck() {
+				continue
+			}
+			want := Draw
+			if n := b.GenMoves(&buf); n == 0 {
+				if b.InCheck() {
+					want = LossIn(0)
+				}
 			} else {
-				b := bitboard.FromPieces(whiteMove, sl, g.pieces)
-				if b.OpponentInCheck() {
-					want = Invalid
-				} else if n := b.GenMoves(&buf); n == 0 {
-					if b.InCheck() {
-						want = LossIn(0)
-					}
-				} else {
-					minLoss, maxWin, allWin := 1<<30, -1, true
-					for _, m := range buf[:n] {
-						switch v := g.child(&b, sl, m); {
-						case v.IsLoss():
-							minLoss = min(minLoss, v.Plies())
-						case v.IsWin():
-							maxWin = max(maxWin, v.Plies())
-						default:
-							allWin = false
-						}
-					}
-					if minLoss < 1<<30 {
-						want = WinIn(minLoss + 1)
-					} else if allWin {
-						want = LossIn(maxWin + 1)
+				minLoss, maxWin, allWin := 1<<30, -1, true
+				for _, m := range buf[:n] {
+					switch v := g.child(&b, sl, m); {
+					case v.IsLoss():
+						minLoss = min(minLoss, v.Plies())
+					case v.IsWin():
+						maxWin = max(maxWin, v.Plies())
+					default:
+						allWin = false
 					}
 				}
+				if minLoss < 1<<30 {
+					want = WinIn(minLoss + 1)
+				} else if allWin {
+					want = LossIn(maxWin + 1)
+				}
 			}
-			// invalid entries are "don't care" (a loaded table has them filled for compression)
-			if want != Invalid && t.Values[idx] != want {
+			if t.Values[idx] != want {
 				bad++
 				if reported.Add(1) <= 5 && report != nil {
 					b := t.Board(idx)

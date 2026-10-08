@@ -13,7 +13,7 @@ pub use generate::{Progress, Stats, KNOWN_MAXIMA};
 #[allow(unused_imports)]
 pub use index::{KK_PAWNLESS, KK_PAWNS};
 #[allow(unused_imports)]
-pub use persist::{checksum, compress_cache_dir, default_cache_dir, default_path, recorded_checksum, BASE_FILE_NAME, CACHE_DIR, FILE_CHECKSUM, IO_WORKERS, TABLE_CHECKSUMS};
+pub use persist::{checksum, default_cache_dir, default_path, recorded_checksum, BASE_FILE_NAME, CACHE_DIR, FILE_CHECKSUM, IO_WORKERS, TABLE_CHECKSUMS};
 #[allow(unused_imports)]
 pub use table::{Set, Table, Value, MAX_PIECES, MAX_PLIES};
 

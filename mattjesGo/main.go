@@ -38,7 +38,6 @@ func main() {
 	//   test                                              the experiment block in experiments()
 	//   egtb-list <pieces>                                names of all materials with that many pieces
 	//   egtb-measure <name>... [--verify] [--workers N]   generate or load the tables, log to the cache dir
-	//   egtb-compress [--workers N]                       rewrite raw cache files compressed
 	if len(os.Args) == 1 {
 		uci.Run(os.Stdin, os.Stdout, "Mattjes "+uci.Version+" (Go)", runtime.NumCPU())
 		return
@@ -109,7 +108,7 @@ func experiments() {
 	// matelistSolve("KQ-KBN", 0, 200, 400_000_000) // 387 M positions at ply 16, aborted at ply 17 after 960 s, 42 GB peak; the space is 700-750 M
 
 	// --- milestone 5, measurement series: five- and six-piece tables (time, memory, size, checksum), cache dir mattjes-egtb-cache/ ---
-	egtbLoadOrGenerate(12) // makes sure the four-piece base exists (17 s once, then 0.2 s); larger materials via measure-egtb.bat
+	egtbLoadOrGenerate(12) // makes sure the four-piece base exists (17 s once, then 0.2 s); larger materials via "egtb-measure <name>"
 	// egtbMeasure([]string{"KQKBN"}, 12, true) // generated in 47 s, 845 MB process; loads the file, checks KQ-KBN = win in 77 and verifies every position forward
 	// matepnSolve(12, 256, "sat", "mEfi") // iterative deepening: the shortest mate, cost of all depths (KQ-KN 7.9 M visits)
 	// mateabSolve(17, 256, false) // the same positions with the depth-first search, for comparison

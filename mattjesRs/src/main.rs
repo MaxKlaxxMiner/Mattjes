@@ -41,7 +41,6 @@ fn main() {
     //   test                                              the experiment block in experiments()
     //   egtb-list <pieces>                                names of all materials with that many pieces
     //   egtb-measure <name>... [--verify] [--workers N]   generate or load the tables, log to the cache dir
-    //   egtb-compress [--workers N]                       rewrite raw cache files compressed
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     if args.is_empty() {
@@ -54,18 +53,6 @@ fn main() {
         match args[0].as_str() {
             "test" => experiments(),
             "egtb-list" => tests_egtb::egtb_list(args.get(1).and_then(|s| s.parse().ok()).unwrap_or(5)),
-            "egtb-compress" => {
-                // rewrites every raw table file of the cache directory in the compressed format
-                let start = std::time::Instant::now();
-                match egtb::compress_cache_dir(&egtb::default_cache_dir(), workers, &mut |line| println!("{}", line)) {
-                    Ok((n, raw, packed)) if packed > 0 => println!("compressed {} files: {} MB -> {} MB ({:.2}x) in {:.1} s", n, raw >> 20, packed >> 20, raw as f64 / packed as f64, start.elapsed().as_secs_f64()),
-                    Ok(_) => {}
-                    Err(e) => {
-                        eprintln!("{}", e);
-                        std::process::exit(1);
-                    }
-                }
-            }
             "egtb-measure" => {
                 let verify = args.iter().any(|a| a == "--verify");
                 let mut names = Vec::new();
@@ -154,7 +141,7 @@ fn experiments() {
     // tests_mate::matelist_solve("KQ-KBN", 0, 200, 400_000_000); // 387 M positions at ply 16, aborted at ply 17 after 960 s, 42 GB peak; the space is 700-750 M
 
     // --- milestone 5, measurement series: five- and six-piece tables (time, size, checksum), cache dir mattjes-egtb-cache/ ---
-    tests_egtb::egtb_load_or_generate(12); // makes sure the four-piece base exists (15 s once, then 0.2 s); larger materials via measure-egtb.bat
+    tests_egtb::egtb_load_or_generate(12); // makes sure the four-piece base exists (15 s once, then 0.2 s); larger materials via "egtb-measure <name>"
     // tests_egtb::egtb_measure(&["KQKBN"], 12, true); // generated in 45 s, checksum 7b54498535f836cb, byte-identical to Go
     // tests_pn::matepn_solve(12, 256, "sat", "mEfi"); // iterative deepening: the shortest mate, cost of all depths
 }

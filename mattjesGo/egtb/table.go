@@ -9,28 +9,29 @@ import (
 )
 
 // Value is the table entry of a position from the point of view of the side
-// to move: 0 draw, 1..127 mates in 2v-1 plies, 128 invalid position, 129..255
-// gets mated in 2(v-129) plies (129 = is mated right now). A win always takes
-// an odd number of plies and a loss an even one, so storing the move count
-// instead of the ply count doubles the range for free: up to 253 plies, which
-// covers every five-piece ending (KBBKN needs 131). Format v2; v1 stored plies
-// and overflowed at 126.
+// to move: 0 draw, 1..127 mates in 2v-1 plies, 128..255 gets mated in
+// 2(v-128) plies (128 = is mated right now). A win always takes an odd number
+// of plies and a loss an even one, so storing the move count instead of the
+// ply count doubles the range for free: wins up to 253 plies, losses up to
+// 254, which covers every five-piece ending (KPPKP needs a loss in 254). Dead
+// and illegal indices have no value of their own: the generator keeps them in
+// a bitset, stores 0 and fills them with their predecessor before
+// compression; they are never looked up.
 type Value uint8
 
 const (
 	Draw     Value = 0
-	Invalid  Value = 128
-	lossBase       = 129
-	// MaxPlies is the longest distance a table can express (wins 253, losses 252).
-	MaxPlies = 253
+	lossBase       = 128
+	// MaxPlies is the longest distance a table can express (wins 253, losses 254).
+	MaxPlies = 254
 )
 
 // WinIn encodes a win in plies (odd); LossIn a loss in plies (even).
 func WinIn(plies int) Value  { return Value((plies + 1) / 2) }
 func LossIn(plies int) Value { return Value(lossBase + plies/2) }
 
-func (v Value) IsWin() bool  { return v >= 1 && v < Invalid }
-func (v Value) IsLoss() bool { return v > Invalid }
+func (v Value) IsWin() bool  { return v >= 1 && v < lossBase }
+func (v Value) IsLoss() bool { return v >= lossBase }
 
 // Plies is the distance to mate for a win or a loss, 0 otherwise.
 func (v Value) Plies() int {
@@ -47,8 +48,6 @@ func (v Value) String() string {
 	switch {
 	case v == Draw:
 		return "draw"
-	case v == Invalid:
-		return "invalid"
 	case v.IsWin():
 		return fmt.Sprintf("win in %d", v.Plies())
 	}
@@ -66,13 +65,16 @@ type Table struct {
 	kk        *kkTable
 	Size      int
 	Values    []Value // nil until generated or loaded
-	// RawChecksum is the checksum of the values as generated (Invalid entries
-	// included); set after generation or read from the cache file header.
+	// RawChecksum is the checksum of the values as generated (dead and illegal
+	// entries as 0); set after generation or read from the cache file header.
 	// Checksum constants in the code refer to this.
 	RawChecksum uint64
-	// filled: Invalid entries were overwritten with their predecessor for
-	// compression ("don't care"); Values no longer hash to RawChecksum.
-	filled bool
+	// invalid marks the dead and illegal indices after generation (nil for a
+	// loaded table); filled: those entries were overwritten with their
+	// predecessor for compression ("don't care"), Values no longer hash to
+	// RawChecksum.
+	invalid bitset
+	filled  bool
 }
 
 func newTable(m Material) *Table {
@@ -297,11 +299,8 @@ func (s *Set) Lookup(b *bitboard.Board) (v Value, ok bool) {
 		return Draw, true
 	}
 	t, idx, ok := s.Locate(b)
-	if !ok || t.Values == nil {
+	if !ok || t.Values == nil || idx < 0 { // idx < 0: adjacent kings, never reached from a legal position
 		return Draw, false
-	}
-	if idx < 0 {
-		return Invalid, true
 	}
 	return t.Values[idx], true
 }

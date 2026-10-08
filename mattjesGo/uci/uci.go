@@ -28,8 +28,8 @@ import (
 // worked on.
 const Version = "0.6"
 
-// About is the UCI_EngineAbout option, shown by GUIs as the engine description.
-const About = "Mattjes " + Version + " by Max Klaxx Miner, a mate and draw search engine with its own endgame tables, GPLv3, https://github.com/MaxKlaxxMiner/Mattjes"
+// About is the banner line printed at startup (unprompted, as most engines do).
+const About = "Mattjes " + Version + " by Max Klaxx Miner, a mate and draw search engine with its own endgame tables, GPLv3"
 
 // Engine is the state between commands.
 type Engine struct {
@@ -45,6 +45,8 @@ type Engine struct {
 // reported to the GUI (the Go and Rust binaries differ).
 func Run(in io.Reader, out io.Writer, name string, workers int) {
 	e := &Engine{out: bufio.NewWriter(out), board: bitboard.New(), multiPV: 1, workers: workers, name: name}
+	e.send("%s", About)
+	e.out.Flush()
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 1<<16), 1<<20)
 	for scanner.Scan() {
@@ -71,7 +73,6 @@ func (e *Engine) command(words []string) bool {
 		e.send("id author Max Klaxx Miner")
 		e.send("option name MultiPV type spin default 1 min 1 max 256")
 		e.send("option name Threads type spin default %d min 1 max 64", e.workers)
-		e.send("option name UCI_EngineAbout type string default %s", About)
 		e.send("uciok")
 	case "xboard", "protover", "new", "force":
 		// Winboard probes from a GUI's auto-detection: stay silent, so that only UCI answers are seen
@@ -121,7 +122,6 @@ func (e *Engine) setOption(words []string) {
 		e.multiPV = max(1, n)
 	case strings.EqualFold(name, "Threads"):
 		e.workers = max(1, n)
-	case strings.EqualFold(name, "UCI_EngineAbout"):
 	default:
 		e.send("info string unknown option %s", name)
 	}
