@@ -14,9 +14,10 @@ mattjesRs/target/
 .vs/
 *.iml
 
-# endgame table cache (4-all.bin generated in 20 s, 173 MB; larger materials on demand)
+# endgame table cache (4-all.bin generated in 20 s, 173 MB; larger materials on demand);
+# without the trailing slash, so that a directory junction to another drive is ignored too
 mattjes-egtb.bin
-mattjes-egtb-cache/
+mattjes-egtb-cache
 
 # profiling / benchmark dumps
 *.prof

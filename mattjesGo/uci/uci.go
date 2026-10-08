@@ -24,6 +24,13 @@ import (
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
 )
 
+// Version is reported in "id name"; it follows the milestone that is being
+// worked on.
+const Version = "0.6"
+
+// About is the UCI_EngineAbout option, shown by GUIs as the engine description.
+const About = "Mattjes " + Version + " by Max Klaxx Miner, a mate and draw search engine with its own endgame tables, GPLv3, https://github.com/MaxKlaxxMiner/Mattjes"
+
 // Engine is the state between commands.
 type Engine struct {
 	out     *bufio.Writer
@@ -64,7 +71,10 @@ func (e *Engine) command(words []string) bool {
 		e.send("id author Max Klaxx Miner")
 		e.send("option name MultiPV type spin default 1 min 1 max 256")
 		e.send("option name Threads type spin default %d min 1 max 64", e.workers)
+		e.send("option name UCI_EngineAbout type string default %s", About)
 		e.send("uciok")
+	case "xboard", "protover", "new", "force":
+		// Winboard probes from a GUI's auto-detection: stay silent, so that only UCI answers are seen
 	case "isready":
 		e.ensureTables()
 		e.send("readyok")
@@ -111,6 +121,7 @@ func (e *Engine) setOption(words []string) {
 		e.multiPV = max(1, n)
 	case strings.EqualFold(name, "Threads"):
 		e.workers = max(1, n)
+	case strings.EqualFold(name, "UCI_EngineAbout"):
 	default:
 		e.send("info string unknown option %s", name)
 	}

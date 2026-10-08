@@ -40,7 +40,7 @@ func main() {
 	//   egtb-measure <name>... [--verify] [--workers N]   generate or load the tables, log to the cache dir
 	//   egtb-compress [--workers N]                       rewrite raw cache files compressed
 	if len(os.Args) == 1 {
-		uci.Run(os.Stdin, os.Stdout, "Mattjes (Go)", runtime.NumCPU())
+		uci.Run(os.Stdin, os.Stdout, "Mattjes "+uci.Version+" (Go)", runtime.NumCPU())
 		return
 	}
 	runCommand(os.Args[1:])
