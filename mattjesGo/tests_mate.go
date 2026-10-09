@@ -162,7 +162,7 @@ func matelistSolve(name string, maxMateIn int, maxPlies int, maxPositions int) {
 			panic(err)
 		}
 		start := time.Now()
-		r, err := matelist.Solve(&b, maxPlies, maxPositions, func(line string) {
+		r, err := matelist.Solve(&b, maxPlies, maxPositions, nil, func(line string) {
 			fmt.Printf("    %s  %s\n", line, fmtMs(time.Since(start)))
 		})
 		elapsed := time.Since(start)

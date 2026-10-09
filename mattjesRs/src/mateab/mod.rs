@@ -22,12 +22,18 @@ pub use ttvalue::VALUE_BITS;
 
 use ttvalue::{pack_value, same_move, unpack_value, TT_MATE, TT_NO_MATE};
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use crate::bitboard::Board;
-use crate::chess::{new_buffer, Move, Piece, Pos};
+use crate::chess::{new_buffer, Move, Piece, Pos, RootMove};
 use crate::tt::TransTable;
 
 /// Bounds the search depth in plies (the TT depth field holds 7 bits).
 pub const MAX_PLY: usize = 128;
+
+/// The polling interval of the stop flag (a power of two).
+pub const STOP_NODES: u64 = 1 << 12;
 
 /// Returned by the node functions when no forced mate exists within the
 /// remaining depth.
@@ -46,6 +52,14 @@ pub struct Result {
     pub tt_hits: u64,
     /// Nodes decided by the oracle with an exact distance (endgame tables).
     pub oracle_hits: u64,
+    /// The deepest completed depth.
+    pub plies: u32,
+    /// The stop flag was set: the result is that of the last completed depth.
+    pub aborted: bool,
+    /// The root moves best first: the mating move, then the refuted ones by
+    /// the nodes their refutation cost (the most promising first), then the
+    /// moves the depth never reached.
+    pub root: Vec<RootMove>,
 }
 
 /// Per-search state: the oracle, the optional table, node counters, principal
@@ -60,13 +74,24 @@ pub struct Searcher<O: Oracle, T: TransTable> {
     pv: Box<[[Move; MAX_PLY]; MAX_PLY]>,
     pv_len: [usize; MAX_PLY],
     killer: [Move; MAX_PLY],
-    /// Called every `PROGRESS_NODES` nodes of a depth with the node count and the
-    /// table, for long searches.
+    /// Called every `progress_every` nodes of a depth (a power of two,
+    /// `PROGRESS_NODES` unless changed) with the node count and the table, for
+    /// long searches.
     pub progress: Option<ProgressFn<T>>,
+    pub progress_every: u64,
+    /// Polled every `STOP_NODES` nodes: once true, the search unwinds without
+    /// storing anything and `solve` returns the last completed depth with
+    /// `aborted` set (UCI "stop" and time limits).
+    pub stop: Option<Arc<AtomicBool>>,
+    aborted: bool,
+    /// The root move under examination (for progress lines) and the nodes
+    /// each refuted root move cost in the current depth.
+    current: Option<Move>,
+    root_costs: Vec<(Move, u64)>,
 }
 
 /// The progress callback type of `Searcher::progress`.
-pub type ProgressFn<T> = Box<dyn FnMut(u64, Option<&T>)>;
+pub type ProgressFn<T> = Box<dyn FnMut(u64, Option<Move>, Option<&T>)>;
 
 /// The interval of progress calls (a power of two).
 pub const PROGRESS_NODES: u64 = 1 << 26;
@@ -76,7 +101,52 @@ const NO_SQUARE: Pos = Pos(-1);
 impl<O: Oracle, T: TransTable> Searcher<O, T> {
     /// A searcher that asks `oracle` at every node and uses `table` (`None` for none).
     pub fn new(oracle: O, table: Option<T>) -> Searcher<O, T> {
-        Searcher { oracle, table, nodes: 0, tt_hits: 0, oracle_hits: 0, pv: Box::new([[Move::NONE; MAX_PLY]; MAX_PLY]), pv_len: [0; MAX_PLY], killer: [Move::NONE; MAX_PLY], progress: None }
+        Searcher { oracle, table, nodes: 0, tt_hits: 0, oracle_hits: 0, pv: Box::new([[Move::NONE; MAX_PLY]; MAX_PLY]), pv_len: [0; MAX_PLY], killer: [Move::NONE; MAX_PLY], progress: None, progress_every: PROGRESS_NODES, stop: None, aborted: false, current: None, root_costs: Vec::new() }
+    }
+
+    /// Lists the root moves best first: the mating move with its line, then
+    /// the refuted moves by the nodes their refutation cost (a hard refutation
+    /// is the best hint at a promising move), then the moves the depth never
+    /// reached (the first success ended it) in generation order.
+    fn root_moves(&self, root: &Board, pv: &[Move], dist: i32) -> Vec<RootMove> {
+        let mut out: Vec<RootMove> = Vec::new();
+        if dist != NO_MATE {
+            if let Some(&m) = pv.first() {
+                out.push(RootMove { mv: m, proven: true, mate_plies: dist as u32, pv: pv.to_vec() });
+            }
+        }
+        let mut costs = self.root_costs.clone();
+        costs.sort_by_key(|c| std::cmp::Reverse(c.1)); // stable
+        for (m, _) in costs {
+            if !out.iter().any(|e| e.mv == m) {
+                out.push(RootMove { mv: m, ..Default::default() });
+            }
+        }
+        let mut buf = new_buffer();
+        let n = root.gen_moves(&mut buf);
+        for &m in &buf[..n] {
+            if !out.iter().any(|e| e.mv == m) {
+                out.push(RootMove { mv: m, ..Default::default() });
+            }
+        }
+        out
+    }
+
+    /// The root move the search is examining right now.
+    pub fn current_move(&self) -> Option<Move> {
+        self.current
+    }
+
+    /// Polls the stop flag every `STOP_NODES` nodes.
+    #[inline(always)]
+    fn check_stop(&mut self) {
+        if self.nodes & (STOP_NODES - 1) == 0 {
+            if let Some(s) = &self.stop {
+                if s.load(Ordering::Relaxed) {
+                    self.aborted = true;
+                }
+            }
+        }
     }
 
     /// The table (for statistics after the search).
@@ -95,6 +165,7 @@ impl<O: Oracle, T: TransTable> Searcher<O, T> {
     /// last depth, with `mate_plies` 0). Nodes accumulate over all depths.
     pub fn solve(&mut self, root: &Board, max_plies: u32, mut report: impl FnMut(u32, &Result)) -> Result {
         self.killer = [Move::NONE; MAX_PLY];
+        self.aborted = false;
         let (mut total_nodes, mut total_hits, mut total_oracle) = (0u64, 0u64, 0u64);
         let mut last = Result::default();
         let mut d = 1u32;
@@ -102,15 +173,24 @@ impl<O: Oracle, T: TransTable> Searcher<O, T> {
             self.nodes = 0;
             self.tt_hits = 0;
             self.oracle_hits = 0;
+            self.root_costs.clear();
             let dist = self.attack(root, d, 0);
             total_nodes += self.nodes;
             total_hits += self.tt_hits;
             total_oracle += self.oracle_hits;
-            last = Result { nodes: total_nodes, tt_hits: total_hits, oracle_hits: total_oracle, ..Default::default() };
+            if self.aborted {
+                last.nodes = total_nodes;
+                last.tt_hits = total_hits;
+                last.oracle_hits = total_oracle;
+                last.aborted = true;
+                break;
+            }
+            last = Result { nodes: total_nodes, tt_hits: total_hits, oracle_hits: total_oracle, plies: d, ..Default::default() };
             if dist != NO_MATE {
                 last.mate_plies = dist as u32;
                 last.pv = self.extend_pv(root, dist as usize);
             }
+            last.root = self.root_moves(root, &last.pv, dist);
             report(d, &last);
             if dist != NO_MATE {
                 break;
@@ -150,10 +230,14 @@ impl<O: Oracle, T: TransTable> Searcher<O, T> {
     /// moves are tried, because a mating move is always a check.
     fn attack(&mut self, b: &Board, depth: u32, ply: usize) -> i32 {
         self.nodes += 1;
-        if self.nodes & (PROGRESS_NODES - 1) == 0 {
+        if self.nodes & (self.progress_every - 1) == 0 {
             if let Some(p) = self.progress.as_mut() {
-                p(self.nodes, self.table.as_ref());
+                p(self.nodes, self.current, self.table.as_ref());
             }
+        }
+        self.check_stop();
+        if self.aborted {
+            return NO_MATE;
         }
         match self.oracle.probe(b) {
             (Verdict::Draw | Verdict::Loss, _) => return NO_MATE,
@@ -195,7 +279,17 @@ impl<O: Oracle, T: TransTable> Searcher<O, T> {
         for &m in &buf[..n] {
             let mut child = *b;
             child.do_move(m);
+            let before = self.nodes;
+            if ply == 0 {
+                self.current = Some(m);
+            }
             let r = self.defend(&child, depth - 1, ply + 1);
+            if self.aborted {
+                return NO_MATE; // nothing is stored on the way out
+            }
+            if ply == 0 {
+                self.root_costs.push((m, self.nodes - before));
+            }
             if r != NO_MATE {
                 self.set_pv(ply, m);
                 self.killer[ply] = m;
@@ -245,6 +339,9 @@ impl<O: Oracle, T: TransTable> Searcher<O, T> {
             let mut child = *b;
             child.do_move(m);
             let r = self.attack(&child, depth - 1, ply + 1);
+            if self.aborted {
+                return NO_MATE;
+            }
             if r == NO_MATE {
                 self.killer[ply] = m;
                 self.store(b, TT_NO_MATE, depth, m);

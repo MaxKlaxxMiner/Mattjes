@@ -78,7 +78,7 @@ fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, 
         let start = Instant::now();
         let depth_start = std::rc::Rc::new(std::cell::Cell::new(start));
         let ds = depth_start.clone();
-        s.progress = Some(Box::new(move |nodes, t: &T| {
+        s.progress = Some(Box::new(move |nodes, _current, t: &T| {
             let st = t.stats();
             println!("              ... {} nodes, {}, tt {} stores, {} replaced", group(nodes), fmt_ms(ds.get().elapsed()), group(st.stores), group(st.replaced));
         }));

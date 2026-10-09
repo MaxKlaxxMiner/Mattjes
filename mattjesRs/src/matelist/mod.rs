@@ -15,8 +15,10 @@
 //! edge (child list during enumeration, parent list afterwards) plus a few bytes
 //! of counters per position.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::bitboard::{packed_fixed_record, Board, Codec, PackedFixed};
-use crate::chess::{new_buffer, Move};
+use crate::chess::{new_buffer, Move, RootMove};
 use crate::ttstore::{Store, MAX_LOAD_PERCENT};
 
 type Record = [u8; PackedFixed::MAX_BYTES];
@@ -28,6 +30,9 @@ type Record = [u8; PackedFixed::MAX_BYTES];
 pub struct Result {
     pub mate_plies: u32,
     pub pv: Vec<Move>,
+    /// The root moves best first: the mating ones by length, the rest in
+    /// generation order.
+    pub root: Vec<RootMove>,
     /// Enumerated positions.
     pub positions: usize,
     /// Positions whose moves were generated (all but the horizon layer).
@@ -64,8 +69,10 @@ fn lose_in(n: u32) -> u8 {
 /// position once, whichever ply reaches it first), gives up with an error beyond
 /// `max_positions`, and resolves mate distances backwards. The horizon layer is
 /// not expanded; positions whose proof would need it stay unknown, which is safe.
-/// `progress` receives one line per phase and per breadth-first ply.
-pub fn solve(root: &Board, max_plies: u32, max_positions: usize, progress: &mut dyn FnMut(&str)) -> std::result::Result<Result, String> {
+/// `progress` receives one line per phase and per breadth-first ply. `stop`
+/// (optional) is polled before every ply: once set, the enumeration ends at
+/// that ply boundary and the backward phase resolves what was reached.
+pub fn solve(root: &Board, max_plies: u32, max_positions: usize, stop: Option<&AtomicBool>, progress: &mut dyn FnMut(&str)) -> std::result::Result<Result, String> {
     let mut slots = 1024;
     while slots * MAX_LOAD_PERCENT / 100 < max_positions {
         slots *= 2;
@@ -93,6 +100,9 @@ pub fn solve(root: &Board, max_plies: u32, max_positions: usize, progress: &mut 
     let mut level: Vec<u32> = vec![0];
     let mut plies = 0u32;
     while plies < max_plies && !level.is_empty() {
+        if stop.is_some_and(|s| s.load(Ordering::Relaxed)) {
+            break; // the current level becomes the horizon
+        }
         let mut next: Vec<u32> = Vec::new();
         for &i in &level {
             child_start.push(children.len() as u32);
@@ -190,10 +200,11 @@ pub fn solve(root: &Board, max_plies: u32, max_positions: usize, progress: &mut 
     progress(&format!("retrograde: {} of {} positions resolved, longest mate {} plies", resolved, recs.len(), max_level));
 
     let mut r = Result { positions: recs.len(), expanded, edges, plies, resolved, max_level, ..Default::default() };
+    r.root = root_moves(root, &store, &status);
     let s = status[0];
     if s != UNKNOWN && s & LOSE_FLAG == 0 {
         r.mate_plies = s as u32;
-        r.pv = principal_variation(root, &store, &status);
+        r.pv = principal_variation(root, 0, &store, &status);
         (r.proof_positions, r.proof_edges) = proof_size(&recs, &store, &status);
         progress(&format!("proof DAG: {} positions, {} edges (attacker one shortest move, defender all moves)", r.proof_positions, r.proof_edges));
     }
@@ -246,10 +257,36 @@ fn proof_size(recs: &[Record], store: &Store, status: &[u8]) -> (usize, usize) {
 
 /// Follows the mate distances from the root: the winner picks a child that
 /// loses in n-1, the loser a child that wins in n-1.
-fn principal_variation(root: &Board, store: &Store, status: &[u8]) -> Vec<Move> {
+/// Lists the root moves best first: those that mate by the length of the
+/// mate, then the rest in generation order (the graph knows them as draws,
+/// losses or unresolved).
+fn root_moves(root: &Board, store: &Store, status: &[u8]) -> Vec<RootMove> {
+    let mut buf = new_buffer();
+    let n = root.gen_moves(&mut buf);
+    let mut out: Vec<RootMove> = Vec::with_capacity(n);
+    for &m in &buf[..n] {
+        let mut child = *root;
+        child.do_move(m);
+        let mut e = RootMove { mv: m, ..Default::default() };
+        if let Some(idx) = store.get(child.key) {
+            let s = status[idx as usize];
+            if s & LOSE_FLAG != 0 {
+                e.proven = true;
+                e.mate_plies = (s & !LOSE_FLAG) as u32 + 1;
+                e.pv = std::iter::once(m).chain(principal_variation(&child, idx as usize, store, status)).collect();
+            }
+        }
+        out.push(e);
+    }
+    out.sort_by(|a, b| b.proven.cmp(&a.proven).then_with(|| if a.proven { a.mate_plies.cmp(&b.mate_plies) } else { std::cmp::Ordering::Equal }));
+    out
+}
+
+/// Follows the mate distances from the position at index `cur`: the winner
+/// picks a child that loses in n-1, the loser a child that wins in n-1.
+fn principal_variation(root: &Board, mut cur: usize, store: &Store, status: &[u8]) -> Vec<Move> {
     let mut pv = Vec::new();
     let mut b = *root;
-    let mut cur = 0usize;
     let mut buf = new_buffer();
     loop {
         let s = status[cur];

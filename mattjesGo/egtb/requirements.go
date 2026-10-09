@@ -36,7 +36,7 @@ func (s *Set) EstimateBytes(t *Table) (bytes int, measured bool) {
 		return r.PeakMB << 20, true
 	}
 	n := t.Size + t.Size/2 + t.Size/4
-	for _, d := range t.Mat.dependencies() {
+	for _, d := range t.Mat.Dependencies() {
 		if dt := s.Find(d.Name()); dt == nil || dt.Values == nil {
 			n += newTable(d).Size
 		}

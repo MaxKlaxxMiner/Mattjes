@@ -17,6 +17,8 @@ package matelist
 
 import (
 	"fmt"
+	"sort"
+	"sync/atomic"
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
@@ -29,6 +31,9 @@ import (
 type Result struct {
 	MatePlies int
 	PV        []chess.Move
+	// Root lists the root moves best first: the mating ones by length, the
+	// rest in generation order.
+	Root      []chess.RootMove
 	Positions int // enumerated positions
 	Expanded  int // positions whose moves were generated (all but the horizon layer)
 	Edges     int
@@ -59,7 +64,9 @@ func loseIn(n int) uint8 { return loseFlag | uint8(n) }
 // position once, whichever ply reaches it first), gives up with an error beyond
 // maxPositions, and resolves mate distances backwards. The horizon layer is not
 // expanded; positions whose proof would need it stay unknown, which is safe.
-func Solve(root *bitboard.Board, maxPlies, maxPositions int, progress Progress) (Result, error) {
+// stop (optional) is polled before every ply: once set, the enumeration ends
+// at that ply boundary and the backward phase resolves what was reached.
+func Solve(root *bitboard.Board, maxPlies, maxPositions int, stop *atomic.Bool, progress Progress) (Result, error) {
 	report := func(line string) {
 		if progress != nil {
 			progress(line)
@@ -93,6 +100,9 @@ func Solve(root *bitboard.Board, maxPlies, maxPositions int, progress Progress) 
 	level := []uint32{0}
 	plies := 0
 	for ; plies < maxPlies && len(level) > 0; plies++ {
+		if stop != nil && stop.Load() {
+			break // the current level becomes the horizon
+		}
 		var next []uint32
 		for _, i := range level {
 			childStart = append(childStart, uint32(len(children)))
@@ -188,9 +198,10 @@ func Solve(root *bitboard.Board, maxPlies, maxPositions int, progress Progress) 
 	report(fmt.Sprintf("retrograde: %d of %d positions resolved, longest mate %d plies", resolved, len(recs), maxLevel))
 
 	r := Result{Positions: len(recs), Expanded: expanded, Edges: edges, Plies: plies, Resolved: resolved, MaxLevel: maxLevel}
+	r.Root = rootMoves(root, store, status)
 	if s := status[0]; s != unknown && s&loseFlag == 0 {
 		r.MatePlies = int(s)
-		r.PV = principalVariation(root, store, status)
+		r.PV = principalVariation(root, 0, store, status)
 		r.ProofPositions, r.ProofEdges = proofSize(recs, store, status)
 		report(fmt.Sprintf("proof DAG: %d positions, %d edges (attacker one shortest move, defender all moves)", r.ProofPositions, r.ProofEdges))
 	}
@@ -240,12 +251,41 @@ func proofSize(recs [][bitboard.PackedFixedBytes]byte, store *ttstore.Store, sta
 	return positions, edges
 }
 
-// principalVariation follows the mate distances from the root: the winner picks
-// a child that loses in n-1, the loser a child that wins in n-1.
-func principalVariation(root *bitboard.Board, store *ttstore.Store, status []uint8) []chess.Move {
+// rootMoves lists the root moves best first: those that mate by the length of
+// the mate, then the rest in generation order (the graph knows them as draws,
+// losses or unresolved).
+func rootMoves(root *bitboard.Board, store *ttstore.Store, status []uint8) []chess.RootMove {
+	var buf chess.MoveBuffer
+	n := root.GenMoves(&buf)
+	out := make([]chess.RootMove, 0, n)
+	for _, m := range buf[:n] {
+		child := *root
+		child.DoMove(m)
+		e := chess.RootMove{Move: m}
+		if idx, ok := store.Get(child.Key); ok {
+			if s := status[idx]; s&loseFlag != 0 {
+				e.Proven, e.MatePlies = true, int(s&^loseFlag)+1
+				e.PV = append([]chess.Move{m}, principalVariation(&child, uint32(idx), store, status)...)
+			}
+		}
+		out = append(out, e)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Proven != b.Proven {
+			return a.Proven
+		}
+		return a.Proven && a.MatePlies < b.MatePlies
+	})
+	return out
+}
+
+// principalVariation follows the mate distances from the position at index
+// cur: the winner picks a child that loses in n-1, the loser a child that
+// wins in n-1.
+func principalVariation(root *bitboard.Board, cur uint32, store *ttstore.Store, status []uint8) []chess.Move {
 	var pv []chess.Move
 	b := *root
-	cur := uint32(0)
 	var buf chess.MoveBuffer
 	for {
 		s := status[cur]

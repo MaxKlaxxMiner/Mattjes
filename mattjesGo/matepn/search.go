@@ -22,6 +22,9 @@
 package matepn
 
 import (
+	"sort"
+	"sync/atomic"
+
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mateab"
@@ -52,6 +55,11 @@ type Result struct {
 	Leaves    uint64 // children seen for the first time (no table entry)
 	TTHits    uint64 // children found in the table
 	FinalHits uint64 // children decided by a depth-free final entry
+	Plies     int    // the depth this result belongs to (the deepest completed one with SolveShortest)
+	Aborted   bool   // Stop was set: neither proven nor disproven, the numbers are the last completed depth's
+	// Root lists the root moves best first: proven children by the length of
+	// their proof line, then open ones by proof number, disproven ones last.
+	Root []chess.RootMove
 }
 
 // Searcher holds the search state. Progress, if set, is called every
@@ -70,19 +78,37 @@ type Searcher struct {
 	// proven within d plies is proven within any d' >= d, one disproven within
 	// d is disproven within any d' <= d. Stored under the unsalted key as the
 	// smallest proven and the largest disproven depth.
-	Final    bool
-	Progress func(nodes uint64)
+	Final bool
+	// Progress, if set, is called every ProgressEvery visits of a depth (a
+	// power of two, ProgressNodes unless changed).
+	Progress      func(nodes uint64)
+	ProgressEvery uint64
+	// Stop, if set, is polled every StopNodes visits: once true, the search
+	// unwinds without storing anything and the result carries Aborted (UCI
+	// "stop" and time limits). Entries stored before that are all complete.
+	Stop    *atomic.Bool
+	aborted bool
+	// the depth of the root (mid has no ply) and the root child under
+	// examination, for progress lines and as candidate without a proof
+	rootDepth int
+	current   chess.Move
 
 	nodes, leaves, ttHits, finalHits uint64
 }
 
+// CurrentMove is the root move the search is examining right now.
+func (s *Searcher) CurrentMove() chess.Move { return s.current }
+
 // ProgressNodes is the interval of Progress calls (a power of two).
 const ProgressNodes = 1 << 22
+
+// StopNodes is the polling interval of Stop (a power of two).
+const StopNodes = 1 << 12
 
 // New returns a searcher. mobility initialises unknown children with their
 // number of legal moves instead of 1 (one generator call per new leaf).
 func New(oracle mateab.Oracle, table Table, codec Codec, mobility bool) *Searcher {
-	return &Searcher{oracle: oracle, table: table, codec: codec, mobility: mobility}
+	return &Searcher{oracle: oracle, table: table, codec: codec, mobility: mobility, ProgressEvery: ProgressNodes}
 }
 
 // depthSalt is XORed into both key words, so (position, remaining depth) is
@@ -116,16 +142,101 @@ func (s *Searcher) Solve(root *bitboard.Board, plies int) Result {
 		panic("matepn: plies must be odd and at most MaxPlies")
 	}
 	s.nodes, s.leaves, s.ttHits, s.finalHits = 0, 0, 0, 0
+	s.aborted = false
+	s.rootDepth, s.current = plies, chess.Move{}
 	pn, dn := s.mid(root, Inf, Inf, plies)
-	r := Result{Proven: pn == 0, Disproven: dn == 0, Nodes: s.nodes, Leaves: s.leaves, TTHits: s.ttHits, FinalHits: s.finalHits}
+	r := Result{Proven: pn == 0, Disproven: dn == 0, Nodes: s.nodes, Leaves: s.leaves, TTHits: s.ttHits, FinalHits: s.finalHits, Plies: plies}
+	if s.aborted {
+		r.Proven, r.Disproven, r.Aborted = false, false, true
+		return r
+	}
+	memo := map[tt.Key]int{}
 	if r.Proven {
-		memo := map[tt.Key]int{}
 		r.MatePlies = s.proofLength(root, plies, memo)
 		if r.MatePlies > 0 {
 			r.PV = s.proofLine(root, plies, memo)
 		}
 	}
+	r.Root = s.rootMoves(root, plies, memo)
 	return r
+}
+
+// rootMoves lists the root moves best first after a depth: proven children
+// by the length of their proof line (unknown length last), then open ones by
+// proof number (ties: the larger disproof number, the harder to refute, then
+// the child under examination), disproven ones last (the one under
+// examination first, it held out longest).
+func (s *Searcher) rootMoves(root *bitboard.Board, depth int, memo map[tt.Key]int) []chess.RootMove {
+	type entry struct {
+		rm     chess.RootMove
+		pn, dn uint32
+		cur    bool
+	}
+	var buf chess.MoveBuffer
+	n := root.GenMoves(&buf)
+	entries := make([]entry, 0, n)
+	for _, m := range buf[:n] {
+		c := *root
+		c.DoMove(m)
+		e := entry{rm: chess.RootMove{Move: m}, pn: 1, dn: 1, cur: m == s.current}
+		if pn, dn, ok := s.probeFinal(&c, depth-1); ok {
+			e.pn, e.dn = pn, dn
+		} else if v, ok := s.table.Probe(key(&c, depth-1)); ok {
+			e.pn, e.dn = s.codec.Unpack(v)
+		} else {
+			var cbuf chess.MoveBuffer
+			if pn, dn, _, done := s.terminal(&c, &cbuf, depth-1); done {
+				e.pn, e.dn = pn, dn
+			}
+		}
+		if e.pn == 0 {
+			e.rm.Proven = true
+			if l := s.proofLength(&c, depth-1, memo); l >= 0 {
+				e.rm.MatePlies = l + 1
+				e.rm.PV = append([]chess.Move{m}, s.proofLine(&c, depth-1, memo)...)
+			}
+		}
+		entries = append(entries, e)
+	}
+	class := func(e entry) int {
+		switch {
+		case e.rm.Proven:
+			return 0
+		case e.pn >= Inf:
+			return 2
+		}
+		return 1
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		a, b := entries[i], entries[j]
+		if ca, cb := class(a), class(b); ca != cb {
+			return ca < cb
+		}
+		switch class(a) {
+		case 0:
+			la, lb := a.rm.MatePlies, b.rm.MatePlies
+			if la == 0 {
+				la = 1 << 30
+			}
+			if lb == 0 {
+				lb = 1 << 30
+			}
+			return la < lb
+		case 1:
+			if a.pn != b.pn {
+				return a.pn < b.pn
+			}
+			if a.dn != b.dn {
+				return a.dn > b.dn
+			}
+		}
+		return a.cur && !b.cur
+	})
+	out := make([]chess.RootMove, len(entries))
+	for i, e := range entries {
+		out[i] = e.rm
+	}
+	return out
 }
 
 // SolveShortest runs Solve with iterative deepening over odd depths up to
@@ -139,6 +250,11 @@ func (s *Searcher) SolveShortest(root *bitboard.Board, maxPlies int, report func
 		total.Leaves += r.Leaves
 		total.TTHits += r.TTHits
 		total.FinalHits += r.FinalHits
+		if r.Aborted {
+			total.Aborted = true
+			return total // Plies and Root are still the last completed depth's
+		}
+		total.Root = r.Root
 		r.Nodes, r.Leaves, r.TTHits, r.FinalHits = total.Nodes, total.Leaves, total.TTHits, total.FinalHits
 		if report != nil {
 			report(d, r)
@@ -146,9 +262,16 @@ func (s *Searcher) SolveShortest(root *bitboard.Board, maxPlies int, report func
 		if r.Proven {
 			return r
 		}
-		total.Disproven = r.Disproven
+		total.Disproven, total.Plies = r.Disproven, d
 	}
 	return total
+}
+
+// checkStop polls Stop every StopNodes visits.
+func (s *Searcher) checkStop() {
+	if s.nodes&(StopNodes-1) == 0 && s.Stop != nil && s.Stop.Load() {
+		s.aborted = true
+	}
 }
 
 // terminal evaluates a node without expanding it: oracle, no legal moves,
@@ -192,8 +315,12 @@ func (s *Searcher) terminal(b *bitboard.Board, buf *chess.MoveBuffer, depth int)
 // returns the numbers at that point.
 func (s *Searcher) mid(b *bitboard.Board, thPn, thDn uint32, depth int) (uint32, uint32) {
 	s.nodes++
-	if s.nodes&(ProgressNodes-1) == 0 && s.Progress != nil {
+	if s.nodes&(s.ProgressEvery-1) == 0 && s.Progress != nil {
 		s.Progress(s.nodes)
+	}
+	s.checkStop()
+	if s.aborted {
+		return thPn, thDn // ignored: the caller unwinds without storing
 	}
 	var buf chess.MoveBuffer
 	pn, dn, n, done := s.terminal(b, &buf, depth)
@@ -267,9 +394,15 @@ func (s *Searcher) mid(b *bitboard.Board, thPn, thDn uint32, depth int) (uint32,
 			cThDn = min(thDn, bound)
 			cThPn = satSub(thPn, satSub(pn, c.pn))
 		}
+		if depth == s.rootDepth {
+			s.current = c.move
+		}
 		cb := *b
 		cb.DoMove(c.move)
 		c.pn, c.dn = s.mid(&cb, cThPn, cThDn, depth-1)
+		if s.aborted {
+			return pn, dn // the node's numbers before the descent; nothing is stored
+		}
 	}
 }
 

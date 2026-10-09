@@ -1,9 +1,9 @@
-// Package uci speaks the Universal Chess Interface (milestone 6, stages a and
-// b): positions covered by the endgame tables are answered straight from them,
-// with the exact distance to mate and the complete winning line; every root
-// move gets its own value, so MultiPV lists them all. Positions without a
-// table get a legal move and an "info string" for now; the search algorithms
-// come in a later stage.
+// Package uci speaks the Universal Chess Interface (milestone 6): positions
+// covered by the endgame tables are answered straight from them, with the
+// exact distance to mate and the complete winning line; every root move gets
+// its own value, so MultiPV lists them all. Positions the tables do not settle
+// go to one of the mate searches (option Search: mateab, matepn, matelist) in
+// its own thread, with the tables as oracle (search.go).
 //
 // Tables beyond the four-piece base are loaded from the cache directory when
 // a file exists. When the options allow it, a missing table is generated in
@@ -11,9 +11,9 @@
 // the generation, the next "go infinite" resumes it, and once the table is
 // complete the held-back answer is recomputed with it.
 //
-// Protocol subset: uci, isready, setoption, ucinewgame, position, go (only
-// "infinite" is looked at, the answer is immediate), stop, quit, d (debug:
-// print the FEN).
+// Protocol subset: uci, isready, setoption, ucinewgame, position, go
+// (infinite, movetime, wtime/btime/winc/binc, mate, depth), stop, quit, d
+// (debug: print the FEN).
 package uci
 
 import (
@@ -22,16 +22,18 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/tt"
 )
 
 // Version is reported in "id name"; it follows the milestone that is being
@@ -42,13 +44,13 @@ const Version = "0.6"
 const About = "Mattjes " + Version + " by Max Klaxx Miner, a mate and draw search engine with its own endgame tables, GPLv3"
 
 // progressInterval limits the per-level progress of a background generation
-// to one info string every few seconds (a table has up to 254 levels).
+// and the node counts of a running search to one line every few seconds.
 const progressInterval = 5 * time.Second
 
 // Engine is the state between commands.
 type Engine struct {
 	out     *bufio.Writer
-	outMu   sync.Mutex // the generation goroutine reports through the same writer
+	outMu   sync.Mutex // the generation and search threads report through the same writer
 	set     *egtb.Set
 	board   bitboard.Board
 	multiPV int
@@ -59,11 +61,23 @@ type Engine struct {
 	generate5  bool   // EgtbGenerate5: build missing five-piece tables during go infinite
 	generate6  bool   // EgtbGenerate6: the same for six pieces
 	cacheDir   string // EgtbPath
+	algo       string // Search: the algorithm for positions the tables do not settle
+	hashMB     int    // Hash: the transposition table of the search
+	// the transposition tables, allocated on the first search, dropped when a
+	// generation starts (the generator needs the memory)
+	direct  *tt.Table   // matepn (direct-mapped: proofs must not be evicted by larger numbers)
+	buckets *tt.Buckets // mateab (buckets keep mates over refutations)
+	tableMB int
 	// a "go infinite" holds the best move back until "stop"
 	infinite    bool
 	pendingBest string
 	job         *job
 	jobDone     chan *egtb.Set
+	// the running search, if any
+	searching  bool
+	stop       *atomic.Bool
+	timer      *time.Timer
+	searchDone chan searchEnd
 }
 
 // job is a background generation of one material (with its dependencies) in
@@ -76,7 +90,8 @@ type job struct {
 // Run reads commands from in until quit or EOF. name is the engine name
 // reported to the GUI (the Go and Rust binaries differ).
 func Run(in io.Reader, out io.Writer, name string, workers int) {
-	e := &Engine{out: bufio.NewWriter(out), board: bitboard.New(), multiPV: 1, workers: workers, name: name, cacheDir: egtb.DefaultCacheDir(), jobDone: make(chan *egtb.Set, 1)}
+	e := &Engine{out: bufio.NewWriter(out), board: bitboard.New(), multiPV: 1, workers: workers, name: name, cacheDir: egtb.DefaultCacheDir(),
+		algo: defaultAlgo, hashMB: defaultHashMB, jobDone: make(chan *egtb.Set, 1), searchDone: make(chan searchEnd, 1)}
 	e.send("%s", About)
 	e.flush()
 	lines := make(chan string)
@@ -95,11 +110,16 @@ func Run(in io.Reader, out io.Writer, name string, workers int) {
 				if e.job != nil {
 					e.job.ctrl.Abort()
 				}
+				if e.searching {
+					e.stop.Store(true)
+				}
 				e.flush()
 				return
 			}
 		case set := <-e.jobDone:
 			e.finishJob(set)
+		case r := <-e.searchDone:
+			e.finishSearch(r)
 		}
 		e.flush()
 	}
@@ -128,6 +148,8 @@ func (e *Engine) command(words []string) bool {
 		e.send("id author Max Klaxx Miner")
 		e.send("option name MultiPV type spin default 1 min 1 max 256")
 		e.send("option name Threads type spin default %d min 1 max 64", e.workers)
+		e.send("option name Hash type spin default %d min %d max 65536", defaultHashMB, minHashMB)
+		e.send("option name Search type combo default %s var none var mateab var matepn var matelist", defaultAlgo)
 		e.send("option name EgtbWriteCache type check default false")
 		e.send("option name EgtbGenerate5 type check default false")
 		e.send("option name EgtbGenerate6 type check default false")
@@ -141,15 +163,23 @@ func (e *Engine) command(words []string) bool {
 	case "setoption":
 		e.setOption(words[1:])
 	case "ucinewgame":
+		e.clearTables()
 	case "position":
 		e.position(words[1:])
 	case "go":
 		e.ensureTables()
-		e.infinite = slices.Contains(words, "infinite")
-		e.search()
-		if e.infinite {
-			e.maybeGenerate()
-		} else {
+		e.stopSearch() // a GUI sends stop first; if not, the old search ends here
+		p := e.parseGo(words[1:])
+		e.infinite = p.infinite
+		settled := e.search()
+		if e.infinite && e.maybeGenerate() {
+			return true // the generation runs instead of a search; its result answers again
+		}
+		if !settled && e.algo != "none" {
+			e.startSearch(p)
+			return true
+		}
+		if !e.infinite {
 			e.send("bestmove %s", e.pendingBest)
 		}
 	case "stop":
@@ -157,6 +187,7 @@ func (e *Engine) command(words []string) bool {
 			e.job.ctrl.Pause()
 			e.send("info string egtb: generation of %s paused, the next go infinite resumes it", e.job.mat.Name())
 		}
+		e.stopSearch()
 		if e.infinite {
 			e.send("bestmove %s", e.pendingBest)
 			e.infinite = false
@@ -192,6 +223,10 @@ func (e *Engine) setOption(words []string) {
 		e.multiPV = max(1, n)
 	case strings.EqualFold(name, "Threads") && err == nil:
 		e.workers = max(1, n)
+	case strings.EqualFold(name, "Hash") && err == nil:
+		e.hashMB = max(minHashMB, n) // applied by the next search
+	case strings.EqualFold(name, "Search") && isAlgo(value):
+		e.algo = strings.ToLower(value)
 	case strings.EqualFold(name, "EgtbWriteCache"):
 		e.writeCache = flag
 		if flag && e.set != nil {
@@ -308,16 +343,22 @@ type rootMove struct {
 // search answers the current position from the tables: every root move is
 // valued, sorted (shortest win, draw, unknown, longest loss) and the first
 // MultiPV lines are printed with their complete lines to mate. The best move
-// is kept in pendingBest; the caller decides when to send it.
-func (e *Engine) search() {
+// is kept in pendingBest; the caller decides when to send it. Returns whether
+// the tables settle the position: no moves, a known win, or every move known.
+// Otherwise a mate may hide behind the unknown moves and the search is asked.
+func (e *Engine) search() bool {
 	var buf chess.MoveBuffer
 	n := e.board.GenMoves(&buf)
 	if n == 0 {
 		e.pendingBest = "0000"
-		return
+		return true
 	}
 	e.loadMaterial(&e.board)
+	if e.algo != "none" {
+		e.loadDependencies(&e.board)
+	}
 	moves := make([]rootMove, 0, n)
+	allKnown := true
 	for _, m := range buf[:n] {
 		child := e.board
 		child.DoMove(m)
@@ -327,6 +368,8 @@ func (e *Engine) search() {
 		if ok {
 			r.value = parentValue(cv)
 			r.pv = append([]chess.Move{m}, e.line(child, cv)...)
+		} else {
+			allKnown = false
 		}
 		moves = append(moves, r)
 	}
@@ -348,21 +391,22 @@ func (e *Engine) search() {
 		e.send("info depth %d multipv %d score %s pv%s", len(r.pv), i+1, score(r.value), sb.String())
 	}
 	e.pendingBest = moves[0].move.UCI()
+	return allKnown || moves[0].known && moves[0].value.IsWin()
 }
 
 // maybeGenerate starts (or resumes) the background generation of the root
-// material's table during a "go infinite", when the options allow it.
-func (e *Engine) maybeGenerate() {
+// material's table during a "go infinite", when the options allow it. Returns
+// whether a generation is running afterwards.
+func (e *Engine) maybeGenerate() bool {
 	m, ok := egtb.MaterialOf(&e.board)
 	if !ok || m.Pieces() <= 4 || e.board.Castling != 0 {
-		return
+		return false
 	}
 	if t := e.set.Find(m.Name()); t != nil && t.Values != nil {
-		return
+		return false
 	}
 	if m.Pieces() == 5 && !e.generate5 || m.Pieces() == 6 && !e.generate6 {
-		e.send("info string egtb: no table for %s (EgtbGenerate%d would build it during go infinite)", m.Name(), m.Pieces())
-		return
+		return false // the option is off: the search runs instead, quietly
 	}
 	if e.job != nil {
 		if e.job.mat.Name() == m.Name() {
@@ -370,16 +414,16 @@ func (e *Engine) maybeGenerate() {
 				e.job.ctrl.Resume()
 				e.send("info string egtb: generation of %s resumed", m.Name())
 			}
-			return
+			return true
 		}
 		e.job.ctrl.Abort()
 		e.send("info string egtb: generation of %s dropped", e.job.mat.Name())
 		e.job = nil
 	}
-	e.startJob(m)
+	return e.startJob(m)
 }
 
-func (e *Engine) startJob(m egtb.Material) {
+func (e *Engine) startJob(m egtb.Material) bool {
 	set := e.set.Fork()
 	t := set.AddMaterial(m)
 	need, measured := set.EstimateBytes(t)
@@ -390,7 +434,7 @@ func (e *Engine) startJob(m egtb.Material) {
 	if total, avail, ok := egtb.AvailableMemory(); ok {
 		if uint64(need) > total {
 			e.send("info string egtb: %s needs about %s (%s), the machine has %s: not started", m.Name(), egtb.FormatBytes(uint64(need)), how, egtb.FormatBytes(total))
-			return
+			return false
 		}
 		e.send("info string egtb: generating %s (%d MB table, about %s RAM %s, %s of %s free), stop pauses it", m.Name(), t.Size>>20, egtb.FormatBytes(uint64(need)), how, egtb.FormatBytes(avail), egtb.FormatBytes(total))
 		if uint64(need) > avail {
@@ -399,6 +443,7 @@ func (e *Engine) startJob(m egtb.Material) {
 	} else {
 		e.send("info string egtb: generating %s (%d MB table, about %s RAM %s), stop pauses it", m.Name(), t.Size>>20, egtb.FormatBytes(uint64(need)), how)
 	}
+	e.dropTables() // the generator gets the search's memory
 	j := &job{mat: m, ctrl: egtb.NewControl()}
 	e.job = j
 	workers, write := e.workers, e.writeCache
@@ -439,14 +484,17 @@ func (e *Engine) startJob(m egtb.Material) {
 		}
 		e.jobDone <- set
 	}()
+	return true
 }
 
 // finishJob takes the generated tables over and, during a "go infinite",
-// answers again with them.
+// answers again with them (searching on if the tables still do not settle
+// the position).
 func (e *Engine) finishJob(set *egtb.Set) {
 	if e.job == nil {
 		return
 	}
+	e.stopSearch() // the set is about to change under a running search
 	name := e.job.mat.Name()
 	e.job = nil
 	e.set.Adopt(set)
@@ -456,7 +504,9 @@ func (e *Engine) finishJob(set *egtb.Set) {
 		e.send("info string egtb: %s ready", name)
 	}
 	if e.infinite {
-		e.search()
+		if !e.search() && e.algo != "none" {
+			e.startSearch(goParams{infinite: true, maxPlies: maxSearchPlies})
+		}
 	}
 }
 
@@ -503,7 +553,14 @@ func (e *Engine) loadMaterial(b *bitboard.Board) {
 		return
 	}
 	m, ok := egtb.MaterialOf(b)
-	if !ok || e.set.Find(m.Name()) != nil {
+	if !ok {
+		return
+	}
+	e.loadTable(m)
+}
+
+func (e *Engine) loadTable(m egtb.Material) {
+	if e.set.Find(m.Name()) != nil {
 		return
 	}
 	t := e.set.AddMaterial(m)
@@ -517,6 +574,31 @@ func (e *Engine) loadMaterial(b *bitboard.Board) {
 	}
 	e.send("info string egtb: loaded %s", path)
 	e.flush()
+}
+
+// loadDependencies loads every cached table a search below this position can
+// reach by captures and promotions (five- and six-piece roots; the base is
+// always there). The search thread must not touch the set, so this happens
+// before it starts.
+func (e *Engine) loadDependencies(b *bitboard.Board) {
+	m, ok := egtb.MaterialOf(b)
+	if !ok || m.Pieces() <= 4 || b.Castling != 0 {
+		return
+	}
+	seen := map[string]bool{m.Name(): true}
+	queue := []egtb.Material{m}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, d := range cur.Dependencies() {
+			if d.Pieces() <= 4 || seen[d.Name()] {
+				continue
+			}
+			seen[d.Name()] = true
+			e.loadTable(d)
+			queue = append(queue, d)
+		}
+	}
 }
 
 // eval values a position from the side to move's view: from the table, or,
@@ -606,4 +688,23 @@ func pieceCount(b *bitboard.Board) int {
 		}
 	}
 	return n
+}
+
+// dropTables frees the search's transposition tables (before a generation).
+func (e *Engine) dropTables() {
+	if e.direct == nil && e.buckets == nil {
+		return
+	}
+	e.direct, e.buckets = nil, nil
+	debug.FreeOSMemory()
+}
+
+// clearTables empties the search's transposition tables (ucinewgame).
+func (e *Engine) clearTables() {
+	if e.direct != nil {
+		e.direct.Clear()
+	}
+	if e.buckets != nil {
+		e.buckets.Clear()
+	}
 }

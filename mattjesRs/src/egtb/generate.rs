@@ -74,7 +74,7 @@ pub const KNOWN_MAXIMA: &[(&str, u32)] = &[
 impl Material {
     /// The materials a table looks up: captures (one piece of either side
     /// removed), promotions (a pawn becomes a piece) and both at once.
-    pub(super) fn dependencies(&self) -> Vec<Material> {
+    pub fn dependencies(&self) -> Vec<Material> {
         let mut deps = Vec::new();
         let mut add = |w: &[Piece], b: &[Piece]| {
             if !w.is_empty() || !b.is_empty() {

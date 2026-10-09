@@ -39,9 +39,9 @@ var KnownMaxima = map[string]int{
 	"KBBKN": 78, "KBNKN": 107, "KNNKP": 115, "KQPKQ": 124, "KPPKP": 127,
 }
 
-// dependencies lists the materials a table looks up: captures (one piece of
+// Dependencies lists the materials a table looks up: captures (one piece of
 // either side removed), promotions (a pawn becomes a piece) and both at once.
-func (m Material) dependencies() []Material {
+func (m Material) Dependencies() []Material {
 	var deps []Material
 	add := func(w, b []chess.Piece) {
 		if len(w)+len(b) == 0 {
@@ -118,7 +118,7 @@ func (s *Set) Generate(t *Table, workers int, progress Progress) Stats {
 // work from another goroutine (nil = neither). After an abort the table (and
 // a dependency that was being generated) is left empty and Stats.Aborted set.
 func (s *Set) GenerateControlled(t *Table, workers int, ctrl *Control, progress Progress) Stats {
-	for _, d := range t.Mat.dependencies() {
+	for _, d := range t.Mat.Dependencies() {
 		dt := s.AddMaterial(d) // beyond the base this registers the dependency on the fly
 		if dt.Values == nil {
 			if path := s.TablePath(dt); s.LoadTable(dt, path) == nil {

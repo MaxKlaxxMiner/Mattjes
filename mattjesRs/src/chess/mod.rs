@@ -8,6 +8,7 @@ mod mv;
 mod perftdata;
 mod piece;
 mod pos;
+mod root_move;
 
 #[allow(unused_imports)]
 pub use fen::{Setup, START_FEN};
@@ -21,3 +22,5 @@ pub use mv::{
 pub use perftdata::{PerftDetail, PerftPosition, PERFT_POSITIONS, UNKNOWN};
 pub use piece::Piece;
 pub use pos::{Pos, FIELD_COUNT, HEIGHT, WIDTH};
+#[allow(unused_imports)]
+pub use root_move::RootMove;

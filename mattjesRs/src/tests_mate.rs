@@ -86,7 +86,7 @@ fn run_mateab<O: Oracle + Copy, T: TransTable + 'static>(title: &str, oracle: O,
         let mut depth_start = start;
         let progress_start = Rc::new(Cell::new(start));
         let ps = progress_start.clone();
-        s.progress = Some(Box::new(move |nodes, t: Option<&T>| {
+        s.progress = Some(Box::new(move |nodes, _current, t: Option<&T>| {
             let mut line = format!("              ... {} nodes, {}", group(nodes), fmt_ms(ps.get().elapsed()));
             if let Some(t) = t {
                 let st = t.stats();
@@ -159,7 +159,7 @@ pub fn matelist_solve(name: &str, max_mate_in: u32, max_plies: u32, max_position
         println!("[{}] {}  {}  mate in {}", i + 1, p.name, p.fen, p.mate_in);
         let b = Board::from_fen(p.fen).expect("valid FEN");
         let start = Instant::now();
-        let result = matelist::solve(&b, max_plies, max_positions, &mut |line: &str| {
+        let result = matelist::solve(&b, max_plies, max_positions, None, &mut |line: &str| {
             println!("    {}  {}", line, fmt_ms(start.elapsed()));
         });
         let elapsed = start.elapsed();
