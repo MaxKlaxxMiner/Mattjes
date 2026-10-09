@@ -41,7 +41,7 @@ fn run_matepn(selected: &dyn Fn(&MatePosition) -> bool, size_mb: usize, codec: &
 
 fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, oracle: O, selected: &dyn Fn(&MatePosition) -> bool, options: &str) {
     let has = |o: char| options.contains(o);
-    let (mobility, final_entries, tables, iterative) = (has('m'), has('f'), has('t'), has('i'));
+    let (mobility, final_entries, tables, iterative, mated) = (has('m'), has('f'), has('t'), has('i'), has('M'));
     let mut epsilon = 0;
     for (letter, eps) in [('e', 1), ('E', 4), ('x', 8), ('X', 16)] {
         if has(letter) {
@@ -49,7 +49,7 @@ fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, 
         }
     }
     println!(
-        "=== matepn / df-pn, {}, direct-mapped TT {} MB ({} value bits), codec {}, mobility {}, epsilon {}/8, final {}, {} ===",
+        "=== matepn / df-pn, {}, direct-mapped TT {} MB ({} value bits), codec {}, mobility {}, epsilon {}/8, final {}, mated {}, {} ===",
         if iterative { "iterative deepening" } else { "single depth 2N-1" },
         (table.slots() * tt::ENTRY_BYTES) >> 20,
         table.value_bits(),
@@ -57,6 +57,7 @@ fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, 
         mobility,
         epsilon,
         final_entries,
+        mated,
         if tables { "endgame tables" } else { "material oracle" }
     );
     let mut ok = true;
@@ -75,10 +76,11 @@ fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, 
         let mut s = matepn::Searcher::new(oracle, t, codec, mobility);
         s.epsilon = epsilon;
         s.final_entries = final_entries;
+        s.mated = mated;
         let start = Instant::now();
         let depth_start = std::rc::Rc::new(std::cell::Cell::new(start));
         let ds = depth_start.clone();
-        s.progress = Some(Box::new(move |nodes, _current, t: &T| {
+        s.progress = Some(Box::new(move |nodes, t: &T| {
             let st = t.stats();
             println!("              ... {} nodes, {}, tt {} stores, {} replaced", group(nodes), fmt_ms(ds.get().elapsed()), group(st.stores), group(st.replaced));
         }));
@@ -113,7 +115,7 @@ fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, 
             );
             if r.mate_plies > 0 {
                 let mut verdict = "the shortest".to_string();
-                if r.mate_plies != want {
+                if r.mate_plies != want as i32 {
                     verdict = format!("shortest is {}", want);
                     if iterative {
                         verdict = format!("FAIL: {}", verdict);

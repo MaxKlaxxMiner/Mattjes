@@ -26,6 +26,50 @@ Regressionsstellungen der Suchen; die acht Endspiele bis fünf Steine wurden am
 | 11 | KBN-K | 4 | `8/8/8/8/3k4/8/N7/KB6 w - - 0 1` | Matt in 31 | Tabelle | Tablebase, eigene Tabelle | 29.958 | braucht Transpositionen oder df-pn; `mateab` 1,4 Mrd. Knoten |
 | 12 | KQ-KBN | 5 | `8/8/4k3/3bn3/8/4Q3/8/K7 w - - 0 1` | Matt in 39 | Tabelle (`5-KBNKQ.bin`) | Tablebase, eigene Fünf-Steiner-Tabelle (Gewinn in 77 Halbzügen) | | ohne Datei scheitern alle Suchen bisher (`matepn` 13 Halbzüge in 3 s); Ziel des nächsten `matepn`-Schritts |
 
+## Die Seite am Zug wird matt
+
+Dieselben Stellungen einen Zug später, mit dem Verlierer am Zug: Die Suche muss das
+drohende Matt als `score mate -N` melden, mit der längsten Verteidigung zuerst.
+
+| Name | Steine | FEN / Züge | Ergebnis | Bestätigt durch |
+|---|---|---|---|---|
+| Bauern, Schwarz am Zug | 11 | `5k2/5P1P/4P3/pP6/P6q/3P2P1/2P5/K7 w - a6 0 1 moves g3h4` | gematt in 5 (`f8g7 h7h8q ...`), `f8e7` verliert in 4 | `matepn` (5.776 Knoten) und `mateab` |
+| KQQ-KN, Schwarz am Zug | 5 | `7k/5n2/8/8/8/8/Q4Q2/K7 b - - 0 1` | gematt in 3 (`f7h6 f2f8 h8h7 a2b1 h6f5 b1f5`), Königszüge verlieren in 2 | `matepn` (182 Knoten) und `mateab` |
+
+## Benchmark: KRR-KN, Schwarz am Zug
+
+`8/8/4k3/8/8/8/RK6/2R2n2 b - - 1 1`, zwölf legale Züge, alle verlieren. Die perfekte
+Lösung aus der Fünf-Steiner-Tabelle (Mattjes liefert sie sofort, wenn `5-KRRKN.bin`
+im Cache liegt):
+
+| Zug | Wert | | Zug | Wert |
+|---|---|---|---|---|
+| Ng3 | −M9 | | Kd7, Ke7, Kd6, Kf6, Kd5, Ke5, Kf5 | −M6 |
+| Ne3, Nd2 | −M8 | | Kf7 | −M4 |
+| Nh2 | −M7 | | | |
+
+Andere Engines, sechs Kerne, MultiPV 12, bis alle zwölf Werte fehlerfrei standen
+(Messung des Autors, 2026-10-09): AsmFish 10, Patricia und Slow Chess Blitz 1 s,
+Reckless 0.9.0 6 s, Stockfish 19 7 s, Spike 1.4 13 s, Komodo Dragon 3.1 94 s.
+
+Mattjes ohne Tabelle, ein Thread, Hash 256, bis alle zwölf Werte exakt standen
+(2026-10-09, nach dem Umbau auf den Wurzeltreiber):
+
+| Suche | Zeit | Knoten | Ergebnis |
+|---|---|---|---|
+| `matepn` | 93 s | 17,8 Mio. Besuche | alle zwölf exakt |
+| `mateab` | 122 s | 414 Mio. Knoten | alle zwölf exakt |
+| `matelist` | 6 min bis Halbzug 13 | | kein Ergebnis, siehe unten |
+
+Nach 40 s (`matepn`) bzw. 20 s (`mateab`) stand Tiefe 15 mit neun exakten Werten
+(`Kf7`, die Königszüge, `Nh2`); `Ne3` und `Nd2` brauchen Tiefe 16, `Ng3` Tiefe 18.
+`matelist` ist hier das falsche Werkzeug: Es antwortet erst nach der Rückwärtsphase,
+die auf die komplette Aufzählung folgt, und der erreichbare Raum ist der ganze
+Fünf-Steiner ohne Symmetrie (50 Mio. Stellungen bei Halbzug 10, 1,4 Mrd. insgesamt).
+Mit `go mate 7` würde es bei Halbzug 13 anhalten und dann auflösen, braucht dafür aber
+zweistellige Gigabyte. Das ist die Messlatte für die nächsten Schritte an den Suchen:
+ein Thread gegen sechs Kerne, Faktor 10 bis 90 zu den schnellsten Engines.
+
 ## Ohne gesichertes Ergebnis
 
 Stellungen, die bisher nur als Last- oder Verhaltenstests dienen; Ergebnis offen, bis

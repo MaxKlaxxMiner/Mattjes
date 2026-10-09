@@ -28,5 +28,5 @@ var MatePositions = []MatePosition{
 	{"KBN-K", "8/8/8/8/3k4/8/N7/KB6 w - - 0 1", 31, 29958, "needs df-pn or TT transpositions"},
 	{"KQ-KBN", "8/8/4k3/3bn3/8/4Q3/8/K7 w - - 0 1", 39, 0, "longest test, two defending pieces"},
 	{"KP-KP", "8/7k/1p6/1P6/7K/8/8/8 w - - 0 1", 25, 4125, "opposition study: 1.Kh5! wins, 1.Kg5? and black to move draw; value from the own KPKP table, confirmed by matelist"},
-	{"pawns", "5k2/5P1P/4P3/pP6/P6q/3P2P1/2P5/K7 w - a6 0 1", 6, 0, "promotion, en passant, black queen; unconfirmed"},
+	{"pawns", "5k2/5P1P/4P3/pP6/P6q/3P2P1/2P5/K7 w - a6 0 1", 6, 0, "promotion, en passant, black queen; confirmed by matepn and mateab (2026-10-09)"},
 }

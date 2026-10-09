@@ -15,11 +15,11 @@
 package mateab
 
 import (
-	"sort"
 	"sync/atomic"
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/tt"
 )
 
 // MaxPly bounds the search depth in plies (the TT depth field holds 7 bits).
@@ -29,9 +29,10 @@ const MaxPly = 128
 // remaining depth.
 const NoMate = -1
 
-// Result of one depth of Solve. MatePlies is the mate distance in plies (odd,
-// attacker to move at the root), 0 if no mate was found within the depth. PV is
-// the principal variation; with a table it may be shorter than MatePlies when
+// Result of one depth of Solve. MatePlies is the mate distance in plies: odd
+// and positive when the side to move mates, even and negative when it is
+// mated (even depths), 0 if nothing was found within the depth. PV is the
+// principal variation; with a table it may be shorter than the distance when
 // the entries needed to extend it were replaced.
 type Result struct {
 	MatePlies  int
@@ -41,10 +42,6 @@ type Result struct {
 	OracleHits uint64 // nodes decided by the oracle with an exact distance (endgame tables)
 	Plies      int    // the deepest completed depth
 	Aborted    bool   // Stop was set: the result is that of the last completed depth
-	// Root lists the root moves best first: the mating move, then the
-	// refuted ones by the nodes their refutation cost (the most promising
-	// first), then the moves the depth never reached.
-	Root []chess.RootMove
 }
 
 // Searcher holds the per-search state: the oracle, the optional table, node
@@ -69,19 +66,12 @@ type Searcher struct {
 	// depth with Aborted set (UCI "stop" and time limits).
 	Stop    *atomic.Bool
 	aborted bool
-	// the root move under examination (for progress lines) and the nodes
-	// each refuted root move cost in the current depth
-	current   chess.Move
-	rootCosts []rootCost
+	// Mated makes Solve search the even depths too, in which the side to
+	// move is the defender and the question is "is it mated within d plies".
+	// Off in the experiments, which count the attacker's nodes only.
+	Mated bool
+	salt  tt.Key // key salt of the current depth (see key)
 }
-
-type rootCost struct {
-	move chess.Move
-	cost uint64
-}
-
-// CurrentMove is the root move the search is examining right now.
-func (s *Searcher) CurrentMove() chess.Move { return s.current }
 
 // ProgressNodes is the interval of Progress calls (a power of two).
 const ProgressNodes = 1 << 26
@@ -95,70 +85,71 @@ func New(oracle Oracle, table Table) *Searcher {
 }
 
 // Solve looks for a forced mate for the side to move within maxPlies plies, with
-// iterative deepening over odd depths. report is called after every depth; the
-// returned Result is the first depth that found a mate (or the last depth, with
-// MatePlies 0). Nodes accumulate over all depths.
+// iterative deepening over odd depths (all depths with Mated). report is called
+// after every depth; the returned Result is the first depth that found a mate
+// (or the last depth, with MatePlies 0). Nodes accumulate over all depths.
 func (s *Searcher) Solve(root *bitboard.Board, maxPlies int, report func(plies int, r Result)) Result {
 	s.killer = [MaxPly]chess.Move{}
-	s.aborted = false
 	var totalNodes, totalHits, totalOracle uint64
 	var last Result
-	for d := 1; d <= maxPlies && d < MaxPly; d += 2 {
-		s.nodes, s.ttHits, s.oracleHits = 0, 0, 0
-		s.rootCosts = s.rootCosts[:0]
-		dist := s.attack(root, d, 0)
-		totalNodes += s.nodes
-		totalHits += s.ttHits
-		totalOracle += s.oracleHits
-		if s.aborted {
+	step := 2
+	if s.Mated {
+		step = 1 // odd depths: the side to move mates; even depths: it is mated
+	}
+	for d := 1; d <= maxPlies && d < MaxPly; d += step {
+		r := s.SolveDepth(root, d)
+		totalNodes += r.Nodes
+		totalHits += r.TTHits
+		totalOracle += r.OracleHits
+		if r.Aborted {
 			last.Nodes, last.TTHits, last.OracleHits, last.Aborted = totalNodes, totalHits, totalOracle, true
 			break
 		}
-		last = Result{Nodes: totalNodes, TTHits: totalHits, OracleHits: totalOracle, Plies: d}
-		if dist != NoMate {
-			last.MatePlies = dist
-			last.PV = s.extendPV(root, dist)
-		}
-		last.Root = s.rootMoves(root, last.PV, dist)
+		last = r
+		last.Nodes, last.TTHits, last.OracleHits = totalNodes, totalHits, totalOracle
 		if report != nil {
 			report(d, last)
 		}
-		if dist != NoMate {
+		if r.MatePlies != 0 {
 			break
 		}
 	}
 	return last
 }
 
-// rootMoves lists the root moves best first: the mating move with its line,
-// then the refuted moves by the nodes their refutation cost (a hard
-// refutation is the best hint at a promising move), then the moves the
-// depth never reached (the first success ended it) in generation order.
-func (s *Searcher) rootMoves(root *bitboard.Board, pv []chess.Move, dist int) []chess.RootMove {
-	var out []chess.RootMove
-	if dist != NoMate && len(pv) > 0 {
-		out = append(out, chess.RootMove{Move: pv[0], Proven: true, MatePlies: dist, PV: pv})
+// SolveDepth searches one depth: with an odd number of plies "the side to
+// move mates within plies", with an even one "the side to move is mated
+// within plies" (the root is then a defender node). Killer moves persist
+// between calls, the node counters are those of this depth.
+func (s *Searcher) SolveDepth(root *bitboard.Board, plies int) Result {
+	s.nodes, s.ttHits, s.oracleHits = 0, 0, 0
+	s.aborted = false
+	defender := plies%2 == 0
+	// the table entries belong to the attacker's colour: a position is an
+	// attacker node when that colour is to move, whichever root asks
+	s.salt = tt.Key{}
+	if root.WhiteMove == defender { // the attacker is black
+		s.salt = blackAttackerSalt
 	}
-	costs := append([]rootCost(nil), s.rootCosts...)
-	sort.SliceStable(costs, func(i, j int) bool { return costs[i].cost > costs[j].cost })
-	seen := map[chess.Move]bool{}
-	for _, e := range out {
-		seen[e.Move] = true
+	var dist int
+	if defender {
+		dist = s.defend(root, plies, 0)
+	} else {
+		dist = s.attack(root, plies, 0)
 	}
-	for _, c := range costs {
-		if !seen[c.move] {
-			seen[c.move] = true
-			out = append(out, chess.RootMove{Move: c.move})
+	r := Result{Nodes: s.nodes, TTHits: s.ttHits, OracleHits: s.oracleHits, Plies: plies, Aborted: s.aborted}
+	if s.aborted {
+		r.Plies = 0
+		return r
+	}
+	if dist != NoMate {
+		r.MatePlies = dist
+		if defender {
+			r.MatePlies = -dist
 		}
+		r.PV = s.extendPV(root, dist)
 	}
-	var buf chess.MoveBuffer
-	n := root.GenMoves(&buf)
-	for _, m := range buf[:n] {
-		if !seen[m] {
-			out = append(out, chess.RootMove{Move: m})
-		}
-	}
-	return out
+	return r
 }
 
 // checkStop polls Stop every StopNodes nodes.
@@ -193,7 +184,7 @@ func (s *Searcher) attack(b *bitboard.Board, depth, ply int) int {
 	}
 	var ttFrom, ttTo chess.Pos = -1, -1
 	if s.table != nil {
-		if v, ok := s.table.Probe(b.Key); ok {
+		if v, ok := s.table.Probe(s.key(b)); ok {
 			typ, d, from, to := unpackValue(v)
 			if typ == ttMate && d <= depth {
 				s.ttHits++
@@ -230,16 +221,9 @@ func (s *Searcher) attack(b *bitboard.Board, depth, ply int) int {
 	for i := 0; i < n; i++ {
 		child := *b
 		child.DoMove(buf[i])
-		before := s.nodes
-		if ply == 0 {
-			s.current = buf[i]
-		}
 		r := s.defend(&child, depth-1, ply+1)
 		if s.aborted {
 			return NoMate // nothing is stored on the way out
-		}
-		if ply == 0 {
-			s.rootCosts = append(s.rootCosts, rootCost{buf[i], s.nodes - before})
 		}
 		if r != NoMate {
 			s.setPV(ply, buf[i])
@@ -279,7 +263,7 @@ func (s *Searcher) defend(b *bitboard.Board, depth, ply int) int {
 	}
 	var ttFrom, ttTo chess.Pos = -1, -1
 	if s.table != nil {
-		if v, ok := s.table.Probe(b.Key); ok {
+		if v, ok := s.table.Probe(s.key(b)); ok {
 			typ, d, from, to := unpackValue(v)
 			if typ == ttMate && d <= depth {
 				s.ttHits++
@@ -320,9 +304,21 @@ func (s *Searcher) defend(b *bitboard.Board, depth, ply int) int {
 
 func (s *Searcher) store(b *bitboard.Board, typ, depth int, m chess.Move) {
 	if s.table != nil {
-		s.table.Store(b.Key, packValue(typ, depth, m))
+		s.table.Store(s.key(b), packValue(typ, depth, m))
 	}
 }
+
+// key is the table key of a position. The entries of the searches in which
+// black is the attacker are salted: the same position is an attacker node
+// in one and a defender node in the other, and an entry "mate in d" of the
+// one would be read as "mated in d" by the other.
+func (s *Searcher) key(b *bitboard.Board) tt.Key {
+	return tt.Key{b.Key[0] ^ s.salt[0], b.Key[1] ^ s.salt[1]}
+}
+
+// blackAttackerSalt separates the entries of the searches in which black
+// attacks (even depths from a white root, odd depths from a black root).
+var blackAttackerSalt = tt.Key{0x5bd1e9955bd1e995, 0x9e3779b97f4a7c15}
 
 // setPV records m as the move at ply and appends the child's line.
 func (s *Searcher) setPV(ply int, m chess.Move) {
@@ -344,8 +340,16 @@ func (s *Searcher) extendPV(root *bitboard.Board, matePlies int) []chess.Move {
 	for _, m := range pv {
 		b.DoMove(m)
 	}
-	for len(pv) < matePlies {
-		v, ok := s.table.Probe(b.Key)
+	return append(pv, s.ttLine(b, matePlies-len(pv))...)
+}
+
+// ttLine follows the moves the transposition table remembers from b (mating
+// move at attacker nodes, longest defence at defender nodes) for up to want
+// plies, until a missing entry.
+func (s *Searcher) ttLine(b bitboard.Board, want int) []chess.Move {
+	var line []chess.Move
+	for s.table != nil && len(line) < want {
+		v, ok := s.table.Probe(s.key(&b))
 		if !ok {
 			break
 		}
@@ -358,7 +362,7 @@ func (s *Searcher) extendPV(root *bitboard.Board, matePlies int) []chess.Move {
 		found := false
 		for i := 0; i < n; i++ {
 			if sameMove(buf[i], from, to) {
-				pv = append(pv, buf[i])
+				line = append(line, buf[i])
 				b.DoMove(buf[i])
 				found = true
 				break
@@ -368,7 +372,7 @@ func (s *Searcher) extendPV(root *bitboard.Board, matePlies int) []chess.Move {
 			break
 		}
 	}
-	return pv
+	return line
 }
 
 // orderAttack sorts the attacker's moves: table move, killer, checks, captures, the rest.

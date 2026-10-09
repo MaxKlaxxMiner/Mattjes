@@ -28,7 +28,9 @@ type Record = [u8; PackedFixed::MAX_BYTES];
 /// the complete principal variation.
 #[derive(Clone, Default)]
 pub struct Result {
-    pub mate_plies: u32,
+    /// Positive: the side to move mates in that many plies, negative: it is
+    /// mated, 0: no forced mate within the enumerated graph.
+    pub mate_plies: i32,
     pub pv: Vec<Move>,
     /// The root moves best first: the mating ones by length, the rest in
     /// generation order.
@@ -202,8 +204,11 @@ pub fn solve(root: &Board, max_plies: u32, max_positions: usize, stop: Option<&A
     let mut r = Result { positions: recs.len(), expanded, edges, plies, resolved, max_level, ..Default::default() };
     r.root = root_moves(root, &store, &status);
     let s = status[0];
-    if s != UNKNOWN && s & LOSE_FLAG == 0 {
-        r.mate_plies = s as u32;
+    if s != UNKNOWN && s & LOSE_FLAG != 0 {
+        r.mate_plies = -((s & !LOSE_FLAG) as i32); // the side to move is mated
+        r.pv = principal_variation(root, 0, &store, &status);
+    } else if s != UNKNOWN {
+        r.mate_plies = s as i32;
         r.pv = principal_variation(root, 0, &store, &status);
         (r.proof_positions, r.proof_edges) = proof_size(&recs, &store, &status);
         progress(&format!("proof DAG: {} positions, {} edges (attacker one shortest move, defender all moves)", r.proof_positions, r.proof_edges));
@@ -258,8 +263,8 @@ fn proof_size(recs: &[Record], store: &Store, status: &[u8]) -> (usize, usize) {
 /// Follows the mate distances from the root: the winner picks a child that
 /// loses in n-1, the loser a child that wins in n-1.
 /// Lists the root moves best first: those that mate by the length of the
-/// mate, then the rest in generation order (the graph knows them as draws,
-/// losses or unresolved).
+/// mate, then the unresolved ones in generation order, then those after which
+/// the opponent mates, the longest defence first (negative `mate_plies`).
 fn root_moves(root: &Board, store: &Store, status: &[u8]) -> Vec<RootMove> {
     let mut buf = new_buffer();
     let n = root.gen_moves(&mut buf);
@@ -270,15 +275,17 @@ fn root_moves(root: &Board, store: &Store, status: &[u8]) -> Vec<RootMove> {
         let mut e = RootMove { mv: m, ..Default::default() };
         if let Some(idx) = store.get(child.key) {
             let s = status[idx as usize];
-            if s & LOSE_FLAG != 0 {
+            if s != UNKNOWN {
                 e.proven = true;
-                e.mate_plies = (s & !LOSE_FLAG) as u32 + 1;
+                e.mate_plies = if s & LOSE_FLAG != 0 { (s & !LOSE_FLAG) as i32 + 1 } else { -(s as i32 + 1) };
                 e.pv = std::iter::once(m).chain(principal_variation(&child, idx as usize, store, status)).collect();
             }
         }
         out.push(e);
     }
-    out.sort_by(|a, b| b.proven.cmp(&a.proven).then_with(|| if a.proven { a.mate_plies.cmp(&b.mate_plies) } else { std::cmp::Ordering::Equal }));
+    // wins by the shortest, then unresolved, then losses by the longest
+    let class = |e: &RootMove| if e.proven && e.mate_plies > 0 { 0 } else if e.proven { 2 } else { 1 };
+    out.sort_by(|a, b| class(a).cmp(&class(b)).then_with(|| if a.proven { a.mate_plies.cmp(&b.mate_plies) } else { std::cmp::Ordering::Equal }));
     out
 }
 

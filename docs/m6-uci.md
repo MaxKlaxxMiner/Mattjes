@@ -166,18 +166,28 @@ info depth 9 multipv 2 score cp 0 nodes 7724 nps 234060 time 33 pv a1a2
 info depth 9 multipv 3 score cp 0 nodes 7724 nps 234060 time 33 pv a1b2
 ```
 
-Jede Suche liefert dafür ihre Wurzelzüge sortiert (`chess.RootMove`, `Result.Root`):
-`matepn` bewiesene Kinder nach Beweislänge, dann offene nach Beweiszahl (bei Gleichstand
-die größere Widerlegungszahl, dann das gerade untersuchte Kind), widerlegte zuletzt;
-`mateab` den Mattzug, dann die widerlegten Züge nach den Knoten, die ihre Widerlegung
-gekostet hat (eine teure Widerlegung ist der beste Hinweis auf einen starken Zug), dann
-die von der Tiefe nie erreichten Züge; `matelist` die mattsetzenden Züge nach Länge
-(mit Variante, der Graph kennt sie exakt), dann den Rest. `cp 0` steht für "kein Matt
-bis zu dieser Tiefe", eine Bewertung gibt es nicht; auch ein Zug, den die Tabellen als
-Verlust kennen, steht im Suchblock als `cp 0` (der Tabellenblock davor hatte ihn
-richtig). Im Mattfall listet der Block die bewiesenen Züge mit Variante (durch die
-Tabellen verlängert) und die übrigen als `cp 0`; `mateab` kennt dann nur den einen
-Mattzug, weil der erste Erfolg die Tiefe beendet. Innerhalb einer langen Tiefe alle fünf Sekunden (`progressInterval`) `info depth
+**Die Wurzel treibt das UCI, nicht die Suche** (`runRoot` in `uci/search.go`, Rust
+`run_root`): Jeder Wurzelzug wird einzeln gelöst, die Stellung nach dem Zug ist die
+Wurzel der Suche, Tiefe für Tiefe mit d − 1 Halbzügen. Gerade Kindtiefe heißt "der
+Gegner wird matt" (unser Gewinn), ungerade "der Gegner setzt matt" (unser Verlust). Weil
+jeder Zug bei jeder Tiefe neu gefragt wird, bis er bewiesen ist, ist sein erster Beweis
+auch sein kürzestes Matt, und die MultiPV-Liste ist exakt, so wie eine Alpha-Beta-Engine
+für MultiPV jeden Wurzelzug komplett sucht. Eine Suche, die an der Wurzel beim ersten
+Erfolg oder bei der ersten Flucht abbricht, lässt die anderen Züge mit Schranken zurück
+(genau das war vorher der Fehler: `Kf7` in KRR-KN mit Schwarz am Zug stand bei `mateab`
+auf `-M6`, bei `matepn` auf `-M5`, richtig ist `-M4`). Die Searcher bieten dafür den
+Einzeltiefen-Aufruf (`mateab.SolveDepth`, `matepn.Solve`) und salzen ihre Keys nach
+Angreiferfarbe statt nach Wurzelparität, damit die Kind-Suchen eine Tabelle teilen
+(`blackAttackerSalt`; `matepn` codiert die Rolle über die Parität der Resttiefe und
+salzt nur die Final-Einträge, `finalKey`). Ordnung der Liste: Gewinne nach kürzestem
+Matt, offene Züge nach den Knoten ihrer letzten Tiefe (der am schwersten zu widerlegende
+zuerst), Verluste nach längstem Matt. `cp 0` steht für "kein Matt bis zu dieser Tiefe",
+eine Bewertung gibt es nicht; auch ein Zug, den die Tabellen als Verlust kennen, steht
+im Suchblock als `cp 0` (der Tabellenblock davor hatte ihn richtig). Ende der Suche:
+alle Züge bewiesen, bei MultiPV 1 der erste bewiesene Gewinn (kürzester), Tiefenschranke
+oder `stop`. `matelist` braucht den Treiber nicht, sein Graph kennt jeden Wurzelzug
+exakt. Die Experimente (`Solve`/`SolveShortest` mit Schalter `Mated`, Testbank-Buchstabe
+`M`) bleiben die alte Wurzelsuche, damit die Knotenzahlen vergleichbar bleiben. Innerhalb einer langen Tiefe alle fünf Sekunden (`progressInterval`) `info depth
 17 currmove e3h6 nodes 2418594 nps 212941 time 11358` mit dem Wurzelzug, der gerade
 untersucht wird (die Suche bietet die Zeile alle 65.536 Knoten an, `ProgressEvery`;
 die eigene Vorgabe der Searcher von 2^22 bzw. 2^26 wäre bei 200.000 Knoten pro Sekunde
@@ -215,13 +225,41 @@ mate within 5 plies"; KRR-KN aus der Cache-Datei sofort Matt in 7; KQ-KBN mit
 schneller). `go infinite` auf dem Bauern-Test: Matt gefunden, `isready` zwischendurch
 beantwortet, `bestmove` erst bei `stop`.
 
+**Das drohende Matt (2026-10-09, zweiter Nachtrag):** Die Suche beweist in den
+ungeraden Tiefen "die Seite am Zug setzt matt" und in den geraden "die Seite am Zug
+wird matt" (gerade Beweisziele: die Wurzel ist ein Verteidigerknoten, bei `mateab`
+läuft `defend` an der Wurzel, bei `matepn` legt die Parität der Resttiefe die Rolle
+fest). Ergebnis als negative Distanz (`MatePlies` < 0, `score mate -N`), die Liste
+enthält dann die Verluste mit der längsten Verteidigung zuerst:
+
+```
+info depth 10 multipv 1 score mate -5 nodes 5260 nps 228695 time 23 pv f8g7 h7h8q g7h8 f7f8q h8h7 e6e7 h7g6 e7e8q g6h7 e8f7
+info depth 10 multipv 2 score mate -4 nodes 5260 nps 228695 time 23 pv f8e7 h7h8q e7d6 h8d8 d6e6 f7f8q e6e5 d8d6
+```
+
+Ohne Ergebnis nimmt `bestmove` den besten offenen Zug statt des ersten legalen (eine
+bekannte Tabellenantwort bleibt). Beide Fragen kosten zusammen etwa das Doppelte einer
+reinen Mattsuche. **Benchmark-Stellung des Autors** (`test-positions.md`): KRR-KN mit
+Schwarz am Zug, `8/8/4k3/8/8/8/RK6/2R2n2 b - - 1 1`, zwölf Züge, alle verlieren (Tabelle:
+`Ng3 -M9`, `Ne3 -M8`, `Nd2 -M8`, `Nh2 -M7`, sieben Königszüge `-M6`, `Kf7 -M4`); andere
+Engines mit sechs Kernen und MultiPV 12: AsmFish, Patricia und Slow Chess 1 s, Reckless
+6 s, Stockfish 7 s, Spike 13 s, Dragon 94 s. Mattjes ohne Fünf-Steiner-Datei, ein
+Thread: `matepn` alle zwölf Werte exakt nach 93 s (17,8 Mio. Besuche), `mateab` nach
+122 s (414 Mio. Knoten); nach 40 bzw. 20 s standen neun davon (Tiefe 15), `Ne3`/`Nd2`
+brauchen Tiefe 16, `Ng3` Tiefe 18. `matelist` antwortet erst nach der Rückwärtsphase
+und müsste dafür den ganzen Fünf-Steiner aufzählen. Beim Test kamen zwei Altlasten
+hoch: Wechselt die Option `Search` zwischen
+Algorithmen, muss die Transposition Table geleert werden (unter 128 MB nutzen `mateab`
+und `matepn` dieselbe direkte Tabelle, und `matepn` las `mateab`-Einträge als
+Beweiszahlen); und `boardSignature` lief bei vier gleichen Steinen über (K + 4 Bauern
+gegen K sah aus wie KNK und ließ den Index-Code abstürzen), jetzt melden vier gleiche
+Steine "keine Tabelle".
+
 ## Offen
 
 - `matepn` beweist nur "Matt in ≤ N"; der vorgemerkte Schritt (Beweisziel "Gewinn":
   gewonnene Tabellenstellung = bewiesen, Ergebnis "Matt in höchstens k + DTM") macht
   KQ-KBN ohne Fünf-Steiner-Datei erst lösbar.
-- Gesucht wird nur das Matt der Seite am Zug; dass die eigene Seite verliert, sieht
-  die Engine nur über Tabellenwerte.
 - MultiPV gilt nur für Tabellenantworten, die Suche liefert eine Variante.
 - Fünfzig-Züge-Regel und Zugwiederholung kennt die Tabelle nicht; DTM-Linien über
   50 Züge (KBBKN, KNNKP) würden in einer Partie remis enden.

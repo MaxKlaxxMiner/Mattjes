@@ -22,7 +22,6 @@
 package matepn
 
 import (
-	"sort"
 	"sync/atomic"
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
@@ -47,8 +46,9 @@ type Result struct {
 	Disproven bool // no forced mate within the depth
 	// MatePlies is the length of the mate along the proof tree in the table;
 	// with a single depth it is an upper bound of the shortest mate, with
-	// iterative deepening it is the shortest. 0 when the tree is incomplete
-	// (entries overwritten).
+	// iterative deepening it is the shortest. Negative when the side to move
+	// is mated (even depths). 0 when the tree is incomplete (entries
+	// overwritten).
 	MatePlies int
 	PV        []chess.Move
 	Nodes     uint64 // node visits (each regenerates its moves)
@@ -57,9 +57,6 @@ type Result struct {
 	FinalHits uint64 // children decided by a depth-free final entry
 	Plies     int    // the depth this result belongs to (the deepest completed one with SolveShortest)
 	Aborted   bool   // Stop was set: neither proven nor disproven, the numbers are the last completed depth's
-	// Root lists the root moves best first: proven children by the length of
-	// their proof line, then open ones by proof number, disproven ones last.
-	Root []chess.RootMove
 }
 
 // Searcher holds the search state. Progress, if set, is called every
@@ -79,6 +76,9 @@ type Searcher struct {
 	// d is disproven within any d' <= d. Stored under the unsalted key as the
 	// smallest proven and the largest disproven depth.
 	Final bool
+	// Mated makes SolveShortest search the even depths too ("the side to
+	// move is mated within d"); off in the experiments.
+	Mated bool
 	// Progress, if set, is called every ProgressEvery visits of a depth (a
 	// power of two, ProgressNodes unless changed).
 	Progress      func(nodes uint64)
@@ -88,16 +88,9 @@ type Searcher struct {
 	// "stop" and time limits). Entries stored before that are all complete.
 	Stop    *atomic.Bool
 	aborted bool
-	// the depth of the root (mid has no ply) and the root child under
-	// examination, for progress lines and as candidate without a proof
-	rootDepth int
-	current   chess.Move
 
 	nodes, leaves, ttHits, finalHits uint64
 }
-
-// CurrentMove is the root move the search is examining right now.
-func (s *Searcher) CurrentMove() chess.Move { return s.current }
 
 // ProgressNodes is the interval of Progress calls (a power of two).
 const ProgressNodes = 1 << 22
@@ -136,115 +129,45 @@ type child struct {
 	pn, dn uint32
 }
 
-// Solve proves or disproves "the side to move mates within plies" (odd).
+// Solve proves or disproves "the side to move mates within plies" (odd) or,
+// with an even number of plies, "the side to move is mated within plies"
+// (the root is then a defender node).
 func (s *Searcher) Solve(root *bitboard.Board, plies int) Result {
-	if plies < 1 || plies > MaxPlies || plies%2 == 0 {
-		panic("matepn: plies must be odd and at most MaxPlies")
+	if plies < 1 || plies > MaxPlies {
+		panic("matepn: plies must be between 1 and MaxPlies")
 	}
 	s.nodes, s.leaves, s.ttHits, s.finalHits = 0, 0, 0, 0
 	s.aborted = false
-	s.rootDepth, s.current = plies, chess.Move{}
 	pn, dn := s.mid(root, Inf, Inf, plies)
 	r := Result{Proven: pn == 0, Disproven: dn == 0, Nodes: s.nodes, Leaves: s.leaves, TTHits: s.ttHits, FinalHits: s.finalHits, Plies: plies}
 	if s.aborted {
 		r.Proven, r.Disproven, r.Aborted = false, false, true
 		return r
 	}
-	memo := map[tt.Key]int{}
 	if r.Proven {
-		r.MatePlies = s.proofLength(root, plies, memo)
+		memo := map[tt.Key]int{}
+		r.MatePlies = max(0, s.proofLength(root, plies, memo)) // -1 = incomplete tree
 		if r.MatePlies > 0 {
 			r.PV = s.proofLine(root, plies, memo)
+			if plies%2 == 0 {
+				r.MatePlies = -r.MatePlies // the side to move is mated
+			}
 		}
 	}
-	r.Root = s.rootMoves(root, plies, memo)
 	return r
 }
 
-// rootMoves lists the root moves best first after a depth: proven children
-// by the length of their proof line (unknown length last), then open ones by
-// proof number (ties: the larger disproof number, the harder to refute, then
-// the child under examination), disproven ones last (the one under
-// examination first, it held out longest).
-func (s *Searcher) rootMoves(root *bitboard.Board, depth int, memo map[tt.Key]int) []chess.RootMove {
-	type entry struct {
-		rm     chess.RootMove
-		pn, dn uint32
-		cur    bool
-	}
-	var buf chess.MoveBuffer
-	n := root.GenMoves(&buf)
-	entries := make([]entry, 0, n)
-	for _, m := range buf[:n] {
-		c := *root
-		c.DoMove(m)
-		e := entry{rm: chess.RootMove{Move: m}, pn: 1, dn: 1, cur: m == s.current}
-		if pn, dn, ok := s.probeFinal(&c, depth-1); ok {
-			e.pn, e.dn = pn, dn
-		} else if v, ok := s.table.Probe(key(&c, depth-1)); ok {
-			e.pn, e.dn = s.codec.Unpack(v)
-		} else {
-			var cbuf chess.MoveBuffer
-			if pn, dn, _, done := s.terminal(&c, &cbuf, depth-1); done {
-				e.pn, e.dn = pn, dn
-			}
-		}
-		if e.pn == 0 {
-			e.rm.Proven = true
-			if l := s.proofLength(&c, depth-1, memo); l >= 0 {
-				e.rm.MatePlies = l + 1
-				e.rm.PV = append([]chess.Move{m}, s.proofLine(&c, depth-1, memo)...)
-			}
-		}
-		entries = append(entries, e)
-	}
-	class := func(e entry) int {
-		switch {
-		case e.rm.Proven:
-			return 0
-		case e.pn >= Inf:
-			return 2
-		}
-		return 1
-	}
-	sort.SliceStable(entries, func(i, j int) bool {
-		a, b := entries[i], entries[j]
-		if ca, cb := class(a), class(b); ca != cb {
-			return ca < cb
-		}
-		switch class(a) {
-		case 0:
-			la, lb := a.rm.MatePlies, b.rm.MatePlies
-			if la == 0 {
-				la = 1 << 30
-			}
-			if lb == 0 {
-				lb = 1 << 30
-			}
-			return la < lb
-		case 1:
-			if a.pn != b.pn {
-				return a.pn < b.pn
-			}
-			if a.dn != b.dn {
-				return a.dn > b.dn
-			}
-		}
-		return a.cur && !b.cur
-	})
-	out := make([]chess.RootMove, len(entries))
-	for i, e := range entries {
-		out[i] = e.rm
-	}
-	return out
-}
-
 // SolveShortest runs Solve with iterative deepening over odd depths up to
-// maxPlies; report is called after every depth. The first proven depth is the
-// shortest mate. Nodes accumulate.
+// maxPlies (with Mated over all depths, so that the unavoidable mate
+// against the side to move is found too); report is called after every
+// depth. The first proven depth is the shortest mate. Nodes accumulate.
 func (s *Searcher) SolveShortest(root *bitboard.Board, maxPlies int, report func(plies int, r Result)) Result {
 	var total Result
-	for d := 1; d <= maxPlies && d <= MaxPlies; d += 2 {
+	step := 2
+	if s.Mated {
+		step = 1
+	}
+	for d := 1; d <= maxPlies && d <= MaxPlies; d += step {
 		r := s.Solve(root, d)
 		total.Nodes += r.Nodes
 		total.Leaves += r.Leaves
@@ -252,9 +175,8 @@ func (s *Searcher) SolveShortest(root *bitboard.Board, maxPlies int, report func
 		total.FinalHits += r.FinalHits
 		if r.Aborted {
 			total.Aborted = true
-			return total // Plies and Root are still the last completed depth's
+			return total // Plies is still the last completed depth
 		}
-		total.Root = r.Root
 		r.Nodes, r.Leaves, r.TTHits, r.FinalHits = total.Nodes, total.Leaves, total.TTHits, total.FinalHits
 		if report != nil {
 			report(d, r)
@@ -394,9 +316,6 @@ func (s *Searcher) mid(b *bitboard.Board, thPn, thDn uint32, depth int) (uint32,
 			cThDn = min(thDn, bound)
 			cThPn = satSub(thPn, satSub(pn, c.pn))
 		}
-		if depth == s.rootDepth {
-			s.current = c.move
-		}
 		cb := *b
 		cb.DoMove(c.move)
 		c.pn, c.dn = s.mid(&cb, cThPn, cThDn, depth-1)
@@ -444,9 +363,23 @@ func unpackFinal(v uint64) (proven, disproven int) {
 	return int(v>>7&127) - 1, int(v&127) - 1
 }
 
+// finalKey is the unsalted key with the node's role mixed in: a position is
+// an attacker node at odd and a defender node at even remaining depth, and
+// with even proof goals both roles occur for the same side to move.
+func finalKey(b *bitboard.Board, depth int) tt.Key {
+	if depth%2 == 0 {
+		return tt.Key{b.Key[0] ^ finalSalt[0], b.Key[1] ^ finalSalt[1]}
+	}
+	return b.Key
+}
+
+// finalSalt marks the final entries of defender nodes (distinct from every
+// depth salt, which includes depth 0).
+var finalSalt = tt.Key{0x5bd1e9955bd1e995, 0x9e3779b97f4a7c15}
+
 func (s *Searcher) storeFinal(b *bitboard.Board, depth int, proven bool) {
 	pd, dd := -1, -1
-	if v, ok := s.table.Probe(b.Key); ok {
+	if v, ok := s.table.Probe(finalKey(b, depth)); ok {
 		pd, dd = unpackFinal(v)
 	}
 	if proven {
@@ -456,7 +389,7 @@ func (s *Searcher) storeFinal(b *bitboard.Board, depth int, proven bool) {
 	} else if depth > dd {
 		dd = depth
 	}
-	s.table.Store(b.Key, uint64(pd+1)<<7|uint64(dd+1))
+	s.table.Store(finalKey(b, depth), uint64(pd+1)<<7|uint64(dd+1))
 }
 
 // probeFinal answers from the depth-free entry when it decides the node at
@@ -465,7 +398,7 @@ func (s *Searcher) probeFinal(b *bitboard.Board, depth int) (pn, dn uint32, ok b
 	if !s.Final {
 		return 0, 0, false
 	}
-	v, found := s.table.Probe(b.Key)
+	v, found := s.table.Probe(finalKey(b, depth))
 	if !found {
 		return 0, 0, false
 	}

@@ -7,9 +7,18 @@ package uci
 // the last completed depth. The search goroutine never touches the engine's
 // set (the main loop registers and loads tables), it only reads it through
 // the oracle and prints its progress through the shared writer.
+//
+// The root is driven here, not inside the searchers: every root move is
+// solved on its own (the position after it as the search root, with the
+// opponent's mate and the opponent being mated as the two questions), depth
+// by depth, so each move's first proof is its shortest mate and a MultiPV
+// list holds exact values, the way an alpha-beta engine searches every root
+// move for MultiPV. A search that stopped at the root's first success or
+// first escape would leave the other moves with bounds only.
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -118,12 +127,12 @@ func (e *Engine) parseGo(words []string) goParams {
 	return p
 }
 
-// searchEnd is what the search goroutine hands back: the mate it found (0 =
-// none), the deepest completed depth and the counters. The main loop prints
-// the final line, because extending the line through the tables may load
-// tables, which only the main loop does.
+// searchEnd is what the search goroutine hands back: the root moves best
+// first (root[0] is the headline), the deepest completed depth and the
+// counters. The main loop prints the final block, because extending the
+// lines through the tables may load tables, which only the main loop does.
 type searchEnd struct {
-	matePlies int
+	matePlies int              // positive: the engine mates, negative: it is mated, 0: nothing found
 	root      []chess.RootMove // best first, root[0] is the headline
 	plies     int
 	nodes     uint64
@@ -138,16 +147,25 @@ type reporter struct {
 	start   time.Time
 	last    time.Time
 	multiPV int
+	// the root move under examination (set by the root driver) and the nodes
+	// of the finished root moves, for the progress lines
+	current chess.Move
+	base    uint64
+	depth   int
 }
 
-// rootScore renders a root move's score: a proven mate by its length, or
-// by the depth as upper bound when the proof tree lost the length; cp 0
+// rootScore renders a root move's score: a proven mate by its length
+// (positive plies: the engine mates, negative: it is mated), or by the
+// signed depth as upper bound when the proof tree lost the length; cp 0
 // ("no mate within the depth") otherwise.
 func rootScore(rm chess.RootMove, depth int) string {
 	if rm.Proven {
 		n := rm.MatePlies
 		if n == 0 {
 			n = depth
+		}
+		if n < 0 {
+			return fmt.Sprintf("mate -%d", -n/2)
 		}
 		return fmt.Sprintf("mate %d", (n+1)/2)
 	}
@@ -166,10 +184,10 @@ func (r *reporter) counters(nodes uint64) string {
 	return fmt.Sprintf("nodes %d nps %d time %d", nodes, nps(nodes, ms), ms)
 }
 
-// depth reports a completed depth without a mate: the first MultiPV root
-// moves best first, each as "no mate within depth" (score cp 0) with the
-// move as its line, so the GUI's list stays complete.
-func (r *reporter) depth(depth int, nodes uint64, root []chess.RootMove) {
+// depthLines reports a completed depth: the first MultiPV root moves best
+// first, proven ones with their mate, the rest as cp 0 ("no mate within
+// the depth"), so the GUI's list stays complete.
+func (r *reporter) depthLines(depth int, nodes uint64, root []chess.RootMove) {
 	r.last = time.Now()
 	if len(root) == 0 {
 		r.e.send("info depth %d score cp 0 %s", depth, r.counters(nodes))
@@ -181,17 +199,18 @@ func (r *reporter) depth(depth int, nodes uint64, root []chess.RootMove) {
 }
 
 // progress reports the node count inside a depth and the root move under
-// examination, at most every few seconds.
-func (r *reporter) progress(depth int, nodes uint64, current chess.Move) {
+// examination, at most every few seconds (called by the searchers with
+// their node count of the current solve).
+func (r *reporter) progress(nodes uint64) {
 	if time.Since(r.last) < progressInterval {
 		return
 	}
 	r.last = time.Now()
 	cur := ""
-	if current != (chess.Move{}) {
-		cur = " currmove " + current.UCI()
+	if r.current != (chess.Move{}) {
+		cur = " currmove " + r.current.UCI()
 	}
-	r.e.send("info depth %d%s %s", depth, cur, r.counters(nodes))
+	r.e.send("info depth %d%s %s", r.depth, cur, r.counters(r.base+nodes))
 	r.e.flush()
 }
 
@@ -238,9 +257,21 @@ func (e *Engine) startSearch(p goParams) {
 		var r searchEnd
 		switch algo {
 		case "mateab":
-			r = runMateab(&root, maxPlies, oracle, abTable, stop, rep)
+			s := mateab.New(oracle, abTable)
+			s.Stop, s.ProgressEvery, s.Progress = stop, progressEvery, rep.progress
+			r = runRoot(&root, maxPlies, multiPV, rep, func(c *bitboard.Board, plies int) childResult {
+				cr := s.SolveDepth(c, plies)
+				return childResult{proven: cr.MatePlies != 0, length: max(cr.MatePlies, -cr.MatePlies), pv: cr.PV, nodes: cr.Nodes, aborted: cr.Aborted}
+			})
 		case "matepn":
-			r = runMatepn(&root, maxPlies, oracle, direct, stop, rep)
+			s := matepn.New(oracle, direct, matepn.Saturating{Bits: direct.ValueBits()}, true)
+			s.Epsilon, s.Final, s.Stop, s.ProgressEvery, s.Progress = 4, true, stop, progressEvery, rep.progress
+			r = runRoot(&root, maxPlies, multiPV, rep, func(c *bitboard.Board, plies int) childResult {
+				cr := s.Solve(c, plies)
+				// proven with MatePlies 0: the proof tree lost entries, the
+				// depth is an upper bound of the length
+				return childResult{proven: cr.Proven, length: max(cr.MatePlies, -cr.MatePlies), bound: cr.Proven && cr.MatePlies == 0, pv: cr.PV, nodes: cr.Nodes, aborted: cr.Aborted}
+			})
 		case "matelist":
 			r = runMatelist(&root, maxPlies, maxPositions, stop, rep)
 		}
@@ -248,6 +279,143 @@ func (e *Engine) startSearch(p goParams) {
 		r.aborted = stop.Load()
 		e.searchDone <- r
 	}()
+}
+
+// childResult is one root move's answer at one depth from the searchers:
+// proven = the question of the depth holds (odd plies: the side to move at
+// the child mates within plies, even: it is mated), length = the plies of
+// that mate along the proof (bound = only the depth is known), pv = the line
+// from the child.
+type childResult struct {
+	proven  bool
+	length  int
+	bound   bool
+	pv      []chess.Move
+	nodes   uint64
+	aborted bool
+}
+
+// rootEntry is the root driver's state of one move.
+type rootEntry struct {
+	rm   chess.RootMove
+	cost uint64 // nodes of the last unresolved depth, the ordering of the open moves
+}
+
+// runRoot drives the search per root move: depth by depth, every unresolved
+// move's child position is solved as its own root with depth-1 plies (even
+// depths: the opponent is mated, our mate; odd: the opponent mates, our
+// loss). A move's first proof is its shortest mate. Reports every depth;
+// ends when all moves are resolved, when the shortest win is known and only
+// one line is wanted, at the depth bound or when stopped.
+func runRoot(root *bitboard.Board, maxPlies, multiPV int, rep *reporter, solve func(c *bitboard.Board, plies int) childResult) searchEnd {
+	var buf chess.MoveBuffer
+	n := root.GenMoves(&buf)
+	moves := make([]rootEntry, n)
+	for i := range moves {
+		moves[i].rm.Move = buf[i]
+	}
+	var nodes uint64
+	end := searchEnd{}
+	for d := 1; d <= maxPlies; d++ {
+		rep.depth = d
+		for i := range moves {
+			m := &moves[i]
+			if m.rm.Proven {
+				continue
+			}
+			c := *root
+			c.DoMove(m.rm.Move)
+			var res childResult
+			if d == 1 {
+				// our mate in one: the child has no moves and is in check
+				var cbuf chess.MoveBuffer
+				if c.GenMoves(&cbuf) == 0 && c.InCheck() {
+					res.proven = true
+				}
+			} else {
+				rep.current, rep.base = m.rm.Move, nodes
+				res = solve(&c, d-1)
+			}
+			nodes += res.nodes
+			if res.aborted {
+				end.aborted = true
+				return end.finish(moves, nodes)
+			}
+			m.cost = res.nodes
+			if !res.proven {
+				continue
+			}
+			// odd child depth: the opponent mates, our loss; even: our win
+			length := res.length + 1
+			if res.bound {
+				length = d
+			}
+			if (d-1)%2 == 1 {
+				length = -length
+			}
+			m.rm.Proven, m.rm.MatePlies = true, length
+			m.rm.PV = append([]chess.Move{m.rm.Move}, res.pv...)
+			if res.bound {
+				end.note = "proof tree incomplete (table entries replaced), a mate length is an upper bound"
+			}
+		}
+		end.plies = d
+		list := orderRoot(moves)
+		rep.depthLines(d, nodes, list)
+		allDone := true
+		for _, m := range moves {
+			allDone = allDone && m.rm.Proven
+		}
+		if allDone || (multiPV == 1 && len(list) > 0 && list[0].MatePlies > 0) {
+			break
+		}
+	}
+	return end.finish(moves, nodes)
+}
+
+// finish fills the result from the driver's state: the headline is a win
+// when one is proven (the shortest), a loss when every move loses (the
+// longest), nothing otherwise.
+func (end searchEnd) finish(moves []rootEntry, nodes uint64) searchEnd {
+	end.root, end.nodes = orderRoot(moves), nodes
+	if len(end.root) > 0 {
+		first := end.root[0]
+		if first.Proven && (first.MatePlies > 0 || first.MatePlies < 0 && end.root[len(end.root)-1].Proven) {
+			end.matePlies = first.MatePlies
+		}
+	}
+	return end
+}
+
+// orderRoot sorts the root moves best first: wins by the shortest, open
+// moves by the nodes their last depth cost (the hardest to refute first),
+// losses by the longest.
+func orderRoot(moves []rootEntry) []chess.RootMove {
+	sorted := append([]rootEntry(nil), moves...)
+	class := func(m rootEntry) int {
+		switch {
+		case m.rm.Proven && m.rm.MatePlies > 0:
+			return 0
+		case m.rm.Proven:
+			return 2
+		}
+		return 1
+	}
+	sort.SliceStable(sorted, func(i, j int) bool {
+		a, b := sorted[i], sorted[j]
+		if ca, cb := class(a), class(b); ca != cb {
+			return ca < cb
+		}
+		if a.rm.Proven {
+			return a.rm.MatePlies < b.rm.MatePlies // shortest win, longest loss
+		}
+		return a.cost > b.cost
+	})
+	out := make([]chess.RootMove, len(sorted))
+	for i, m := range sorted {
+		out[i] = m.rm
+	}
+	return out
 }
 
 // stopSearch ends a running search and handles its result (which sends the
@@ -273,10 +441,13 @@ func (e *Engine) finishSearch(r searchEnd) {
 		e.timer = nil
 	}
 	ms := r.elapsed.Milliseconds()
-	if r.matePlies > 0 && len(r.root) > 0 {
+	if r.matePlies != 0 && len(r.root) > 0 {
 		// the first MultiPV root moves: proven ones with their lines continued
-		// through the tables, the rest as cp 0 (no mate found behind them)
+		// through the tables, the rest as cp 0 (no mate found behind them);
+		// a negative distance means the engine is mated, the list then holds
+		// the defences longest first
 		counters := fmt.Sprintf("nodes %d nps %d time %d", r.nodes, nps(r.nodes, ms), ms)
+		depth := max(r.matePlies, -r.matePlies)
 		for i, rm := range r.root {
 			if i >= e.multiPV {
 				break
@@ -288,7 +459,7 @@ func (e *Engine) finishSearch(r searchEnd) {
 				}
 				pv = e.extendPV(pv)
 			}
-			e.send("info depth %d multipv %d score %s %s pv %s", r.matePlies, i+1, rootScore(rm, r.matePlies), counters, rootPV(chess.RootMove{Move: rm.Move, PV: pv}))
+			e.send("info depth %d multipv %d score %s %s pv %s", depth, i+1, rootScore(rm, r.matePlies), counters, rootPV(chess.RootMove{Move: rm.Move, PV: pv}))
 		}
 		e.pendingBest = r.root[0].Move.UCI()
 	} else if r.nodes > 0 || r.note == "" {
@@ -297,6 +468,9 @@ func (e *Engine) finishSearch(r searchEnd) {
 			what = "stopped, no mate"
 		}
 		e.send("info string search: %s within %d plies, %s nodes in %.1f s", what, r.plies, egtb.Group(int(r.nodes)), float64(ms)/1000)
+		if !e.tableBest && len(r.root) > 0 {
+			e.pendingBest = r.root[0].Move.UCI() // the best open move: avoids the moves proved lost
+		}
 	}
 	if r.note != "" {
 		e.send("info string search: %s", r.note)
@@ -328,14 +502,19 @@ func pvString(pv []chess.Move) string {
 	return strings.Join(parts, " ")
 }
 
-// directTable returns the direct-mapped table for matepn, allocating it with
-// the current Hash size (the bucket table is dropped: one table at a time).
+// directTable returns the direct-mapped table for the current algorithm,
+// allocating it with the current Hash size (the bucket table is dropped: one
+// table at a time). Entries of another algorithm are cleared: the value
+// layouts differ, matepn would read mateab's entries as proof numbers.
 func (e *Engine) directTable() *tt.Table {
 	if e.direct == nil || e.tableMB != e.hashMB {
 		e.buckets = nil
 		e.direct = tt.New(e.hashMB)
 		e.tableMB = e.hashMB
+	} else if e.tableAlgo != e.algo {
+		e.direct.Clear()
 	}
+	e.tableAlgo = e.algo
 	return e.direct
 }
 
@@ -345,57 +524,17 @@ func (e *Engine) bucketTable() *tt.Buckets {
 		e.direct = nil
 		e.buckets = tt.NewBuckets(e.hashMB)
 		e.tableMB = e.hashMB
+	} else if e.tableAlgo != e.algo {
+		e.buckets.Clear()
 	}
+	e.tableAlgo = e.algo
 	return e.buckets
-}
-
-// runMateab: depth-first with iterative deepening (mateab); the bucket table
-// keeps proven mates over refutations (a direct table below bucketsFromMB).
-func runMateab(root *bitboard.Board, maxPlies int, oracle mateab.Oracle, table mateab.Table, stop *atomic.Bool, rep *reporter) searchEnd {
-	s := mateab.New(oracle, table)
-	s.Stop, s.ProgressEvery = stop, progressEvery
-	var base uint64
-	depth := 1
-	s.Progress = func(nodes uint64) { rep.progress(depth, base+nodes, s.CurrentMove()) }
-	r := s.Solve(root, maxPlies, func(plies int, r mateab.Result) {
-		base, depth = r.Nodes, plies+2
-		if r.MatePlies == 0 {
-			rep.depth(plies, r.Nodes, r.Root)
-		}
-	})
-	return searchEnd{matePlies: r.MatePlies, root: r.Root, plies: r.Plies, nodes: r.Nodes}
-}
-
-// runMatepn: df-pn with iterative deepening (matepn, the measured best
-// settings: mobility, epsilon 1/2, final entries), direct-mapped table.
-func runMatepn(root *bitboard.Board, maxPlies int, oracle mateab.Oracle, table *tt.Table, stop *atomic.Bool, rep *reporter) searchEnd {
-	s := matepn.New(oracle, table, matepn.Saturating{Bits: table.ValueBits()}, true)
-	s.Epsilon, s.Final, s.Stop, s.ProgressEvery = 4, true, stop, progressEvery
-	var base uint64
-	depth := 1
-	s.Progress = func(nodes uint64) { rep.progress(depth, base+nodes, s.CurrentMove()) }
-	r := s.SolveShortest(root, maxPlies, func(plies int, r matepn.Result) {
-		base, depth = r.Nodes, plies+2
-		if !r.Proven {
-			rep.depth(plies, r.Nodes, r.Root)
-		}
-	})
-	end := searchEnd{root: r.Root, plies: r.Plies, nodes: r.Nodes}
-	if r.Proven {
-		end.matePlies = r.MatePlies
-		if end.matePlies == 0 {
-			// proven within the depth, but the proof tree lost entries: the
-			// depth is an upper bound of the mate length
-			end.matePlies = r.Plies
-			end.note = "proof tree incomplete (table entries replaced), the mate is at most that long"
-		}
-	}
-	return end
 }
 
 // runMatelist: breadth-first enumeration plus retrograde analysis
 // (matelist); the Hash size bounds the positions, a stop ends the
-// enumeration at the next ply and resolves what was reached.
+// enumeration at the next ply and resolves what was reached. The graph
+// knows every root move exactly, so its list is used as it is.
 func runMatelist(root *bitboard.Board, maxPlies, maxPositions int, stop *atomic.Bool, rep *reporter) searchEnd {
 	r, err := matelist.Solve(root, maxPlies, maxPositions, stop, func(line string) { rep.text("matelist: " + line) })
 	if err != nil {

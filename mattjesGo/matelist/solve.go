@@ -199,7 +199,10 @@ func Solve(root *bitboard.Board, maxPlies, maxPositions int, stop *atomic.Bool, 
 
 	r := Result{Positions: len(recs), Expanded: expanded, Edges: edges, Plies: plies, Resolved: resolved, MaxLevel: maxLevel}
 	r.Root = rootMoves(root, store, status)
-	if s := status[0]; s != unknown && s&loseFlag == 0 {
+	if s := status[0]; s != unknown && s&loseFlag != 0 {
+		r.MatePlies = -int(s &^ loseFlag) // the side to move is mated
+		r.PV = principalVariation(root, 0, store, status)
+	} else if s != unknown {
 		r.MatePlies = int(s)
 		r.PV = principalVariation(root, 0, store, status)
 		r.ProofPositions, r.ProofEdges = proofSize(recs, store, status)
@@ -252,8 +255,8 @@ func proofSize(recs [][bitboard.PackedFixedBytes]byte, store *ttstore.Store, sta
 }
 
 // rootMoves lists the root moves best first: those that mate by the length of
-// the mate, then the rest in generation order (the graph knows them as draws,
-// losses or unresolved).
+// the mate, then the unresolved ones in generation order, then those after
+// which the opponent mates, the longest defence first (negative MatePlies).
 func rootMoves(root *bitboard.Board, store *ttstore.Store, status []uint8) []chess.RootMove {
 	var buf chess.MoveBuffer
 	n := root.GenMoves(&buf)
@@ -263,19 +266,33 @@ func rootMoves(root *bitboard.Board, store *ttstore.Store, status []uint8) []che
 		child.DoMove(m)
 		e := chess.RootMove{Move: m}
 		if idx, ok := store.Get(child.Key); ok {
-			if s := status[idx]; s&loseFlag != 0 {
-				e.Proven, e.MatePlies = true, int(s&^loseFlag)+1
+			if s := status[idx]; s != unknown {
+				e.Proven = true
+				if s&loseFlag != 0 {
+					e.MatePlies = int(s&^loseFlag) + 1
+				} else {
+					e.MatePlies = -(int(s) + 1)
+				}
 				e.PV = append([]chess.Move{m}, principalVariation(&child, uint32(idx), store, status)...)
 			}
 		}
 		out = append(out, e)
 	}
+	class := func(e chess.RootMove) int {
+		switch {
+		case e.Proven && e.MatePlies > 0:
+			return 0
+		case e.Proven:
+			return 2
+		}
+		return 1
+	}
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
-		if a.Proven != b.Proven {
-			return a.Proven
+		if ca, cb := class(a), class(b); ca != cb {
+			return ca < cb
 		}
-		return a.Proven && a.MatePlies < b.MatePlies
+		return a.Proven && a.MatePlies < b.MatePlies // shortest win, longest loss
 	})
 	return out
 }

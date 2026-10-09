@@ -75,9 +75,13 @@ pub struct Engine<W: Write + Send + 'static> {
     /// dropped when a generation starts (the generator needs the memory).
     tables: Option<SearchTable>,
     table_mb: usize,
+    /// The algorithm whose entries the table holds (their value layouts differ).
+    table_algo: String,
     // a "go infinite" holds the best move back until "stop"
     infinite: bool,
     pending_best: String,
+    /// `pending_best` has a table value (a search without result keeps it).
+    table_best: bool,
     job: Option<Job>,
     tx: mpsc::Sender<Event>,
     // the running search, if any
@@ -116,8 +120,10 @@ pub fn run<R: Read + Send + 'static, W: Write + Send + 'static>(input: R, out: W
         hash_mb: DEFAULT_HASH_MB,
         tables: None,
         table_mb: 0,
+        table_algo: String::new(),
         infinite: false,
         pending_best: String::new(),
+        table_best: false,
         job: None,
         tx: tx.clone(),
         searching: false,
@@ -436,6 +442,7 @@ impl<W: Write + Send + 'static> Engine<W> {
             self.send(&format!("info depth {} multipv {} score {} pv {}", r.pv.len(), i + 1, score(r.value), pv.join(" ")));
         }
         self.pending_best = moves[0].mv.uci();
+        self.table_best = moves[0].known;
         all_known || moves[0].known && moves[0].value.is_win()
     }
 

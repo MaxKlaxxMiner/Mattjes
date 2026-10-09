@@ -26,8 +26,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::bitboard::Board;
-use crate::chess::{new_buffer, Move, Piece, Pos, RootMove};
-use crate::tt::TransTable;
+use crate::chess::{new_buffer, Move, Piece, Pos};
+use crate::tt::{Key, TransTable};
+
+/// Separates the entries of the searches in which black attacks (even depths
+/// from a white root, odd depths from a black root), see `Searcher::key`.
+const BLACK_ATTACKER_SALT: Key = [0x5bd1e9955bd1e995, 0x9e3779b97f4a7c15];
 
 /// Bounds the search depth in plies (the TT depth field holds 7 bits).
 pub const MAX_PLY: usize = 128;
@@ -45,7 +49,9 @@ const NO_MATE: i32 = -1;
 /// `mate_plies` when the entries needed to extend it were replaced.
 #[derive(Clone, Default)]
 pub struct Result {
-    pub mate_plies: u32,
+    /// Odd and positive when the side to move mates, even and negative when
+    /// it is mated (`mated` searches), 0 if nothing was found within the depth.
+    pub mate_plies: i32,
     pub pv: Vec<Move>,
     pub nodes: u64,
     /// Probes that ended the node (mate or refutation taken from the table).
@@ -56,10 +62,6 @@ pub struct Result {
     pub plies: u32,
     /// The stop flag was set: the result is that of the last completed depth.
     pub aborted: bool,
-    /// The root moves best first: the mating move, then the refuted ones by
-    /// the nodes their refutation cost (the most promising first), then the
-    /// moves the depth never reached.
-    pub root: Vec<RootMove>,
 }
 
 /// Per-search state: the oracle, the optional table, node counters, principal
@@ -84,14 +86,17 @@ pub struct Searcher<O: Oracle, T: TransTable> {
     /// `aborted` set (UCI "stop" and time limits).
     pub stop: Option<Arc<AtomicBool>>,
     aborted: bool,
-    /// The root move under examination (for progress lines) and the nodes
-    /// each refuted root move cost in the current depth.
-    current: Option<Move>,
-    root_costs: Vec<(Move, u64)>,
+    /// Also searches the even depths, in which the side to move is the
+    /// defender and the question is "is it mated within d plies" (UCI: the
+    /// unavoidable mate against the engine is reported too). Off in the
+    /// experiments, which count the attacker's nodes only.
+    pub mated: bool,
+    /// Key salt of the current depth (see `key`).
+    salt: Key,
 }
 
 /// The progress callback type of `Searcher::progress`.
-pub type ProgressFn<T> = Box<dyn FnMut(u64, Option<Move>, Option<&T>)>;
+pub type ProgressFn<T> = Box<dyn FnMut(u64, Option<&T>)>;
 
 /// The interval of progress calls (a power of two).
 pub const PROGRESS_NODES: u64 = 1 << 26;
@@ -101,40 +106,16 @@ const NO_SQUARE: Pos = Pos(-1);
 impl<O: Oracle, T: TransTable> Searcher<O, T> {
     /// A searcher that asks `oracle` at every node and uses `table` (`None` for none).
     pub fn new(oracle: O, table: Option<T>) -> Searcher<O, T> {
-        Searcher { oracle, table, nodes: 0, tt_hits: 0, oracle_hits: 0, pv: Box::new([[Move::NONE; MAX_PLY]; MAX_PLY]), pv_len: [0; MAX_PLY], killer: [Move::NONE; MAX_PLY], progress: None, progress_every: PROGRESS_NODES, stop: None, aborted: false, current: None, root_costs: Vec::new() }
+        Searcher { oracle, table, nodes: 0, tt_hits: 0, oracle_hits: 0, pv: Box::new([[Move::NONE; MAX_PLY]; MAX_PLY]), pv_len: [0; MAX_PLY], killer: [Move::NONE; MAX_PLY], progress: None, progress_every: PROGRESS_NODES, stop: None, aborted: false, mated: false, salt: [0; 2] }
     }
 
-    /// Lists the root moves best first: the mating move with its line, then
-    /// the refuted moves by the nodes their refutation cost (a hard refutation
-    /// is the best hint at a promising move), then the moves the depth never
-    /// reached (the first success ended it) in generation order.
-    fn root_moves(&self, root: &Board, pv: &[Move], dist: i32) -> Vec<RootMove> {
-        let mut out: Vec<RootMove> = Vec::new();
-        if dist != NO_MATE {
-            if let Some(&m) = pv.first() {
-                out.push(RootMove { mv: m, proven: true, mate_plies: dist as u32, pv: pv.to_vec() });
-            }
-        }
-        let mut costs = self.root_costs.clone();
-        costs.sort_by_key(|c| std::cmp::Reverse(c.1)); // stable
-        for (m, _) in costs {
-            if !out.iter().any(|e| e.mv == m) {
-                out.push(RootMove { mv: m, ..Default::default() });
-            }
-        }
-        let mut buf = new_buffer();
-        let n = root.gen_moves(&mut buf);
-        for &m in &buf[..n] {
-            if !out.iter().any(|e| e.mv == m) {
-                out.push(RootMove { mv: m, ..Default::default() });
-            }
-        }
-        out
-    }
-
-    /// The root move the search is examining right now.
-    pub fn current_move(&self) -> Option<Move> {
-        self.current
+    /// The table key of a position. The entries of the searches in which
+    /// black is the attacker are salted: the same position is an attacker
+    /// node in one and a defender node in the other, and an entry "mate in d"
+    /// of the one would be read as "mated in d" by the other.
+    #[inline(always)]
+    fn key(&self, b: &Board) -> Key {
+        [b.key[0] ^ self.salt[0], b.key[1] ^ self.salt[1]]
     }
 
     /// Polls the stop flag every `STOP_NODES` nodes.
@@ -165,47 +146,68 @@ impl<O: Oracle, T: TransTable> Searcher<O, T> {
     /// last depth, with `mate_plies` 0). Nodes accumulate over all depths.
     pub fn solve(&mut self, root: &Board, max_plies: u32, mut report: impl FnMut(u32, &Result)) -> Result {
         self.killer = [Move::NONE; MAX_PLY];
-        self.aborted = false;
         let (mut total_nodes, mut total_hits, mut total_oracle) = (0u64, 0u64, 0u64);
         let mut last = Result::default();
+        let step = if self.mated { 1 } else { 2 }; // odd depths: the side to move mates; even: it is mated
         let mut d = 1u32;
         while d <= max_plies && (d as usize) < MAX_PLY {
-            self.nodes = 0;
-            self.tt_hits = 0;
-            self.oracle_hits = 0;
-            self.root_costs.clear();
-            let dist = self.attack(root, d, 0);
-            total_nodes += self.nodes;
-            total_hits += self.tt_hits;
-            total_oracle += self.oracle_hits;
-            if self.aborted {
+            let r = self.solve_depth(root, d);
+            total_nodes += r.nodes;
+            total_hits += r.tt_hits;
+            total_oracle += r.oracle_hits;
+            if r.aborted {
                 last.nodes = total_nodes;
                 last.tt_hits = total_hits;
                 last.oracle_hits = total_oracle;
                 last.aborted = true;
                 break;
             }
-            last = Result { nodes: total_nodes, tt_hits: total_hits, oracle_hits: total_oracle, plies: d, ..Default::default() };
-            if dist != NO_MATE {
-                last.mate_plies = dist as u32;
-                last.pv = self.extend_pv(root, dist as usize);
-            }
-            last.root = self.root_moves(root, &last.pv, dist);
+            last = r;
+            last.nodes = total_nodes;
+            last.tt_hits = total_hits;
+            last.oracle_hits = total_oracle;
             report(d, &last);
-            if dist != NO_MATE {
+            if last.mate_plies != 0 {
                 break;
             }
-            d += 2;
+            d += step;
         }
         last
+    }
+
+    /// Searches one depth: with an odd number of plies "the side to move
+    /// mates within plies", with an even one "the side to move is mated
+    /// within plies" (the root is then a defender node). Killer moves
+    /// persist between calls, the node counters are those of this depth.
+    pub fn solve_depth(&mut self, root: &Board, plies: u32) -> Result {
+        self.nodes = 0;
+        self.tt_hits = 0;
+        self.oracle_hits = 0;
+        self.aborted = false;
+        let defender = plies.is_multiple_of(2);
+        // the table entries belong to the attacker's colour: a position is an
+        // attacker node when that colour is to move, whichever root asks
+        self.salt = if root.white_move == defender { BLACK_ATTACKER_SALT } else { [0; 2] };
+        let dist = if defender { self.defend(root, plies, 0) } else { self.attack(root, plies, 0) };
+        let mut r = Result { nodes: self.nodes, tt_hits: self.tt_hits, oracle_hits: self.oracle_hits, plies, aborted: self.aborted, ..Default::default() };
+        if self.aborted {
+            r.plies = 0;
+            return r;
+        }
+        if dist != NO_MATE {
+            r.mate_plies = if defender { -dist } else { dist };
+            r.pv = self.extend_pv(root, dist as usize);
+        }
+        r
     }
 
     /// Probes the table for the node. Returns `Some(result)` when the entry ends
     /// the node, else the entry's move squares for ordering (or `NO_SQUARE`).
     #[inline(always)]
     fn probe(&mut self, b: &Board, depth: u32, ply: usize) -> std::result::Result<(Pos, Pos), i32> {
+        let k = self.key(b);
         let Some(t) = self.table.as_mut() else { return Ok((NO_SQUARE, NO_SQUARE)) };
-        let Some(v) = t.probe(b.key) else { return Ok((NO_SQUARE, NO_SQUARE)) };
+        let Some(v) = t.probe(k) else { return Ok((NO_SQUARE, NO_SQUARE)) };
         let (typ, d, from, to) = unpack_value(v);
         if typ == TT_MATE && d <= depth {
             self.tt_hits += 1;
@@ -220,8 +222,9 @@ impl<O: Oracle, T: TransTable> Searcher<O, T> {
     }
 
     fn store(&mut self, b: &Board, typ: u32, depth: u32, m: Move) {
+        let k = self.key(b);
         if let Some(t) = self.table.as_mut() {
-            t.store(b.key, pack_value(typ, depth, m));
+            t.store(k, pack_value(typ, depth, m));
         }
     }
 
@@ -232,7 +235,7 @@ impl<O: Oracle, T: TransTable> Searcher<O, T> {
         self.nodes += 1;
         if self.nodes & (self.progress_every - 1) == 0 {
             if let Some(p) = self.progress.as_mut() {
-                p(self.nodes, self.current, self.table.as_ref());
+                p(self.nodes, self.table.as_ref());
             }
         }
         self.check_stop();
@@ -279,16 +282,9 @@ impl<O: Oracle, T: TransTable> Searcher<O, T> {
         for &m in &buf[..n] {
             let mut child = *b;
             child.do_move(m);
-            let before = self.nodes;
-            if ply == 0 {
-                self.current = Some(m);
-            }
             let r = self.defend(&child, depth - 1, ply + 1);
             if self.aborted {
                 return NO_MATE; // nothing is stored on the way out
-            }
-            if ply == 0 {
-                self.root_costs.push((m, self.nodes - before));
             }
             if r != NO_MATE {
                 self.set_pv(ply, m);
@@ -372,13 +368,27 @@ impl<O: Oracle, T: TransTable> Searcher<O, T> {
     /// nodes, longest defence at defender nodes), until the mate or a missing entry.
     fn extend_pv(&mut self, root: &Board, mate_plies: usize) -> Vec<Move> {
         let mut pv = self.pv[0][..self.pv_len[0]].to_vec();
-        let Some(t) = self.table.as_mut() else { return pv };
+        if self.table.is_none() || pv.len() >= mate_plies {
+            return pv;
+        }
         let mut b = *root;
         for &m in &pv {
             b.do_move(m);
         }
-        while pv.len() < mate_plies {
-            let Some(v) = t.probe(b.key) else { break };
+        let rest = self.tt_line(b, mate_plies - pv.len());
+        pv.extend(rest);
+        pv
+    }
+
+    /// Follows the moves the transposition table remembers from `b` (mating
+    /// move at attacker nodes, longest defence at defender nodes) for up to
+    /// `want` plies, until a missing entry.
+    fn tt_line(&mut self, mut b: Board, want: usize) -> Vec<Move> {
+        let mut line = Vec::new();
+        while line.len() < want {
+            let k = self.key(&b);
+            let Some(t) = self.table.as_mut() else { break };
+            let Some(v) = t.probe(k) else { break };
             let (typ, _, from, to) = unpack_value(v);
             if typ != TT_MATE {
                 break;
@@ -387,13 +397,13 @@ impl<O: Oracle, T: TransTable> Searcher<O, T> {
             let n = b.gen_moves(&mut buf);
             match buf[..n].iter().find(|m| same_move(**m, from, to)) {
                 Some(&m) => {
-                    pv.push(m);
+                    line.push(m);
                     b.do_move(m);
                 }
                 None => break,
             }
         }
-        pv
+        line
     }
 
     /// Sorts the attacker's moves: table move, killer, checks, captures, the rest.

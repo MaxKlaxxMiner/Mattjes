@@ -266,8 +266,14 @@ fn type_bit(p: Piece) -> u32 {
 pub fn board_signature(b: &Board) -> (Signature, Signature) {
     let (mut w, mut bl) = (0u32, 0u32);
     for p in [Piece::PAWN, Piece::KNIGHT, Piece::BISHOP, Piece::ROOK, Piece::QUEEN] {
-        w += b.piece_bb(Piece::WHITE | p).count_ones() << type_bit(p);
-        bl += b.piece_bb(Piece::BLACK | p).count_ones() << type_bit(p);
+        let (cw, cb) = (b.piece_bb(Piece::WHITE | p).count_ones(), b.piece_bb(Piece::BLACK | p).count_ones());
+        if cw > 3 || cb > 3 {
+            // four of a kind do not fit the two-bit field and would alias
+            // another material (four pawns look like a knight): no table
+            return (SIGNATURE_SPACE as u32 - 1, SIGNATURE_SPACE as u32 - 1);
+        }
+        w += cw << type_bit(p);
+        bl += cb << type_bit(p);
     }
     (w | bl << 10, bl | w << 10)
 }

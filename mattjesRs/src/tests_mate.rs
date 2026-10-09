@@ -86,7 +86,7 @@ fn run_mateab<O: Oracle + Copy, T: TransTable + 'static>(title: &str, oracle: O,
         let mut depth_start = start;
         let progress_start = Rc::new(Cell::new(start));
         let ps = progress_start.clone();
-        s.progress = Some(Box::new(move |nodes, _current, t: Option<&T>| {
+        s.progress = Some(Box::new(move |nodes, t: Option<&T>| {
             let mut line = format!("              ... {} nodes, {}", group(nodes), fmt_ms(ps.get().elapsed()));
             if let Some(t) = t {
                 let st = t.stats();
@@ -101,7 +101,7 @@ fn run_mateab<O: Oracle + Copy, T: TransTable + 'static>(title: &str, oracle: O,
                 if r.pv.len() < r.mate_plies as usize {
                     pv += " ...";
                 }
-                println!("    depth {:>2}: mate in {}  {:>14} nodes {:>9}  pv {}", plies, r.mate_plies.div_ceil(2), group(r.nodes - last_nodes), fmt_ms(now - depth_start), pv);
+                println!("    depth {:>2}: mate in {}  {:>14} nodes {:>9}  pv {}", plies, (r.mate_plies + 1) / 2, group(r.nodes - last_nodes), fmt_ms(now - depth_start), pv);
             } else {
                 println!("    depth {:>2}: no mate    {:>14} nodes {:>9}", plies, group(r.nodes - last_nodes), fmt_ms(now - depth_start));
             }
@@ -115,7 +115,7 @@ fn run_mateab<O: Oracle + Copy, T: TransTable + 'static>(title: &str, oracle: O,
         if r.mate_plies == 0 {
             println!("    FAIL: no mate found within {} plies", 2 * p.mate_in - 1);
             ok = false;
-        } else if r.mate_plies != 2 * p.mate_in - 1 {
+        } else if r.mate_plies != (2 * p.mate_in - 1) as i32 {
             println!("    FAIL: mate in {} plies, expected {}", r.mate_plies, 2 * p.mate_in - 1);
             ok = false;
         } else {
@@ -183,13 +183,13 @@ pub fn matelist_solve(name: &str, max_mate_in: u32, max_plies: u32, max_position
         if r.mate_plies == 0 {
             println!("    FAIL: no mate found ({})", fmt_ms(elapsed));
             ok = false;
-        } else if r.mate_plies != 2 * p.mate_in - 1 {
+        } else if r.mate_plies != (2 * p.mate_in - 1) as i32 {
             println!("    FAIL: mate in {} plies, expected {} ({})", r.mate_plies, 2 * p.mate_in - 1, fmt_ms(elapsed));
             ok = false;
         } else {
             println!(
                 "    ok: mate in {} in {}, proof DAG {} of {} positions ({:.1}%)  pv {}",
-                r.mate_plies.div_ceil(2),
+                (r.mate_plies + 1) / 2,
                 fmt_ms(elapsed),
                 group(r.proof_positions as u64),
                 group(r.positions as u64),

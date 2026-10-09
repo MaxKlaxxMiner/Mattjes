@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 
 use crate::bitboard::Board;
-use crate::chess::{new_buffer, Move, MoveBuffer, RootMove};
+use crate::chess::{new_buffer, Move, MoveBuffer};
 use crate::mateab::{Oracle, Verdict};
 use crate::tt::{Key, TransTable};
 
@@ -31,8 +31,9 @@ pub struct Result {
     pub disproven: bool,
     /// The length of the mate along the proof tree in the table; with a single
     /// depth an upper bound of the shortest mate, with iterative deepening the
-    /// shortest. 0 when the tree is incomplete (entries overwritten).
-    pub mate_plies: usize,
+    /// shortest. Negative when the side to move is mated (even depths). 0 when
+    /// the tree is incomplete (entries overwritten).
+    pub mate_plies: i32,
     pub pv: Vec<Move>,
     /// Node visits (each regenerates its moves).
     pub nodes: u64,
@@ -48,13 +49,10 @@ pub struct Result {
     /// The stop flag was set: neither proven nor disproven, the counters are
     /// those of the last completed depth.
     pub aborted: bool,
-    /// The root moves best first: proven children by the length of their
-    /// proof line, then open ones by proof number, disproven ones last.
-    pub root: Vec<RootMove>,
 }
 
 /// The progress callback type of `Searcher::progress`.
-pub type ProgressFn<T> = Box<dyn FnMut(u64, Option<Move>, &T)>;
+pub type ProgressFn<T> = Box<dyn FnMut(u64, &T)>;
 
 /// The interval of progress calls (a power of two).
 pub const PROGRESS_NODES: u64 = 1 << 22;
@@ -102,6 +100,9 @@ pub struct Searcher<O: Oracle, T: TransTable, C: Codec> {
     /// Reuses proven and disproven results across depths under the unsalted key
     /// (smallest proven and largest disproven depth).
     pub final_entries: bool,
+    /// Makes `solve_shortest` search the even depths too ("the side to move
+    /// is mated within d"); off in the experiments.
+    pub mated: bool,
     /// Called every `progress_every` visits of a depth (a power of two,
     /// `PROGRESS_NODES` unless changed).
     pub progress: Option<ProgressFn<T>>,
@@ -111,10 +112,6 @@ pub struct Searcher<O: Oracle, T: TransTable, C: Codec> {
     /// limits). Entries stored before that are all complete.
     pub stop: Option<Arc<AtomicBool>>,
     aborted: bool,
-    /// The depth of the root (mid has no ply) and the root child under
-    /// examination, for progress lines and as candidate without a proof.
-    root_depth: usize,
-    current: Option<Move>,
     nodes: u64,
     leaves: u64,
     tt_hits: u64,
@@ -125,12 +122,7 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
     /// `mobility` initialises unknown children with their number of legal moves
     /// instead of 1 (one generator call per new leaf).
     pub fn new(oracle: O, table: T, codec: C, mobility: bool) -> Self {
-        Searcher { oracle, table, codec, mobility, epsilon: 0, final_entries: false, progress: None, progress_every: PROGRESS_NODES, stop: None, aborted: false, root_depth: 0, current: None, nodes: 0, leaves: 0, tt_hits: 0, final_hits: 0 }
-    }
-
-    /// The root move the search is examining right now.
-    pub fn current_move(&self) -> Option<Move> {
-        self.current
+        Searcher { oracle, table, codec, mobility, epsilon: 0, final_entries: false, mated: false, progress: None, progress_every: PROGRESS_NODES, stop: None, aborted: false, nodes: 0, leaves: 0, tt_hits: 0, final_hits: 0 }
     }
 
     /// Polls the stop flag every `STOP_NODES` visits.
@@ -155,14 +147,12 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
 
     /// Proves or disproves "the side to move mates within plies" (odd).
     pub fn solve(&mut self, root: &Board, plies: usize) -> Result {
-        assert!((1..=MAX_PLIES).contains(&plies) && plies % 2 == 1, "matepn: plies must be odd and at most MAX_PLIES");
+        assert!((1..=MAX_PLIES).contains(&plies), "matepn: plies must be between 1 and MAX_PLIES");
         self.nodes = 0;
         self.leaves = 0;
         self.tt_hits = 0;
         self.final_hits = 0;
         self.aborted = false;
-        self.root_depth = plies;
-        self.current = None;
         let (pn, dn) = self.mid(root, INF, INF, plies);
         let mut r = Result { proven: pn == 0, disproven: dn == 0, nodes: self.nodes, leaves: self.leaves, tt_hits: self.tt_hits, final_hits: self.final_hits, plies, ..Default::default() };
         if self.aborted {
@@ -171,81 +161,15 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
             r.aborted = true;
             return r;
         }
-        let mut memo = HashMap::new();
         if r.proven {
-            let l = self.proof_length(root, plies, &mut memo);
+            let mut memo = HashMap::new();
+            let l = self.proof_length(root, plies, &mut memo); // -1 = incomplete tree
             if l > 0 {
-                r.mate_plies = l as usize;
+                r.mate_plies = if plies.is_multiple_of(2) { -l } else { l }; // even: the side to move is mated
                 r.pv = self.proof_line(root, plies, &memo);
             }
         }
-        r.root = self.root_moves(root, plies, &mut memo);
         r
-    }
-
-    /// Lists the root moves best first after a depth: proven children by the
-    /// length of their proof line (unknown length last), then open ones by
-    /// proof number (ties: the larger disproof number, the harder to refute,
-    /// then the child under examination), disproven ones last (the one under
-    /// examination first, it held out longest).
-    fn root_moves(&mut self, root: &Board, depth: usize, memo: &mut HashMap<Key, i32>) -> Vec<RootMove> {
-        struct Entry {
-            rm: RootMove,
-            pn: u32,
-            dn: u32,
-            cur: bool,
-        }
-        let mut buf = new_buffer();
-        let n = root.gen_moves(&mut buf);
-        let mut entries: Vec<Entry> = Vec::with_capacity(n);
-        for &m in &buf[..n] {
-            let mut c = *root;
-            c.do_move(m);
-            let mut e = Entry { rm: RootMove { mv: m, ..Default::default() }, pn: 1, dn: 1, cur: self.current == Some(m) };
-            if let Some((pn, dn)) = self.probe_final(&c, depth - 1) {
-                e.pn = pn;
-                e.dn = dn;
-            } else if let Some(v) = self.table.probe(key(&c, depth - 1)) {
-                (e.pn, e.dn) = self.codec.unpack(v);
-            } else {
-                let mut cbuf = new_buffer();
-                if let (Some((pn, dn)), _) = self.terminal(&c, &mut cbuf, depth - 1) {
-                    e.pn = pn;
-                    e.dn = dn;
-                }
-            }
-            if e.pn == 0 {
-                e.rm.proven = true;
-                let l = self.proof_length(&c, depth - 1, memo);
-                if l >= 0 {
-                    e.rm.mate_plies = l as u32 + 1;
-                    e.rm.pv = std::iter::once(m).chain(self.proof_line(&c, depth - 1, memo)).collect();
-                }
-            }
-            entries.push(e);
-        }
-        let class = |e: &Entry| {
-            if e.rm.proven {
-                0
-            } else if e.pn >= INF {
-                2
-            } else {
-                1
-            }
-        };
-        entries.sort_by(|a, b| {
-            let (ca, cb) = (class(a), class(b));
-            if ca != cb {
-                return ca.cmp(&cb);
-            }
-            let length = |e: &Entry| if e.rm.mate_plies == 0 { u32::MAX } else { e.rm.mate_plies };
-            match ca {
-                0 => length(a).cmp(&length(b)),
-                1 => a.pn.cmp(&b.pn).then(b.dn.cmp(&a.dn)).then(b.cur.cmp(&a.cur)),
-                _ => b.cur.cmp(&a.cur),
-            }
-        });
-        entries.into_iter().map(|e| e.rm).collect()
     }
 
     /// `solve` with iterative deepening over odd depths up to max_plies; report
@@ -253,6 +177,7 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
     /// mate. Nodes accumulate.
     pub fn solve_shortest(&mut self, root: &Board, max_plies: usize, mut report: impl FnMut(usize, &Result)) -> Result {
         let mut total = Result::default();
+        let step = if self.mated { 1 } else { 2 };
         let mut d = 1;
         while d <= max_plies && d <= MAX_PLIES {
             let mut r = self.solve(root, d);
@@ -262,9 +187,8 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
             total.final_hits += r.final_hits;
             if r.aborted {
                 total.aborted = true;
-                return total; // plies and root are still the last completed depth's
+                return total; // plies is still the last completed depth
             }
-            total.root = r.root.clone();
             r.nodes = total.nodes;
             r.leaves = total.leaves;
             r.tt_hits = total.tt_hits;
@@ -275,7 +199,7 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
             }
             total.disproven = r.disproven;
             total.plies = d;
-            d += 2;
+            d += step;
         }
         total
     }
@@ -317,7 +241,7 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
         self.nodes += 1;
         if self.nodes & (self.progress_every - 1) == 0 {
             if let Some(p) = self.progress.as_mut() {
-                p(self.nodes, self.current, &self.table);
+                p(self.nodes, &self.table);
             }
         }
         self.check_stop();
@@ -384,9 +308,6 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
                 bound = sat_add(second, (((second as u64) * self.epsilon as u64) / 8).max(1) as u32);
             }
             let (c_th_pn, c_th_dn) = if attacker { (th_pn.min(bound), sat_sub(th_dn, sat_sub(dn, c.dn))) } else { (sat_sub(th_pn, sat_sub(pn, c.pn)), th_dn.min(bound)) };
-            if depth == self.root_depth {
-                self.current = Some(c.mv);
-            }
             let mut cb = *b;
             cb.do_move(c.mv);
             let (npn, ndn) = self.mid(&cb, c_th_pn, c_th_dn, depth - 1);
@@ -428,7 +349,8 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
     /// Final entries live under the unsalted key: 7 bits smallest proven depth
     /// + 1 and 7 bits largest disproven depth + 1 (0 = none each).
     fn store_final(&mut self, b: &Board, depth: usize, proven: bool) {
-        let (mut pd, mut dd) = match self.table.probe(b.key) {
+        let k = final_key(b, depth);
+        let (mut pd, mut dd) = match self.table.probe(k) {
             Some(v) => unpack_final(v),
             None => (-1, -1),
         };
@@ -440,7 +362,7 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
         } else if depth > dd {
             dd = depth;
         }
-        self.table.store(b.key, ((pd + 1) as u64) << 7 | (dd + 1) as u64);
+        self.table.store(k, ((pd + 1) as u64) << 7 | (dd + 1) as u64);
     }
 
     /// Answers from the depth-free entry when it decides the node at this depth.
@@ -448,7 +370,7 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
         if !self.final_entries {
             return None;
         }
-        let (pd, dd) = unpack_final(self.table.probe(b.key)?);
+        let (pd, dd) = unpack_final(self.table.probe(final_key(b, depth))?);
         let depth = depth as i32;
         if pd >= 0 && pd <= depth {
             Some((0, INF))
@@ -550,6 +472,21 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
         }
     }
 }
+
+/// The unsalted key with the node's role mixed in: a position is an attacker
+/// node at odd and a defender node at even remaining depth, and with `mated`
+/// searches both roles occur for the same side to move.
+fn final_key(b: &Board, depth: usize) -> Key {
+    if depth.is_multiple_of(2) {
+        [b.key[0] ^ FINAL_SALT[0], b.key[1] ^ FINAL_SALT[1]]
+    } else {
+        b.key
+    }
+}
+
+/// Marks the final entries of defender nodes (distinct from every depth salt,
+/// which includes depth 0).
+const FINAL_SALT: Key = [0x5bd1e9955bd1e995, 0x9e3779b97f4a7c15];
 
 fn unpack_final(v: u64) -> (i32, i32) {
     ((v >> 7 & 127) as i32 - 1, (v & 127) as i32 - 1)

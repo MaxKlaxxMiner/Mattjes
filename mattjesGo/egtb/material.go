@@ -218,8 +218,14 @@ func (m Material) signature() Signature {
 func boardSignature(b *bitboard.Board) (Signature, Signature) {
 	var w, bl Signature
 	for _, p := range []chess.Piece{chess.Pawn, chess.Knight, chess.Bishop, chess.Rook, chess.Queen} {
-		w += Signature(bits.OnesCount64(b.PieceBB(chess.White|p))) << typeBit(p)
-		bl += Signature(bits.OnesCount64(b.PieceBB(chess.Black|p))) << typeBit(p)
+		cw, cb := bits.OnesCount64(b.PieceBB(chess.White|p)), bits.OnesCount64(b.PieceBB(chess.Black|p))
+		if cw > 3 || cb > 3 {
+			// four of a kind do not fit the two-bit field and would alias
+			// another material (four pawns look like a knight): no table
+			return signatureSpace - 1, signatureSpace - 1
+		}
+		w += Signature(cw) << typeBit(p)
+		bl += Signature(cb) << typeBit(p)
 	}
 	return w | bl<<10, bl | w<<10
 }

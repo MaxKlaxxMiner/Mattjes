@@ -65,12 +65,14 @@ type Engine struct {
 	hashMB     int    // Hash: the transposition table of the search
 	// the transposition tables, allocated on the first search, dropped when a
 	// generation starts (the generator needs the memory)
-	direct  *tt.Table   // matepn (direct-mapped: proofs must not be evicted by larger numbers)
-	buckets *tt.Buckets // mateab (buckets keep mates over refutations)
-	tableMB int
+	direct    *tt.Table   // matepn (direct-mapped: proofs must not be evicted by larger numbers)
+	buckets   *tt.Buckets // mateab (buckets keep mates over refutations)
+	tableMB   int
+	tableAlgo string // the algorithm whose entries the table holds (their value layouts differ)
 	// a "go infinite" holds the best move back until "stop"
 	infinite    bool
 	pendingBest string
+	tableBest   bool // pendingBest has a table value (a search without result keeps it)
 	job         *job
 	jobDone     chan *egtb.Set
 	// the running search, if any
@@ -390,7 +392,7 @@ func (e *Engine) search() bool {
 		}
 		e.send("info depth %d multipv %d score %s pv%s", len(r.pv), i+1, score(r.value), sb.String())
 	}
-	e.pendingBest = moves[0].move.UCI()
+	e.pendingBest, e.tableBest = moves[0].move.UCI(), moves[0].known
 	return allKnown || moves[0].known && moves[0].value.IsWin()
 }
 
