@@ -44,6 +44,11 @@ impl Buckets {
 
 impl TransTable for Buckets {
     #[inline(always)]
+    fn prefetch(&self, k: Key) {
+        super::table::prefetch_line(self.buckets.as_ptr().wrapping_add((k[0] & self.mask) as usize) as *const i8);
+    }
+
+    #[inline(always)]
     fn probe(&mut self, k: Key) -> Option<u64> {
         self.stats.probes += 1;
         let mask = self.mask;

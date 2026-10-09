@@ -71,6 +71,14 @@ type Searcher struct {
 	// Off in the experiments, which count the attacker's nodes only.
 	Mated bool
 	salt  tt.Key // key salt of the current depth (see key)
+	// scratch takes the copy of a board for the oracle: a pointer handed to
+	// an interface method escapes to the heap, one allocation per node
+	scratch bitboard.Board
+}
+
+func (s *Searcher) probeOracle(b *bitboard.Board) (Verdict, int) {
+	s.scratch = *b
+	return s.oracle.Probe(&s.scratch)
 }
 
 // ProgressNodes is the interval of Progress calls (a power of two).
@@ -171,7 +179,7 @@ func (s *Searcher) attack(b *bitboard.Board, depth, ply int) int {
 	if s.aborted {
 		return NoMate
 	}
-	switch v, plies := s.oracle.Probe(b); {
+	switch v, plies := s.probeOracle(b); {
 	case v == Draw || v == Loss:
 		return NoMate
 	case v == Win && plies > 0: // an endgame table knows the exact distance
@@ -250,7 +258,7 @@ func (s *Searcher) defend(b *bitboard.Board, depth, ply int) int {
 		}
 		return NoMate // stalemate
 	}
-	switch v, plies := s.oracle.Probe(b); {
+	switch v, plies := s.probeOracle(b); {
 	case v == Draw || v == Win:
 		return NoMate
 	case v == Loss && plies > 0: // the defender is mated in plies, known exactly

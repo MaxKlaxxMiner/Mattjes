@@ -247,8 +247,24 @@ Engines mit sechs Kernen und MultiPV 12: AsmFish, Patricia und Slow Chess 1 s, R
 Thread: `matepn` alle zwölf Werte exakt nach 93 s (17,8 Mio. Besuche), `mateab` nach
 122 s (414 Mio. Knoten); nach 40 bzw. 20 s standen neun davon (Tiefe 15), `Ne3`/`Nd2`
 brauchen Tiefe 16, `Ng3` Tiefe 18. `matelist` antwortet erst nach der Rückwärtsphase
-und müsste dafür den ganzen Fünf-Steiner aufzählen. Beim Test kamen zwei Altlasten
-hoch: Wechselt die Option `Search` zwischen
+und müsste dafür den ganzen Fünf-Steiner aufzählen. Die anderen Engines hatten die
+Varianten zu dem Zeitpunkt gefunden, nicht bewiesen; unsere Werte sind durch die
+erreichte Tiefe garantiert.
+
+**Erstes Profil (2026-10-09, `MATTJES_CPUPROFILE=<Datei>` beim Start der Go-Binary im
+UCI-Modus, dann `go tool pprof -top runMattjesGo.exe <Datei>`):** 36 % der Suchzeit
+waren die zwei zufälligen Tabellenzugriffe pro Kind (Final-Eintrag und gesalzener
+Eintrag, jeder ein Cache-Miss hintereinander), 15 % die Orakel-Abfrage, davon fast
+alles die Index-Rechnung für die registrierte, aber nicht erzeugte KRRKN-Tabelle (das
+Ergebnis wurde weggeworfen), 7 % Allokationen, weil ein Brettzeiger, der an die
+Orakel-Schnittstelle geht, in Go auf den Heap entkommt. Drei Mechanik-Korrekturen ohne
+Änderung der Suche (Knotenzahlen und Ausgaben identisch): alle Kind-Keys zuerst
+berechnen und ihre Slots per Prefetch anfordern, erst dann sondieren (`tt.Prefetch`,
+Rust `_mm_prefetch`, Go ein Load in eine globale Senke), die Tabellensuche bricht vor
+der Index-Rechnung ab, wenn die Tabelle keine Werte hat (`findTable`/`indexOf`), und
+in Go bekommen Orakel und Rekursion feste Bretter im Searcher (`scratch`, `stack`).
+Zeit bis Tiefe 15 (5.528.849 Besuche) auf dieser Stellung: Go 31,3 s → 25,8 s, Rust
+23,1 s → 16,5 s (335.000 Besuche pro Sekunde). Beim Test kamen zwei Altlasten hoch: Wechselt die Option `Search` zwischen
 Algorithmen, muss die Transposition Table geleert werden (unter 128 MB nutzen `mateab`
 und `matepn` dieselbe direkte Tabelle, und `matepn` las `mateab`-Einträge als
 Beweiszahlen); und `boardSignature` lief bei vier gleichen Steinen über (K + 4 Bauern

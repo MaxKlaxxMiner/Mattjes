@@ -72,6 +72,10 @@ impl Stats {
 /// callers are monomorphized, so there is no dynamic dispatch in the hot path.
 pub trait TransTable {
     fn probe(&mut self, k: Key) -> Option<u64>;
+    /// Brings the slot of a key into the cache, so that a probe of several
+    /// keys in a row overlaps the misses instead of waiting for them one by
+    /// one (the two random accesses per child dominate the df-pn profile).
+    fn prefetch(&self, k: Key);
     /// The value must not exceed `max_value`.
     fn store(&mut self, k: Key, value: u64);
     /// The largest storable value (= slots - 1 for a direct table).
@@ -120,7 +124,25 @@ impl Table {
     }
 }
 
+/// Issues a prefetch for the cache line at `p` (a no-op off x86-64).
+#[inline(always)]
+pub(super) fn prefetch_line(p: *const i8) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: a prefetch never faults, whatever the address.
+    unsafe {
+        use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+        _mm_prefetch::<_MM_HINT_T0>(p);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = p;
+}
+
 impl TransTable for Table {
+    #[inline(always)]
+    fn prefetch(&self, k: Key) {
+        prefetch_line(self.entries.as_ptr().wrapping_add((k[0] & self.mask) as usize) as *const i8);
+    }
+
     #[inline(always)]
     fn probe(&mut self, k: Key) -> Option<u64> {
         self.stats.probes += 1;

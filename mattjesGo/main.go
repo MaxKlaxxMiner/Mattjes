@@ -21,6 +21,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"runtime/pprof"
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/uci"
@@ -39,6 +40,16 @@ func main() {
 	//   egtb-list <pieces>                                names of all materials with that many pieces
 	//   egtb-measure <name>... [--verify] [--workers N]   generate or load the tables, log to the cache dir
 	if len(os.Args) == 1 {
+		// MATTJES_CPUPROFILE=<file> writes a CPU profile of the UCI session
+		// (go tool pprof -top runMattjesGo.exe <file>), for measuring the
+		// searches on the benchmark positions of test-positions.md.
+		if path := os.Getenv("MATTJES_CPUPROFILE"); path != "" {
+			if f, err := os.Create(path); err == nil {
+				if pprof.StartCPUProfile(f) == nil {
+					defer pprof.StopCPUProfile()
+				}
+			}
+		}
 		uci.Run(os.Stdin, os.Stdout, "Mattjes "+uci.Version+" (Go)", runtime.NumCPU())
 		return
 	}

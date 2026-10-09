@@ -333,8 +333,12 @@ func (s *Set) Lookup(b *bitboard.Board) (v Value, ok bool) {
 	if bits.OnesCount64(occ) == 2 && b.Castling == 0 {
 		return Draw, true
 	}
-	t, idx, ok := s.Locate(b)
-	if !ok || t.Values == nil || idx < 0 { // idx < 0: adjacent kings, never reached from a legal position
+	t, flip, ok := s.findTable(b)
+	if !ok || t.Values == nil { // registered but not generated: no index for nothing (a search asks millions of times)
+		return Draw, false
+	}
+	idx := t.indexOf(b, flip)
+	if idx < 0 { // adjacent kings, never reached from a legal position
 		return Draw, false
 	}
 	return t.Values[idx], true
@@ -344,27 +348,40 @@ func (s *Set) Lookup(b *bitboard.Board) (v Value, ok bool) {
 // pieces, no castling rights and no en passant square. idx is -1 for adjacent
 // kings. ok is false when no table covers the position.
 func (s *Set) Locate(b *bitboard.Board) (t *Table, idx int, ok bool) {
-	if b.Castling != 0 || b.EnPassant.Valid() {
+	t, flip, ok := s.findTable(b)
+	if !ok {
 		return nil, -1, false
+	}
+	return t, t.indexOf(b, flip), true
+}
+
+// findTable finds the table of a position's material (registered, generated
+// or not) and whether the colors have to be swapped for it.
+func (s *Set) findTable(b *bitboard.Board) (t *Table, flip bool, ok bool) {
+	if b.Castling != 0 || b.EnPassant.Valid() {
+		return nil, false, false
 	}
 	occ := b.ByColor[0] | b.ByColor[1]
 	if n := bits.OnesCount64(occ); n > MaxPieces || n < 3 {
-		return nil, -1, false
+		return nil, false, false
 	}
 	sig, flipped := boardSignature(b)
-	flip := false
 	ti := s.bySig[sig]
 	if ti < 0 {
 		ti = s.bySig[flipped]
 		flip = true
 	}
 	if ti < 0 {
-		return nil, -1, false
+		return nil, false, false
 	}
-	t = s.Tables[ti]
+	return s.Tables[ti], flip, true
+}
+
+// indexOf is the index of a position in this table (-1 for adjacent kings).
+func (t *Table) indexOf(b *bitboard.Board, flip bool) int {
 	var sq [6]chess.Pos
 	n := t.squares(b, flip, sq[:])
-	return t, t.Index(b.WhiteMove != flip, sq[:n]), true
+	return t.Index(b.WhiteMove != flip, sq[:n])
 }
 
 // squares extracts the squares of the board in slot order, with the colors

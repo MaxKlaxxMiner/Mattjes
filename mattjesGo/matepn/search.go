@@ -35,6 +35,7 @@ import (
 type Table interface {
 	Probe(k tt.Key) (uint64, bool)
 	Store(k tt.Key, value uint64)
+	Prefetch(k tt.Key)
 }
 
 // MaxPlies is the deepest proof goal (the depth salt table size).
@@ -88,8 +89,20 @@ type Searcher struct {
 	// "stop" and time limits). Entries stored before that are all complete.
 	Stop    *atomic.Bool
 	aborted bool
+	// scratch takes the copy of a board for the oracle: a pointer handed to
+	// an interface method escapes to the heap, and that would be one
+	// allocation per child (7 % of the profile); stack holds the board of
+	// each depth for the recursive descent, because a local whose address
+	// goes into a recursive call is moved to the heap as well
+	scratch bitboard.Board
+	stack   [MaxPlies + 2]bitboard.Board
 
 	nodes, leaves, ttHits, finalHits uint64
+}
+
+func (s *Searcher) probeOracle(b *bitboard.Board) (mateab.Verdict, int) {
+	s.scratch = *b
+	return s.oracle.Probe(&s.scratch)
 }
 
 // ProgressNodes is the interval of Progress calls (a power of two).
@@ -124,9 +137,9 @@ func key(b *bitboard.Board, depth int) tt.Key {
 }
 
 type child struct {
-	move   chess.Move
-	key    tt.Key
-	pn, dn uint32
+	move      chess.Move
+	key, fkey tt.Key // depth-salted key and final key of the child
+	pn, dn    uint32
 }
 
 // Solve proves or disproves "the side to move mates within plies" (odd) or,
@@ -202,7 +215,7 @@ func (s *Searcher) checkStop() {
 // a mating move is always a check). Attacker nodes have odd depth.
 func (s *Searcher) terminal(b *bitboard.Board, buf *chess.MoveBuffer, depth int) (pn, dn uint32, n int, ok bool) {
 	attacker := depth%2 == 1
-	v, plies := s.oracle.Probe(b)
+	v, plies := s.probeOracle(b)
 	switch {
 	case v == mateab.Draw, attacker && v == mateab.Loss, !attacker && v == mateab.Win:
 		return Inf, 0, 0, true
@@ -252,13 +265,22 @@ func (s *Searcher) mid(b *bitboard.Board, thPn, thDn uint32, depth int) (uint32,
 	}
 	attacker := depth%2 == 1
 
-	// expand: numbers of all children from the table or as fresh leaves
+	// expand: numbers of all children from the table or as fresh leaves. The
+	// keys of all children are computed and their slots touched first, so
+	// that the cache misses of the probes overlap instead of stalling one
+	// after the other (two random accesses per child dominate the profile).
 	var children [chess.MaxMoves]child
 	for i := 0; i < n; i++ {
 		c := *b
 		c.DoMove(buf[i])
-		children[i] = child{move: buf[i], key: key(&c, depth-1)}
-		if pn, dn, ok := s.probeFinal(&c, depth-1); ok {
+		children[i] = child{move: buf[i], key: key(&c, depth-1), fkey: finalKey(&c, depth-1)}
+		if s.Final {
+			s.table.Prefetch(children[i].fkey)
+		}
+		s.table.Prefetch(children[i].key)
+	}
+	for i := 0; i < n; i++ {
+		if pn, dn, ok := s.probeFinalKey(children[i].fkey, depth-1); ok {
 			s.finalHits++
 			children[i].pn, children[i].dn = pn, dn
 			continue
@@ -269,6 +291,8 @@ func (s *Searcher) mid(b *bitboard.Board, thPn, thDn uint32, depth int) (uint32,
 			continue
 		}
 		s.leaves++
+		c := *b
+		c.DoMove(children[i].move)
 		children[i].pn, children[i].dn = s.leafNumbers(&c, depth-1)
 	}
 
@@ -316,9 +340,10 @@ func (s *Searcher) mid(b *bitboard.Board, thPn, thDn uint32, depth int) (uint32,
 			cThDn = min(thDn, bound)
 			cThPn = satSub(thPn, satSub(pn, c.pn))
 		}
-		cb := *b
+		cb := &s.stack[depth-1]
+		*cb = *b
 		cb.DoMove(c.move)
-		c.pn, c.dn = s.mid(&cb, cThPn, cThDn, depth-1)
+		c.pn, c.dn = s.mid(cb, cThPn, cThDn, depth-1)
 		if s.aborted {
 			return pn, dn // the node's numbers before the descent; nothing is stored
 		}
@@ -398,7 +423,15 @@ func (s *Searcher) probeFinal(b *bitboard.Board, depth int) (pn, dn uint32, ok b
 	if !s.Final {
 		return 0, 0, false
 	}
-	v, found := s.table.Probe(finalKey(b, depth))
+	return s.probeFinalKey(finalKey(b, depth), depth)
+}
+
+// probeFinalKey is probeFinal with the final key already computed.
+func (s *Searcher) probeFinalKey(k tt.Key, depth int) (pn, dn uint32, ok bool) {
+	if !s.Final {
+		return 0, 0, false
+	}
+	v, found := s.table.Probe(k)
 	if !found {
 		return 0, 0, false
 	}
@@ -438,7 +471,7 @@ func (s *Searcher) proofLength(b *bitboard.Board, depth int, memo map[tt.Key]int
 		return l
 	}
 	attacker := depth%2 == 1
-	if v, plies := s.oracle.Probe(b); plies > 0 && ((attacker && v == mateab.Win) || (!attacker && v == mateab.Loss)) {
+	if v, plies := s.probeOracle(b); plies > 0 && ((attacker && v == mateab.Win) || (!attacker && v == mateab.Loss)) {
 		memo[k] = plies // the oracle (endgame table) ended the line
 		return plies
 	}
@@ -456,25 +489,26 @@ func (s *Searcher) proofLength(b *bitboard.Board, depth int, memo map[tt.Key]int
 	}
 	result := -1
 	for i := 0; i < n; i++ {
-		c := *b
+		c := &s.stack[depth-1] // the search is over, the stack is free (see mid)
+		*c = *b
 		c.DoMove(buf[i])
 		// proven when the table says so (salted or final entry) or when the
 		// child is terminal itself (mate, oracle): terminal children found as
 		// fresh leaves were never visited and have no entry
 		proven := false
-		if pn, _, ok := s.probeFinal(&c, depth-1); ok {
+		if pn, _, ok := s.probeFinal(c, depth-1); ok {
 			proven = pn == 0
-		} else if v, ok := s.table.Probe(key(&c, depth-1)); ok {
+		} else if v, ok := s.table.Probe(key(c, depth-1)); ok {
 			pn, _ := s.codec.Unpack(v)
 			proven = pn == 0
 		} else {
 			var cbuf chess.MoveBuffer
-			pn, _, _, done := s.terminal(&c, &cbuf, depth-1)
+			pn, _, _, done := s.terminal(c, &cbuf, depth-1)
 			proven = done && pn == 0
 		}
 		l := -1
 		if proven {
-			l = s.proofLength(&c, depth-1, memo)
+			l = s.proofLength(c, depth-1, memo)
 		}
 		if l < 0 {
 			if attacker {

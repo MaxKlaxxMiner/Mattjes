@@ -94,6 +94,9 @@ func (t *Buckets) Store(k Key, value uint64) {
 // Clear empties all buckets but keeps the statistics.
 func (t *Buckets) Clear() { clear(t.buckets) }
 
+// Prefetch touches the bucket of a key (see Table.Prefetch).
+func (t *Buckets) Prefetch(k Key) { prefetchSink += t.buckets[k[0]&t.mask][0].word0 }
+
 func (t *Buckets) ResetStats()      { t.Stats = Stats{} }
 func (t *Buckets) Counters() *Stats { return &t.Stats }
 func (t *Buckets) Slots() int       { return len(t.buckets) * BucketEntries }

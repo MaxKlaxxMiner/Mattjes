@@ -124,6 +124,14 @@ func (t *Table) Store(k Key, value uint64) {
 // Clear empties all slots but keeps the statistics.
 func (t *Table) Clear() { clear(t.entries) }
 
+// Prefetch touches the slot of a key, so that a Probe of several keys in a
+// row overlaps the cache misses instead of waiting for them one by one. Go
+// has no prefetch instruction; a load whose result feeds a global keeps the
+// compiler from dropping it and lets the CPU run on while it is in flight.
+func (t *Table) Prefetch(k Key) { prefetchSink += t.entries[k[0]&t.mask].word0 }
+
+var prefetchSink uint64
+
 func (t *Table) ResetStats()      { t.Stats = Stats{} }
 func (t *Table) Counters() *Stats { return &t.Stats }
 func (t *Table) Slots() int       { return len(t.entries) }

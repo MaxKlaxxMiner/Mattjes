@@ -84,6 +84,9 @@ fn key(b: &Board, depth: usize) -> Key {
 #[derive(Clone, Copy, Default)]
 struct Child {
     mv: Move,
+    /// The depth-salted key and the final key of the child.
+    key: Key,
+    fkey: Key,
     pn: u32,
     dn: u32,
 }
@@ -256,25 +259,36 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
         }
         let attacker = depth % 2 == 1;
 
-        // expand: numbers of all children from the table or as fresh leaves
+        // expand: numbers of all children from the table or as fresh leaves. The
+        // keys of all children are computed and their slots prefetched first, so
+        // that the cache misses of the probes overlap instead of stalling one
+        // after the other (two random accesses per child dominate the profile).
         let mut children = [Child::default(); crate::chess::MAX_MOVES];
         for (i, &mv) in buf[..n].iter().enumerate() {
             let mut c = *b;
             c.do_move(mv);
-            children[i].mv = mv;
-            if let Some((pn, dn)) = self.probe_final(&c, depth - 1) {
+            children[i] = Child { mv, key: key(&c, depth - 1), fkey: final_key(&c, depth - 1), pn: 0, dn: 0 };
+            if self.final_entries {
+                self.table.prefetch(children[i].fkey);
+            }
+            self.table.prefetch(children[i].key);
+        }
+        for child in children[..n].iter_mut() {
+            if let Some((pn, dn)) = self.probe_final_key(child.fkey, depth - 1) {
                 self.final_hits += 1;
-                children[i].pn = pn;
-                children[i].dn = dn;
+                child.pn = pn;
+                child.dn = dn;
                 continue;
             }
-            if let Some(v) = self.table.probe(key(&c, depth - 1)) {
+            if let Some(v) = self.table.probe(child.key) {
                 self.tt_hits += 1;
-                (children[i].pn, children[i].dn) = self.codec.unpack(v);
+                (child.pn, child.dn) = self.codec.unpack(v);
                 continue;
             }
             self.leaves += 1;
-            (children[i].pn, children[i].dn) = self.leaf_numbers(&c, depth - 1);
+            let mut c = *b;
+            c.do_move(child.mv);
+            (child.pn, child.dn) = self.leaf_numbers(&c, depth - 1);
         }
 
         loop {
@@ -370,7 +384,15 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
         if !self.final_entries {
             return None;
         }
-        let (pd, dd) = unpack_final(self.table.probe(final_key(b, depth))?);
+        self.probe_final_key(final_key(b, depth), depth)
+    }
+
+    /// `probe_final` with the final key already computed.
+    fn probe_final_key(&mut self, k: Key, depth: usize) -> Option<(u32, u32)> {
+        if !self.final_entries {
+            return None;
+        }
+        let (pd, dd) = unpack_final(self.table.probe(k)?);
         let depth = depth as i32;
         if pd >= 0 && pd <= depth {
             Some((0, INF))

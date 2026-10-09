@@ -426,9 +426,13 @@ impl Set {
         if occ.count_ones() == 2 && b.castling == 0 {
             return Some(Value::DRAW);
         }
-        let (t, idx) = self.locate(b)?;
-        if !t.is_generated() || idx < 0 {
-            return None; // idx < 0: adjacent kings, never reached from a legal position
+        let (t, flip) = self.find_table(b)?;
+        if !t.is_generated() {
+            return None; // registered but not generated: no index for nothing (a search asks millions of times)
+        }
+        let idx = t.index_of(b, flip);
+        if idx < 0 {
+            return None; // adjacent kings, never reached from a legal position
         }
         Some(t.value(idx as usize))
     }
@@ -437,6 +441,13 @@ impl Set {
     /// castling rights and no en passant square. The index is -1 for adjacent
     /// kings. `None` when no table covers the position.
     pub fn locate(&self, b: &Board) -> Option<(&Table, i64)> {
+        let (t, flip) = self.find_table(b)?;
+        Some((t, t.index_of(b, flip)))
+    }
+
+    /// Finds the table of a position's material (registered, generated or
+    /// not) and whether the colors have to be swapped for it.
+    fn find_table(&self, b: &Board) -> Option<(&Table, bool)> {
         if b.castling != 0 || b.en_passant.valid() {
             return None;
         }
@@ -455,10 +466,16 @@ impl Set {
         if ti < 0 {
             return None;
         }
-        let t = &self.tables[ti as usize];
+        Some((&self.tables[ti as usize], flip))
+    }
+}
+
+impl Table {
+    /// The index of a position in this table (-1 for adjacent kings).
+    fn index_of(&self, b: &Board, flip: bool) -> i64 {
         let mut sq = [Pos::NONE; 6];
-        let n = t.squares(b, flip, &mut sq);
-        Some((t, t.index(b.white_move != flip, &sq[..n])))
+        let n = self.squares(b, flip, &mut sq);
+        self.index(b.white_move != flip, &sq[..n])
     }
 }
 

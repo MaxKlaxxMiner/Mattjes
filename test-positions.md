@@ -63,6 +63,9 @@ Mattjes ohne Tabelle, ein Thread, Hash 256, bis alle zwölf Werte exakt standen
 
 Nach 40 s (`matepn`) bzw. 20 s (`mateab`) stand Tiefe 15 mit neun exakten Werten
 (`Kf7`, die Königszüge, `Nh2`); `Ne3` und `Nd2` brauchen Tiefe 16, `Ng3` Tiefe 18.
+Messgröße für Mechanik-Änderungen: die Zeit bis Tiefe 15 bei gleichen 5.528.849
+Besuchen (`matepn`, Hash 256): Rust 23,1 s vor und 16,5 s nach Prefetch und
+Orakel-Abkürzung (2026-10-09), Go 31,3 s → 25,8 s.
 `matelist` ist hier das falsche Werkzeug: Es antwortet erst nach der Rückwärtsphase,
 die auf die komplette Aufzählung folgt, und der erreichbare Raum ist der ganze
 Fünf-Steiner ohne Symmetrie (50 Mio. Stellungen bei Halbzug 10, 1,4 Mrd. insgesamt).
