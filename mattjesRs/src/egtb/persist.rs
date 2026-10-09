@@ -77,6 +77,8 @@ pub const TABLE_CHECKSUMS: &[(&str, u64)] = &[
     // five pieces (format v3, 2026-10-09, Go and Rust identical), added as they are measured
     ("KBBBK", 0xa552a70f5be1c3db),
     ("KBNKQ", 0xa03df227d9f5eb72),
+    // six pieces (format v3, Rust, home machine): KRRKBN 1294 s, 35 GiB committed
+    ("KRRKBN", 0x11049fde56c4b77c),
 ];
 
 /// The recorded checksum of a table, if any.
@@ -122,24 +124,35 @@ fn io_err(msg: String) -> std::io::Error {
 }
 
 fn write_file(path: &Path, tables: &[&Table], raw_checksum: u64, workers: usize) -> std::io::Result<()> {
-    let size: usize = tables.iter().map(|t| t.size).sum();
-    let mut raw = Vec::with_capacity(size);
     for t in tables {
         if !t.is_generated() {
             return Err(io_err(format!("egtb: table {} not generated", t.mat.name())));
         }
         t.fill();
-        raw.extend_from_slice(t.bytes());
     }
-    let packed = lz::pack(&raw, workers);
-    let mut out = Vec::with_capacity(HEADER_BYTES + packed.len());
-    out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&raw_checksum.to_le_bytes());
-    out.extend_from_slice(&packed);
+    // a single table (every material beyond the base) is packed in place: no
+    // copy of 15 GB for a six-piece table; only the base file concatenates
+    let joined: Vec<u8>;
+    let raw: &[u8] = if tables.len() == 1 {
+        tables[0].bytes()
+    } else {
+        let size: usize = tables.iter().map(|t| t.size).sum();
+        let mut v = Vec::with_capacity(size);
+        for t in tables {
+            v.extend_from_slice(t.bytes());
+        }
+        joined = v;
+        &joined
+    };
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, out)
+    let mut w = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
+    use std::io::Write;
+    w.write_all(MAGIC)?;
+    w.write_all(&raw_checksum.to_le_bytes())?;
+    lz::pack_to(&mut w, raw, workers)?;
+    w.flush()
 }
 
 /// Reads a cache file into the tables. Returns the raw checksum from the

@@ -188,23 +188,31 @@ fn parallel_for(n: usize, workers: usize, f: &(dyn Fn(usize) + Sync)) {
     });
 }
 
-/// Compresses data in independent blocks, in parallel.
-pub fn pack(data: &[u8], workers: usize) -> Vec<u8> {
+/// Compresses data in independent blocks, in parallel, and writes the
+/// container to w block by block: only the compressed blocks live in memory,
+/// never a second copy of the container.
+pub fn pack_to<W: std::io::Write>(w: &mut W, data: &[u8], workers: usize) -> std::io::Result<()> {
     let n = data.len().div_ceil(BLOCK_SIZE);
     let blocks: Vec<std::sync::Mutex<Vec<u8>>> = (0..n).map(|_| std::sync::Mutex::new(Vec::new())).collect();
     parallel_for(n, workers, &|i| {
         let end = ((i + 1) * BLOCK_SIZE).min(data.len());
         *blocks[i].lock().unwrap() = compress_block(&data[i * BLOCK_SIZE..end], DEPTH);
     });
-    let mut out = Vec::with_capacity(HEADER_BYTES + data.len() / 3);
-    out.extend_from_slice(&(data.len() as u64).to_le_bytes());
-    out.extend_from_slice(&(BLOCK_SIZE as u32).to_le_bytes());
-    out.extend_from_slice(&(n as u32).to_le_bytes());
+    w.write_all(&(data.len() as u64).to_le_bytes())?;
+    w.write_all(&(BLOCK_SIZE as u32).to_le_bytes())?;
+    w.write_all(&(n as u32).to_le_bytes())?;
     for b in &blocks {
         let b = b.lock().unwrap();
-        out.extend_from_slice(&(b.len() as u32).to_le_bytes());
-        out.extend_from_slice(&b);
+        w.write_all(&(b.len() as u32).to_le_bytes())?;
+        w.write_all(&b)?;
     }
+    Ok(())
+}
+
+/// Compresses data into a container in memory (see `pack_to`).
+pub fn pack(data: &[u8], workers: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(HEADER_BYTES + data.len() / 3);
+    pack_to(&mut out, data, workers).expect("writing to a Vec cannot fail");
     out
 }
 

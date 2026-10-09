@@ -446,7 +446,10 @@ impl<W: Write + Send + 'static> Engine<W> {
         let Some(j) = self.job.take() else { return };
         let name = j.mat.name();
         self.set.as_mut().expect("tables are loaded before a job runs").adopt(set);
-        self.send(&format!("info string egtb: {} ready", name));
+        match egtb::peak_memory() {
+            Some((committed, working)) => self.send(&format!("info string egtb: {} ready, peak memory {} committed / {} working set", name, egtb::format_bytes(committed), egtb::format_bytes(working))),
+            None => self.send(&format!("info string egtb: {} ready", name)),
+        }
         if self.infinite {
             self.search();
         }

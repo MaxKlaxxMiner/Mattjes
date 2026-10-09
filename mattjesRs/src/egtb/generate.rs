@@ -735,7 +735,10 @@ fn parallel_chunks(
     let workers = workers.max(1);
     let next = AtomicI64::new(0);
     let (a, b) = (AtomicI64::new(0), AtomicI64::new(0));
-    let finished = AtomicUsize::new(0);
+    // finished workers, with a condvar so that the reporter wakes up at once
+    // when the last one is done (a plain sleep would cost up to 100 ms per
+    // phase, which is a lot for the hundreds of tiny levels of a small table)
+    let finished = (Mutex::new(0usize), std::sync::Condvar::new());
     std::thread::scope(|s| {
         for _ in 0..workers {
             s.spawn(|| {
@@ -753,16 +756,21 @@ fn parallel_chunks(
                     a.fetch_add(x as i64, Ordering::Relaxed);
                     b.fetch_add(y as i64, Ordering::Relaxed);
                 }
-                finished.fetch_add(1, Ordering::Relaxed);
+                *finished.0.lock().unwrap() += 1;
+                finished.1.notify_all();
             });
         }
         if let Some(tick) = tick {
             let mut last = Instant::now();
-            while finished.load(Ordering::Relaxed) < workers {
-                std::thread::sleep(Duration::from_millis(100));
+            let mut done = finished.0.lock().unwrap();
+            while *done < workers {
+                let (guard, _) = finished.1.wait_timeout(done, Duration::from_millis(100)).unwrap();
+                done = guard;
                 if last.elapsed() >= TICK_INTERVAL && !ctrl.is_some_and(|c| c.paused()) {
                     last = Instant::now();
+                    drop(done);
                     tick((next.load(Ordering::Relaxed) as usize).min(size), size);
+                    done = finished.0.lock().unwrap();
                 }
             }
         }

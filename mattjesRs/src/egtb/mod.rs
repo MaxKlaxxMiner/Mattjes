@@ -6,11 +6,14 @@
 mod control;
 mod generate;
 mod index;
+mod peak;
 mod persist;
 mod table;
 
 #[allow(unused_imports)]
 pub use control::Control;
+#[allow(unused_imports)]
+pub use peak::{format_bytes, peak_memory};
 #[allow(unused_imports)]
 pub use generate::{Progress, Stats, KNOWN_MAXIMA};
 #[allow(unused_imports)]

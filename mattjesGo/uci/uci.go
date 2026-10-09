@@ -431,7 +431,11 @@ func (e *Engine) finishJob(set *egtb.Set) {
 	name := e.job.mat.Name()
 	e.job = nil
 	e.set.Adopt(set)
-	e.send("info string egtb: %s ready", name)
+	if committed, working, ok := egtb.PeakMemory(); ok {
+		e.send("info string egtb: %s ready, peak memory %s committed / %s working set", name, egtb.FormatBytes(committed), egtb.FormatBytes(working))
+	} else {
+		e.send("info string egtb: %s ready", name)
+	}
 	if e.infinite {
 		e.search()
 	}

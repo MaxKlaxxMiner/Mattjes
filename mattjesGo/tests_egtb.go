@@ -263,6 +263,7 @@ func egtbMeasure(names []string, workers int, verify bool) {
 		elapsed := time.Since(start)
 		var after runtime.MemStats
 		runtime.ReadMemStats(&after)
+		peakCommit, peakWorking, _ := egtb.PeakMemory()
 		sum := t.RawChecksum
 		verdict := "(not recorded)"
 		if want, known := egtb.TableChecksums[m.Name()]; known {
@@ -289,6 +290,9 @@ func egtbMeasure(names []string, workers int, verify bool) {
 			}
 			fmt.Printf("    memory: process %d MB from the OS (%d MB before), heap in use %d MB; table %d MB\n",
 				after.Sys>>20, before.Sys>>20, after.HeapInuse>>20, t.Size>>20)
+			if committed, working, ok := egtb.PeakMemory(); ok {
+				fmt.Printf("    peak memory: %s committed, %s working set\n", egtb.FormatBytes(committed), egtb.FormatBytes(working))
+			}
 			fmt.Printf("    checksum %016x %s  (record as \"%s\": 0x%016x)\n", sum, verdict, m.Name(), sum)
 		}
 		if info, err := os.Stat(set.TablePath(t)); err == nil {
@@ -320,8 +324,8 @@ func egtbMeasure(names []string, workers int, verify bool) {
 		if loaded {
 			logLine(fmt.Sprintf("%s pieces=%d indices=%d loaded checksum=%016x %s verify=%s", m.Name(), m.Pieces(), t.Size, sum, verdict, verified))
 		} else {
-			logLine(fmt.Sprintf("%s pieces=%d indices=%d legal=%d wins=%d losses=%d draws=%d longest_plies=%d levels=%d evaluations=%d seconds=%.1f workers=%d overflow=%v beyond=%d memory_mb=%d checksum=%016x %s verify=%s",
-				m.Name(), m.Pieces(), t.Size, st.Legal, st.Wins, st.Losses, st.Draws, st.MaxWin, st.Levels, st.Evaluations, st.Duration.Seconds(), workers, st.Overflow, st.Beyond, after.Sys>>20, sum, verdict, verified))
+			logLine(fmt.Sprintf("%s pieces=%d indices=%d legal=%d wins=%d losses=%d draws=%d longest_plies=%d levels=%d evaluations=%d seconds=%.1f workers=%d overflow=%v beyond=%d memory_mb=%d peak_commit_mb=%d peak_ws_mb=%d checksum=%016x %s verify=%s",
+				m.Name(), m.Pieces(), t.Size, st.Legal, st.Wins, st.Losses, st.Draws, st.MaxWin, st.Levels, st.Evaluations, st.Duration.Seconds(), workers, st.Overflow, st.Beyond, after.Sys>>20, peakCommit>>20, peakWorking>>20, sum, verdict, verified))
 		}
 		fmt.Println()
 	}

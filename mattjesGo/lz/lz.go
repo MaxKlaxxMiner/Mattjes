@@ -18,8 +18,10 @@
 package lz
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
+	"io"
 	"sync"
 )
 
@@ -210,20 +212,39 @@ const headerBytes = 16
 
 // Pack compresses data in independent blocks, in parallel.
 func Pack(data []byte, workers int) []byte {
+	var out bytes.Buffer
+	out.Grow(headerBytes + len(data)/3)
+	_ = PackTo(&out, data, workers) // a bytes.Buffer never fails
+	return out.Bytes()
+}
+
+// PackTo compresses data in independent blocks, in parallel, and writes the
+// container to w block by block: only the compressed blocks live in memory,
+// never a second copy of the container.
+func PackTo(w io.Writer, data []byte, workers int) error {
 	n := (len(data) + BlockSize - 1) / BlockSize
 	blocks := make([][]byte, n)
 	parallelFor(n, workers, func(i int) {
 		blocks[i] = compressBlock(data[i*BlockSize:min(len(data), (i+1)*BlockSize)], Depth)
 	})
-	out := make([]byte, headerBytes, headerBytes+len(data)/3)
-	binary.LittleEndian.PutUint64(out[0:], uint64(len(data)))
-	binary.LittleEndian.PutUint32(out[8:], BlockSize)
-	binary.LittleEndian.PutUint32(out[12:], uint32(n))
-	for _, b := range blocks {
-		out = binary.LittleEndian.AppendUint32(out, uint32(len(b)))
-		out = append(out, b...)
+	var header [headerBytes]byte
+	binary.LittleEndian.PutUint64(header[0:], uint64(len(data)))
+	binary.LittleEndian.PutUint32(header[8:], BlockSize)
+	binary.LittleEndian.PutUint32(header[12:], uint32(n))
+	if _, err := w.Write(header[:]); err != nil {
+		return err
 	}
-	return out
+	var length [4]byte
+	for _, b := range blocks {
+		binary.LittleEndian.PutUint32(length[:], uint32(len(b)))
+		if _, err := w.Write(length[:]); err != nil {
+			return err
+		}
+		if _, err := w.Write(b); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // RawLen returns the decompressed length stored in a container.

@@ -351,6 +351,53 @@ Messtabelle oben bleibt als Anforderungstabelle gültig (Zeiten, Größen und Z�
 ändern sich durch das Format nicht, nur die Prüfsummen). `measure-egtb.bat` und
 `egtb-compress` sind entfallen.
 
+## Sechs Steine: erster Messpunkt KRRKBN (2026-10-09, zuhause, UCI-Modus)
+
+KRRKBN (15.502.147.584 Indizes, 14.784 MiB Tabelle) wurde im UCI-Modus per `go infinite`
+mit `EgtbGenerate6` und `EgtbWriteCache` erzeugt (Rust, 14 Worker), die
+Fünf-Steiner-Abhängigkeiten (KRRKB, KRRKN, KRKBN) davor ebenso:
+
+| | KRRKBN |
+|---|---|
+| legal | 4.332.968.185 (1.815.118.397 Gewinne, 1.353.380.906 Verluste, 1.164.468.882 Remis) |
+| längstes Matt | 87 Halbzüge = 44 Züge |
+| Erzeugung | 1.293,7 s = 21,6 min |
+| Datei | 2.427 MiB (Faktor 6,1), Laden 5,95 s |
+| Prüfsumme | `11049fde56c4b77c` (Konstante im Code) |
+
+Der Autor hat die **zugesicherte Größe** des Prozesses im Task-Manager beobachtet (der
+Arbeitssatz lag am Ende der Rechnung rund 3 GB darunter):
+
+| Phase | zugesichert |
+|---|---|
+| Rechnen, Spitze (am Ende, bevor die `pending`-Listen frei werden) | 36.846.184 kB = 35,1 GiB |
+| Schreiben, kurze Spitze | 39.043.460 kB = 37,2 GiB |
+
+Die Rechnung "Tabelle 15,5 GB + vier Bitsets 7,8 GB + Abhängigkeiten und Basis zweimal
+2 GB ≈ 25 GB" trifft die Spitze beim Rechnen nicht; rund 10 GB fehlen. Das sind die
+**`pending`-Listen**: Stellungen, deren Entscheidung nur aus einer kleineren Tabelle
+kommt (hier: ein Turm schlägt Läufer oder Springer und das KRRKB/KRRKN-Kind ist
+verloren), werden bei der Initialisierung mit 8 Byte je Index in der Liste ihrer
+Zielebene vorgemerkt. Bei KRRKBN sind das offenbar rund eine Milliarde Stellungen, dazu
+der Verdopplungs-Spielraum der wachsenden Vektoren. Bei Fünf-Steinern fiel das nie auf
+(Listen im zweistelligen MB-Bereich). Beim Schreiben kommt nur wenig obendrauf, weil
+Bitsets und Listen bis dahin frei sind; die dortige Kopie der Rohwerte (`writeFile`
+verkettet erst alle Tabellen, dann packt es) kostet trotzdem einmal die Tabellengröße.
+
+Folgerungen: (1) ✅ Einzeltabellen werden ohne Rohkopie direkt aus ihren Werten gepackt,
+Header und Blöcke gehen einzeln in die Datei (`lz.PackTo`), die Spitze beim Schreiben
+fällt damit auf Tabelle plus Komprimat; (2) ✅ Spitzenspeicher wird am Ende jeder
+Erzeugung gemeldet (`egtb.PeakMemory`: Windows `K32GetProcessMemoryInfo` ohne Crate,
+zugesicherte Größe und Arbeitssatz; Linux `/proc/self/status` VmPeak/VmHWM), als
+`info string` im UCI-Modus und als `peak_commit_mb`/`peak_ws_mb` in `measure.log`;
+Speicherfragen zählen nur für Rust, Go ist die Testbasis; (3) offen: die `pending`-Listen
+durch **vorläufige Werte** ersetzen: den aus Schlagkindern bekannten Wert sofort in die
+Tabelle schreiben und in einem Bitset (1/8 der Tabelle statt 8 Byte je Eintrag) als
+vorläufig markieren; ein Kandidaten-Scan darf vorläufige Stellungen neu bewerten und
+verkürzen, pro Ebene werden die vorläufigen Stellungen dieser Ebene aktiviert
+(Bitset-Scan, 0,2 s je Ebene). Das spart bei KRRKBN rund 10 GB und ist Voraussetzung
+für Sechs-Steiner auf kleineren Maschinen.
+
 ## Nächster Generator-Schritt: Bauern-Scheiben (vorgemerkt 2026-10-07)
 
 Teiltabellen sind exakt, solange die Teilmenge unter Vorwärtszügen abgeschlossen

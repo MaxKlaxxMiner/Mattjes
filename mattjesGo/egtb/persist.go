@@ -1,6 +1,7 @@
 package egtb
 
 import (
+	"bufio"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -54,6 +55,8 @@ var TableChecksums = map[string]uint64{
 	"KPPK": 0x829f48ba8cf92ce4, "KPKP": 0xae084110af4ab131,
 	// five pieces (format v3, 2026-10-09, Go and Rust identical), added as they are measured
 	"KBBBK": 0xa552a70f5be1c3db, "KBNKQ": 0xa03df227d9f5eb72,
+	// six pieces (format v3, Rust, home machine): KRRKBN 1294 s, 35 GiB committed
+	"KRRKBN": 0x11049fde56c4b77c,
 }
 
 // Checksum is a 64-bit hash over 8-byte little-endian words (FNV-1a style
@@ -159,25 +162,57 @@ func (s *Set) BasePath() string { return filepath.Join(s.CacheDir, BaseFileName)
 // generator's bitset (what writing the table does; for tables kept in RAM only).
 func (t *Table) Fill() { t.fill() }
 
+// FormatBytes renders "35.1 GiB" or "346 MB".
+func FormatBytes(b uint64) string {
+	if b >= 1<<30 {
+		return fmt.Sprintf("%.1f GiB", float64(b)/float64(1<<30))
+	}
+	return fmt.Sprintf("%d MB", b>>20)
+}
+
 // writeFile writes header + compressed values. The tables are filled first.
 func writeFile(path string, tables []*Table, rawChecksum uint64, workers int) error {
-	raw := make([]byte, 0, sumSize(tables))
 	for _, t := range tables {
 		if t.Values == nil {
 			return fmt.Errorf("egtb: table %s not generated", t.Mat.Name())
 		}
 		t.fill()
-		raw = append(raw, bytesOf(t.Values)...)
 	}
-	packed := lz.Pack(raw, workers)
-	out := make([]byte, headerBytes, headerBytes+len(packed))
-	copy(out, magic)
-	binary.LittleEndian.PutUint64(out[4:], rawChecksum)
-	out = append(out, packed...)
+	// a single table (every material beyond the base) is packed in place: no
+	// copy of 15 GB for a six-piece table; only the base file concatenates
+	var raw []byte
+	if len(tables) == 1 {
+		raw = bytesOf(tables[0].Values)
+	} else {
+		raw = make([]byte, 0, sumSize(tables))
+		for _, t := range tables {
+			raw = append(raw, bytesOf(t.Values)...)
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, out, 0o644)
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	w := bufio.NewWriterSize(f, 1<<20)
+	var header [headerBytes]byte
+	copy(header[:], magic)
+	binary.LittleEndian.PutUint64(header[4:], rawChecksum)
+	if _, err := w.Write(header[:]); err != nil {
+		f.Close()
+		return err
+	}
+	if err := lz.PackTo(w, raw, workers); err != nil {
+		f.Close()
+		return err
+	}
+	if err := w.Flush(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func sumSize(tables []*Table) int {
