@@ -396,12 +396,34 @@ impl<W: Write + Send + 'static> Engine<W> {
     }
 
     fn start_job(&mut self, m: Material) {
-        let ctrl = Arc::new(Control::new());
-        self.job = Some(Job { mat: m.clone(), ctrl: ctrl.clone() });
         let mut fork = self.set.as_ref().expect("tables are loaded before searching").fork();
         let ti = fork.add_material(m.clone());
-        let (size, bytes) = (fork.tables[ti].size, fork.generation_bytes(ti));
-        self.send(&format!("info string egtb: generating {} ({} MB table, about {} MB RAM), stop pauses it", m.name(), size >> 20, bytes >> 20));
+        let size = fork.tables[ti].size;
+        let (need, measured) = fork.estimate_bytes(ti);
+        let how = if measured { "measured" } else { "estimated" };
+        match egtb::available_memory() {
+            Some((total, avail)) => {
+                if need as u64 > total {
+                    self.send(&format!("info string egtb: {} needs about {} ({}), the machine has {}: not started", m.name(), egtb::format_bytes(need as u64), how, egtb::format_bytes(total)));
+                    return;
+                }
+                self.send(&format!(
+                    "info string egtb: generating {} ({} MB table, about {} RAM {}, {} of {} free), stop pauses it",
+                    m.name(),
+                    size >> 20,
+                    egtb::format_bytes(need as u64),
+                    how,
+                    egtb::format_bytes(avail),
+                    egtb::format_bytes(total)
+                ));
+                if need as u64 > avail {
+                    self.send("info string egtb: WARNING: more than the free memory, expect swapping");
+                }
+            }
+            None => self.send(&format!("info string egtb: generating {} ({} MB table, about {} RAM {}), stop pauses it", m.name(), size >> 20, egtb::format_bytes(need as u64), how)),
+        }
+        let ctrl = Arc::new(Control::new());
+        self.job = Some(Job { mat: m.clone(), ctrl: ctrl.clone() });
         let (out, tx, workers, write) = (self.out.clone(), self.tx.clone(), self.workers, self.write_cache);
         std::thread::spawn(move || {
             // level lines come up to 254 times per table: at most one every few seconds
@@ -420,6 +442,9 @@ impl<W: Write + Send + 'static> Engine<W> {
             let st = fork.generate_controlled(ti, workers, Some(&ctrl), &mut progress);
             if st.aborted {
                 return;
+            }
+            if let Err(e) = egtb::append_log(&fork.cache_dir, &fork.log_line(ti, &st, workers, "uci")) {
+                progress(&e.to_string());
             }
             for gi in fork.base().len()..fork.tables.len() {
                 if !fork.tables[gi].is_generated() {

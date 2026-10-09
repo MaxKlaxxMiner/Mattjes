@@ -41,20 +41,58 @@ pub fn peak_memory() -> Option<(u64, u64)> {
     Some((c.peak_pagefile_usage as u64, c.peak_working_set_size as u64))
 }
 
+/// (physical memory of the machine, the part of it that is free right now).
+#[cfg(windows)]
+pub fn available_memory() -> Option<(u64, u64)> {
+    /// MEMORYSTATUSEX from sysinfoapi.h.
+    #[repr(C)]
+    #[derive(Default)]
+    #[allow(dead_code)]
+    struct MemoryStatusEx {
+        length: u32,
+        memory_load: u32,
+        total_phys: u64,
+        avail_phys: u64,
+        total_page_file: u64,
+        avail_page_file: u64,
+        total_virtual: u64,
+        avail_virtual: u64,
+        avail_extended_virtual: u64,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GlobalMemoryStatusEx(status: *mut MemoryStatusEx) -> i32;
+    }
+
+    let mut m = MemoryStatusEx { length: std::mem::size_of::<MemoryStatusEx>() as u32, ..Default::default() };
+    // SAFETY: the struct mirrors MEMORYSTATUSEX and length is its size.
+    let ok = unsafe { GlobalMemoryStatusEx(&mut m) };
+    if ok == 0 {
+        return None;
+    }
+    Some((m.total_phys, m.avail_phys))
+}
+
 /// (peak virtual size, peak resident set) from /proc/self/status; Linux has
 /// no committed-size counter, so VmPeak stands in for it.
 #[cfg(not(windows))]
 pub fn peak_memory() -> Option<(u64, u64)> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    let kb = |key: &str| {
-        status
-            .lines()
-            .find(|l| l.starts_with(key))
-            .and_then(|l| l.split_whitespace().nth(1))
-            .and_then(|v| v.parse::<u64>().ok())
-            .map(|v| v * 1024)
-    };
-    Some((kb("VmPeak:")?, kb("VmHWM:")?))
+    Some((proc_value("/proc/self/status", "VmPeak:")?, proc_value("/proc/self/status", "VmHWM:")?))
+}
+
+/// (physical memory of the machine, the part of it that is free right now)
+/// from /proc/meminfo.
+#[cfg(not(windows))]
+pub fn available_memory() -> Option<(u64, u64)> {
+    Some((proc_value("/proc/meminfo", "MemTotal:")?, proc_value("/proc/meminfo", "MemAvailable:")?))
+}
+
+/// Reads a "key: value kB" line of a proc file as bytes.
+#[cfg(not(windows))]
+fn proc_value(path: &str, key: &str) -> Option<u64> {
+    let text = std::fs::read_to_string(path).ok()?;
+    text.lines().find(|l| l.starts_with(key)).and_then(|l| l.split_whitespace().nth(1)).and_then(|v| v.parse::<u64>().ok()).map(|v| v * 1024)
 }
 
 /// "35.1 GiB" or "346 MB".

@@ -101,7 +101,7 @@ pub struct Table {
 }
 
 impl Table {
-    fn new(mat: Material) -> Table {
+    pub(super) fn new(mat: Material) -> Table {
         let slots = mat.slots();
         let equal_prev = (0..slots.len()).map(|i| i > 0 && slots[i - 1] == slots[i]).collect();
         let pawns = mat.pawns() > 0;
@@ -373,19 +373,6 @@ impl Set {
         }
     }
 
-    /// Estimates the RAM a generation of the table needs: the table, four
-    /// bitsets of 1/8 each and the direct dependencies that are not loaded yet.
-    pub fn generation_bytes(&self, ti: usize) -> usize {
-        let t = &self.tables[ti];
-        let mut n = t.size + t.size / 2;
-        for d in t.mat.dependencies() {
-            match self.find(&d.name()) {
-                Some(i) if self.tables[i].is_generated() => {}
-                _ => n += Table::new(d).size,
-            }
-        }
-        n
-    }
 
     /// Allocates the base tables without values; `generate_all` or `load` fills them.
     pub fn new() -> Set {

@@ -12,9 +12,24 @@ import (
 // process in bytes from /proc/self/status (Linux has no committed-size
 // counter, so VmPeak stands in for it).
 func PeakMemory() (committed, workingSet uint64, ok bool) {
-	data, err := os.ReadFile("/proc/self/status")
+	a, ok1 := procValue("/proc/self/status", "VmPeak:")
+	b, ok2 := procValue("/proc/self/status", "VmHWM:")
+	return a, b, ok1 && ok2
+}
+
+// AvailableMemory returns the physical memory of the machine and the part of
+// it that is free right now, in bytes, from /proc/meminfo.
+func AvailableMemory() (total, available uint64, ok bool) {
+	a, ok1 := procValue("/proc/meminfo", "MemTotal:")
+	b, ok2 := procValue("/proc/meminfo", "MemAvailable:")
+	return a, b, ok1 && ok2
+}
+
+// procValue reads a "key: value kB" line of a proc file as bytes.
+func procValue(path, key string) (uint64, bool) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return 0, 0, false
+		return 0, false
 	}
 	kb := func(key string) (uint64, bool) {
 		for _, line := range strings.Split(string(data), "\n") {
@@ -28,8 +43,5 @@ func PeakMemory() (committed, workingSet uint64, ok bool) {
 		}
 		return 0, false
 	}
-	var ok1, ok2 bool
-	committed, ok1 = kb("VmPeak:")
-	workingSet, ok2 = kb("VmHWM:")
-	return committed, workingSet, ok1 && ok2
+	return kb(key)
 }

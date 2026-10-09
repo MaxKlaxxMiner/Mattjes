@@ -104,9 +104,26 @@ Festbreitenschrift.
 Go und Rust verhalten sich in beiden Läufen (mit und ohne Schreiben) gleich, die
 geschriebene Datei ist byteidentisch mit der aus `egtb-measure`.
 
+**Speicher-Check und Log (2026-10-09):** Vor dem Start vergleicht die Engine den Bedarf
+mit dem RAM der Maschine. Der Bedarf kommt aus `egtb.Requirements` (gemessene
+Materialien: Spitzen-RAM, Zeit, Dateigröße, Maschine; von Hand aus `measure.log`
+übernommen, wie die Prüfsummen) oder, wenn nicht gemessen, aus der Schätzung Tabelle ×
+1,75 (Tabelle, vier Bitsets, `pending`-Listen) plus fehlende Abhängigkeiten. Der freie
+und der gesamte physische Speicher kommen vom Betriebssystem (Windows
+`GlobalMemoryStatusEx`, Linux `/proc/meminfo`):
+
+```
+info string egtb: generating KRRKBN (14784 MB table, about 26.8 GiB RAM measured, 110.2 GiB of 127.0 GiB free), stop pauses it
+info string egtb: WARNING: more than the free memory, expect swapping        <- Bedarf über dem freien RAM
+info string egtb: KRRKBN needs about 26.8 GiB (measured), the machine has 16.0 GiB: not started
+```
+
+Nach jeder Erzeugung hängt auch der UCI-Job eine Zeile an `measure.log`, mit denselben
+Feldern wie `egtb-measure` plus `peak_commit_mb`/`peak_ws_mb` und der Quelle `uci`;
+daraus werden die Konstanten in `Requirements` und `TableChecksums` nachgetragen.
+
 Vorgemerkt: Während einer Erzeugung sollen Hash und reguläre Suche ihren RAM komplett
-freigeben; dazu statische Anforderungsdaten je Material (RAM, Platte, Zeit) im Code, aus
-denen die Engine vor dem Start warnt, wenn der Rechner das nicht schafft.
+freigeben.
 
 ## Offen
 

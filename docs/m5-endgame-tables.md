@@ -373,6 +373,18 @@ Arbeitssatz lag am Ende der Rechnung rund 3 GB darunter):
 | Rechnen, Spitze (am Ende, bevor die `pending`-Listen frei werden) | 36.846.184 kB = 35,1 GiB |
 | Schreiben, kurze Spitze | 39.043.460 kB = 37,2 GiB |
 
+Zweiter Lauf von null mit den kompakten `pending`-Listen und dem Schreiben ohne Rohkopie
+(2026-10-09, 1.347,7 s, gleiche Zählungen):
+
+| Phase | zugesichert |
+|---|---|
+| Scan, Anfang | 24.240.000 kB = 23,1 GiB |
+| Scan, Ende = **Spitze des ganzen Laufs** | 28.108.920 kB = 26,8 GiB |
+
+8,3 GB weniger, und die Spitze liegt jetzt am Ende des Scans, weil die Listen dort
+gefüllt sind und danach Ebene für Ebene frei werden; Rechnen und Schreiben liegen
+darunter. Die 4 % mehr Zeit liegen im Rauschen.
+
 Die Rechnung "Tabelle 15,5 GB + vier Bitsets 7,8 GB + Abhängigkeiten und Basis zweimal
 2 GB ≈ 25 GB" trifft die Spitze beim Rechnen nicht; rund 10 GB fehlen. Das sind die
 **`pending`-Listen**: Stellungen, deren Entscheidung nur aus einer kleineren Tabelle

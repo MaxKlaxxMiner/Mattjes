@@ -22,11 +22,37 @@ type processMemoryCounters struct {
 	peakPagefileUsage          uintptr
 }
 
+// memoryStatusEx mirrors MEMORYSTATUSEX from sysinfoapi.h.
+type memoryStatusEx struct {
+	length               uint32
+	memoryLoad           uint32
+	totalPhys            uint64
+	availPhys            uint64
+	totalPageFile        uint64
+	availPageFile        uint64
+	totalVirtual         uint64
+	availVirtual         uint64
+	availExtendedVirtual uint64
+}
+
 var (
-	kernel32              = syscall.NewLazyDLL("kernel32.dll")
-	procGetCurrentProcess = kernel32.NewProc("GetCurrentProcess")
-	procMemoryInfo        = kernel32.NewProc("K32GetProcessMemoryInfo")
+	kernel32                 = syscall.NewLazyDLL("kernel32.dll")
+	procGetCurrentProcess    = kernel32.NewProc("GetCurrentProcess")
+	procMemoryInfo           = kernel32.NewProc("K32GetProcessMemoryInfo")
+	procGlobalMemoryStatusEx = kernel32.NewProc("GlobalMemoryStatusEx")
 )
+
+// AvailableMemory returns the physical memory of the machine and the part of
+// it that is free right now, in bytes.
+func AvailableMemory() (total, available uint64, ok bool) {
+	var m memoryStatusEx
+	m.length = uint32(unsafe.Sizeof(m))
+	r, _, _ := procGlobalMemoryStatusEx.Call(uintptr(unsafe.Pointer(&m)))
+	if r == 0 {
+		return 0, 0, false
+	}
+	return m.totalPhys, m.availPhys, true
+}
 
 // PeakMemory returns the peak committed size and the peak working set of the
 // process in bytes (the committed size is what the task manager calls

@@ -380,11 +380,27 @@ func (e *Engine) maybeGenerate() {
 }
 
 func (e *Engine) startJob(m egtb.Material) {
-	j := &job{mat: m, ctrl: egtb.NewControl()}
-	e.job = j
 	set := e.set.Fork()
 	t := set.AddMaterial(m)
-	e.send("info string egtb: generating %s (%d MB table, about %d MB RAM), stop pauses it", m.Name(), t.Size>>20, set.GenerationBytes(t)>>20)
+	need, measured := set.EstimateBytes(t)
+	how := "estimated"
+	if measured {
+		how = "measured"
+	}
+	if total, avail, ok := egtb.AvailableMemory(); ok {
+		if uint64(need) > total {
+			e.send("info string egtb: %s needs about %s (%s), the machine has %s: not started", m.Name(), egtb.FormatBytes(uint64(need)), how, egtb.FormatBytes(total))
+			return
+		}
+		e.send("info string egtb: generating %s (%d MB table, about %s RAM %s, %s of %s free), stop pauses it", m.Name(), t.Size>>20, egtb.FormatBytes(uint64(need)), how, egtb.FormatBytes(avail), egtb.FormatBytes(total))
+		if uint64(need) > avail {
+			e.send("info string egtb: WARNING: more than the free memory, expect swapping")
+		}
+	} else {
+		e.send("info string egtb: generating %s (%d MB table, about %s RAM %s), stop pauses it", m.Name(), t.Size>>20, egtb.FormatBytes(uint64(need)), how)
+	}
+	j := &job{mat: m, ctrl: egtb.NewControl()}
+	e.job = j
 	workers, write := e.workers, e.writeCache
 	go func() {
 		// level lines come up to 254 times per table: at most one every few seconds
@@ -402,6 +418,9 @@ func (e *Engine) startJob(m egtb.Material) {
 		st := set.GenerateControlled(t, workers, j.ctrl, progress)
 		if st.Aborted {
 			return
+		}
+		if err := egtb.AppendLog(set.CacheDir, set.LogLine(t, st, workers, "uci")); err != nil {
+			progress(err.Error())
 		}
 		for _, gt := range set.Tables[len(set.Base()):] {
 			if gt.Values == nil {

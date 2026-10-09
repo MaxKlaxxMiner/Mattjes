@@ -242,18 +242,6 @@ func (s *Set) Adopt(from *Set) {
 	}
 }
 
-// GenerationBytes estimates the RAM a generation of t needs: the table, four
-// bitsets of 1/8 each and the direct dependencies that are not loaded yet.
-func (s *Set) GenerationBytes(t *Table) int {
-	n := t.Size + t.Size/2
-	for _, d := range t.Mat.dependencies() {
-		if dt := s.Find(d.Name()); dt == nil || dt.Values == nil {
-			n += newTable(d).Size
-		}
-	}
-	return n
-}
-
 // AddMaterial registers a table for a material beyond the base (up to
 // MaxPieces), without values. Returns the existing table if already present.
 func (s *Set) AddMaterial(m Material) *Table {
