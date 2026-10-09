@@ -187,10 +187,8 @@ impl Set {
             let cur = &g.cand[(level % 3) as usize];
             {
                 let mut pending = g.pending.lock().unwrap();
-                for &idx in &pending[level as usize] {
-                    cur.set(idx);
-                }
-                pending[level as usize].clear();
+                pending[level as usize].each(|idx| cur.set(idx));
+                pending[level as usize].reset();
             }
             phase = Instant::now();
             let (changed, evals) = parallel_bits(
@@ -232,10 +230,8 @@ impl Set {
             let cur = &g.cand[(level % 3) as usize];
             {
                 let mut pending = g.pending.lock().unwrap();
-                for &idx in &pending[level as usize] {
-                    cur.set(idx);
-                }
-                pending[level as usize].clear();
+                pending[level as usize].each(|idx| cur.set(idx));
+                pending[level as usize].reset();
             }
             let (beyond, evals) = parallel_bits(workers, cur, g.ctrl, None, &|idx| g.scan_candidate(level, idx));
             st.evaluations += evals;
@@ -339,8 +335,7 @@ struct Generator<'a> {
     /// `pending[level]` lists positions whose decision waits for a level that no
     /// in-table child will trigger: their decisive children lie in smaller tables
     /// (captures, promotions) with a larger distance.
-    /// 64 bit: six-piece tables have up to 45 G indices.
-    pending: Mutex<Vec<Vec<usize>>>,
+    pending: Mutex<Vec<PendingList>>,
     /// Pause/abort from outside (None = never).
     ctrl: Option<&'a Control>,
     /// Positions waiting for a level beyond MAX_PLIES+1 (cannot be stored).
@@ -361,7 +356,7 @@ impl<'a> Generator<'a> {
             en_passant_possible: white_pawns && black_pawns,
             cand: [Bitset::new(n), Bitset::new(n), Bitset::new(n)],
             invalid: Bitset::new(n),
-            pending: Mutex::new(vec![Vec::new(); MAX_PLIES as usize + 2]),
+            pending: Mutex::new((0..MAX_PLIES as usize + 2).map(|_| PendingList::default()).collect()),
             ctrl,
             beyond: AtomicUsize::new(0),
         }
@@ -372,12 +367,12 @@ impl<'a> Generator<'a> {
             self.beyond.fetch_add(1, Ordering::Relaxed); // beyond the value range: counted for the overflow report
             return;
         }
-        self.pending.lock().unwrap()[level as usize].push(idx);
+        self.pending.lock().unwrap()[level as usize].add(idx);
     }
 
     fn pending_beyond(&self, level: u32) -> bool {
         let p = self.pending.lock().unwrap();
-        p[level as usize + 1..].iter().any(|v| !v.is_empty())
+        p[level as usize + 1..].iter().any(|v| v.count > 0)
     }
 
     /// Marks invalid indices and mates, makes the parents of the mates the
@@ -684,6 +679,55 @@ fn distinct_squares(sq: &[Pos]) -> bool {
         seen |= 1 << s.idx();
     }
     true
+}
+
+/// The indices registered for one level in 4-byte entries: the index is split
+/// into a 4 GB segment and a 32-bit offset, and the entries live in fixed
+/// blocks instead of a doubling vector. A six-piece table like KRRKBN
+/// registers around a billion entries; 8-byte vectors with their doubling
+/// headroom cost 10 to 12 GB there, this costs 4 GB at no CPU cost.
+#[derive(Default)]
+pub struct PendingList {
+    /// [segment][block][entry]
+    segments: Vec<Vec<Vec<u32>>>,
+    count: usize,
+}
+
+/// Entries per block (256 KB); the unused tail of the last block per segment
+/// and level is the only waste.
+const PENDING_BLOCK: usize = 1 << 16;
+
+impl PendingList {
+    fn add(&mut self, idx: usize) {
+        let seg = idx >> 32;
+        while self.segments.len() <= seg {
+            self.segments.push(Vec::new());
+        }
+        let blocks = &mut self.segments[seg];
+        if blocks.last().is_none_or(|b| b.len() == PENDING_BLOCK) {
+            blocks.push(Vec::with_capacity(PENDING_BLOCK));
+        }
+        blocks.last_mut().expect("just pushed").push(idx as u32);
+        self.count += 1;
+    }
+
+    /// Calls f for every registered index.
+    fn each(&self, mut f: impl FnMut(usize)) {
+        for (seg, blocks) in self.segments.iter().enumerate() {
+            let base = seg << 32;
+            for block in blocks {
+                for &offset in block {
+                    f(base | offset as usize);
+                }
+            }
+        }
+    }
+
+    /// Frees the entries.
+    fn reset(&mut self) {
+        self.segments = Vec::new();
+        self.count = 0;
+    }
 }
 
 /// A candidate set with atomic insertion, so all workers can mark.

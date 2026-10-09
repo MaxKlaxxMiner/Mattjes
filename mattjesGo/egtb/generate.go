@@ -164,10 +164,8 @@ func (s *Set) GenerateControlled(t *Table, workers int, ctrl *Control, progress 
 	completed := false
 	for level := 1; level <= MaxPlies; level++ {
 		cur := g.cand[level%3]
-		for _, idx := range g.pending[level] {
-			cur.set(int(idx))
-		}
-		g.pending[level] = nil
+		g.pending[level].each(cur.set)
+		g.pending[level].reset()
 		g.level = level
 		phase = time.Now()
 		g.tick = func(done, total int) {
@@ -202,10 +200,8 @@ func (s *Set) GenerateControlled(t *Table, workers int, ctrl *Control, progress 
 		// are not followed, so the count is a lower bound).
 		level := MaxPlies + 1
 		cur := g.cand[level%3]
-		for _, idx := range g.pending[level] {
-			cur.set(int(idx))
-		}
-		g.pending[level] = nil
+		g.pending[level].each(cur.set)
+		g.pending[level].reset()
 		g.level = level
 		beyond, evals := g.parallelBits(workers, cur, g.scanCandidates)
 		st.Evaluations += evals
@@ -254,7 +250,7 @@ type generator struct {
 	// pending[level] lists positions whose decision waits for a level that no
 	// in-table child will trigger: their decisive children lie in smaller
 	// tables (captures, promotions) with a larger distance.
-	pending   [MaxPlies + 2][]int64 // 64 bit: six-piece tables have up to 45 G indices
+	pending   [MaxPlies + 2]pendingList
 	pendingMu sync.Mutex
 	beyond    atomic.Int64 // positions waiting for a level beyond MaxPlies+1 (cannot be stored)
 }
@@ -280,17 +276,64 @@ func (g *generator) registerPending(level, idx int) {
 		return
 	}
 	g.pendingMu.Lock()
-	g.pending[level] = append(g.pending[level], int64(idx))
+	g.pending[level].add(idx)
 	g.pendingMu.Unlock()
 }
 
 func (g *generator) pendingBeyond(level int) bool {
 	for l := level + 1; l < len(g.pending); l++ {
-		if len(g.pending[l]) > 0 {
+		if g.pending[l].count > 0 {
 			return true
 		}
 	}
 	return false
+}
+
+// pendingList holds the indices registered for one level in 4-byte entries:
+// the index is split into a 4 GB segment and a 32-bit offset, and the entries
+// live in fixed blocks instead of a doubling slice. A six-piece table like
+// KRRKBN registers around a billion entries; 8-byte slices with their doubling
+// headroom cost 10 to 12 GB there, this costs 4 GB at no CPU cost.
+type pendingList struct {
+	segments [][][]uint32 // [segment][block][entry]
+	count    int
+}
+
+// pendingBlock is the number of entries per block (256 KB); the unused tail of
+// the last block per segment and level is the only waste.
+const pendingBlock = 1 << 16
+
+func (p *pendingList) add(idx int) {
+	seg := idx >> 32
+	for len(p.segments) <= seg {
+		p.segments = append(p.segments, nil)
+	}
+	blocks := p.segments[seg]
+	if n := len(blocks); n == 0 || len(blocks[n-1]) == pendingBlock {
+		blocks = append(blocks, make([]uint32, 0, pendingBlock))
+	}
+	last := &blocks[len(blocks)-1]
+	*last = append(*last, uint32(idx))
+	p.segments[seg] = blocks
+	p.count++
+}
+
+// each calls fn for every registered index.
+func (p *pendingList) each(fn func(idx int)) {
+	for seg, blocks := range p.segments {
+		base := seg << 32
+		for _, block := range blocks {
+			for _, offset := range block {
+				fn(base | int(offset))
+			}
+		}
+	}
+}
+
+// reset frees the entries.
+func (p *pendingList) reset() {
+	p.segments = nil
+	p.count = 0
 }
 
 // bitset is a candidate set with atomic insertion, so all workers can mark.

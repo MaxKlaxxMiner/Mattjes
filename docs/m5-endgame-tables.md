@@ -390,13 +390,16 @@ fällt damit auf Tabelle plus Komprimat; (2) ✅ Spitzenspeicher wird am Ende je
 Erzeugung gemeldet (`egtb.PeakMemory`: Windows `K32GetProcessMemoryInfo` ohne Crate,
 zugesicherte Größe und Arbeitssatz; Linux `/proc/self/status` VmPeak/VmHWM), als
 `info string` im UCI-Modus und als `peak_commit_mb`/`peak_ws_mb` in `measure.log`;
-Speicherfragen zählen nur für Rust, Go ist die Testbasis; (3) offen: die `pending`-Listen
-durch **vorläufige Werte** ersetzen: den aus Schlagkindern bekannten Wert sofort in die
-Tabelle schreiben und in einem Bitset (1/8 der Tabelle statt 8 Byte je Eintrag) als
-vorläufig markieren; ein Kandidaten-Scan darf vorläufige Stellungen neu bewerten und
-verkürzen, pro Ebene werden die vorläufigen Stellungen dieser Ebene aktiviert
-(Bitset-Scan, 0,2 s je Ebene). Das spart bei KRRKBN rund 10 GB und ist Voraussetzung
-für Sechs-Steiner auf kleineren Maschinen.
+Speicherfragen zählen nur für Rust, Go ist die Testbasis; (3) ✅ **kompakte
+`pending`-Listen** (`pendingList`/`PendingList`): 4-Byte-Einträge als Offset in
+4-GB-Segmenten (bei 15,5 Mrd. Indizes vier Segmente je Ebene), abgelegt in festen Blöcken
+zu 65.536 Einträgen statt in sich verdoppelnden Vektoren. Aus rund 10 bis 12 GB werden
+etwa 4 GB bei KRRKBN, ohne zusätzliche Rechenzeit; Prüfsummen von Basis und KBNKQ
+unverändert, Go und Rust byteidentisch. Die weitergehende Idee, die Listen durch
+**vorläufige Werte** in der Tabelle plus Bitset zu ersetzen, bleibt notiert: Sie bräuchte
+pro Ebene eine Aktivierung der vorläufigen Stellungen dieser Ebene, und dafür müsste man
+entweder doch Listen halten oder pro Ebene die ganze Tabelle lesen (15,5 GB mal 80 bis
+250 Ebenen, einige Minuten extra), daher erst, wenn die 4 GB noch stören.
 
 ## Nächster Generator-Schritt: Bauern-Scheiben (vorgemerkt 2026-10-07)
 
