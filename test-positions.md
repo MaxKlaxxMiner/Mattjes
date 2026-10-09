@@ -57,8 +57,8 @@ Mattjes ohne Tabelle, ein Thread, Hash 256, bis alle zwölf Werte exakt standen
 
 | Suche | Zeit | Knoten | Ergebnis |
 |---|---|---|---|
-| `matepn` | 93 s | 17,8 Mio. Besuche | alle zwölf exakt |
-| `mateab` | 122 s | 414 Mio. Knoten | alle zwölf exakt |
+| `matepn` | 93 s, nach Prefetch und Orakel-Abkürzung 71 s | 17,8 Mio. Besuche | alle zwölf exakt |
+| `mateab` | 122 s, danach 111 s | 414 Mio. Knoten | alle zwölf exakt |
 | `matelist` | 6 min bis Halbzug 13 | | kein Ergebnis, siehe unten |
 
 Nach 40 s (`matepn`) bzw. 20 s (`mateab`) stand Tiefe 15 mit neun exakten Werten

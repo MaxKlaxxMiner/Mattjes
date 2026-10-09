@@ -264,7 +264,8 @@ Rust `_mm_prefetch`, Go ein Load in eine globale Senke), die Tabellensuche brich
 der Index-Rechnung ab, wenn die Tabelle keine Werte hat (`findTable`/`indexOf`), und
 in Go bekommen Orakel und Rekursion feste Bretter im Searcher (`scratch`, `stack`).
 Zeit bis Tiefe 15 (5.528.849 Besuche) auf dieser Stellung: Go 31,3 s → 25,8 s, Rust
-23,1 s → 16,5 s (335.000 Besuche pro Sekunde). Beim Test kamen zwei Altlasten hoch: Wechselt die Option `Search` zwischen
+23,1 s → 16,5 s (335.000 Besuche pro Sekunde); die komplette Lösung (Rust) `matepn`
+93 s → 71 s, `mateab` 122 s → 111 s. Beim Test kamen zwei Altlasten hoch: Wechselt die Option `Search` zwischen
 Algorithmen, muss die Transposition Table geleert werden (unter 128 MB nutzen `mateab`
 und `matepn` dieselbe direkte Tabelle, und `matepn` las `mateab`-Einträge als
 Beweiszahlen); und `boardSignature` lief bei vier gleichen Steinen über (K + 4 Bauern
