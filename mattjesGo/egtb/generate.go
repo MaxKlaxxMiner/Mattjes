@@ -148,6 +148,10 @@ func (s *Set) GenerateControlled(t *Table, workers int, ctrl *Control, progress 
 	}
 
 	var st Stats
+	phase := time.Now()
+	g.tick = func(done, total int) {
+		progress(fmt.Sprintf("%-5s scanning %s (%.0f s)", t.Mat.Name(), percent(done, total), time.Since(phase).Seconds()))
+	}
 	legal, mates := g.parallelRange(workers, g.initRange)
 	if ctrl.Aborted() {
 		return abort()
@@ -165,6 +169,10 @@ func (s *Set) GenerateControlled(t *Table, workers int, ctrl *Control, progress 
 		}
 		g.pending[level] = nil
 		g.level = level
+		phase = time.Now()
+		g.tick = func(done, total int) {
+			progress(fmt.Sprintf("      level %3d: %s (%.0f s)", level, percent(done, total), time.Since(phase).Seconds()))
+		}
 		changed, evals := g.parallelBits(workers, cur, g.scanCandidates)
 		if ctrl.Aborted() {
 			return abort()
@@ -214,6 +222,11 @@ func (s *Set) GenerateControlled(t *Table, workers int, ctrl *Control, progress 
 	return st
 }
 
+// percent formats the progress of a phase: "37.12% - 1,345,678,551 / 8,232,021,000".
+func percent(done, total int) string {
+	return fmt.Sprintf("%.2f%% - %s / %s", float64(done)*100/float64(max(total, 1)), Group(done), Group(total))
+}
+
 // Group formats a count with thousands separators ("242,221,056").
 func Group(n int) string {
 	s := fmt.Sprint(n)
@@ -229,7 +242,8 @@ type generator struct {
 	pieces            []chess.Piece // white king, black king, slots
 	enPassantPossible bool          // pawns of both colors: a double step can create an en passant right
 	level             int
-	ctrl              *Control // pause/abort from outside (nil = never)
+	ctrl              *Control              // pause/abort from outside (nil = never)
+	tick              func(done, total int) // progress of the current parallel phase (nil = silent)
 	// cand[level%3] holds the candidates of a level: positions with a child
 	// decided in the previous level (and, with en passant, two levels back).
 	cand [3]bitset
@@ -305,12 +319,16 @@ func (b bitset) any() bool {
 
 // parallelRange runs fn over the index range in chunks and sums its results.
 func (g *generator) parallelRange(workers int, fn func(lo, hi int) (int, int)) (int, int) {
-	return parallelChunks(workers, g.t.Size, 1<<16, g.ctrl, fn)
+	return parallelChunks(workers, g.t.Size, 1<<16, g.ctrl, g.tick, fn)
 }
 
 // parallelBits runs fn over the set bits of a candidate set in chunks of words.
 func (g *generator) parallelBits(workers int, b bitset, fn func(idx int) (int, int)) (int, int) {
-	return parallelChunks(workers, len(b), 1<<10, g.ctrl, func(lo, hi int) (int, int) {
+	var tick func(done, total int)
+	if g.tick != nil {
+		tick = func(done, total int) { g.tick(done*64, total*64) } // words -> indices
+	}
+	return parallelChunks(workers, len(b), 1<<10, g.ctrl, tick, func(lo, hi int) (int, int) {
 		x, y := 0, 0
 		for w := lo; w < hi; w++ {
 			for bits := b[w]; bits != 0; bits &= bits - 1 {
@@ -323,7 +341,15 @@ func (g *generator) parallelBits(workers int, b bitset, fn func(idx int) (int, i
 	})
 }
 
-func parallelChunks(workers, size, chunk int, ctrl *Control, fn func(lo, hi int) (int, int)) (int, int) {
+// tickInterval is how often a long parallel phase reports its progress
+// (six-piece tables scan for minutes before the first level line).
+const tickInterval = 5 * time.Second
+
+// parallelChunks runs fn over [0, size) in chunks on workers goroutines and
+// sums its two results. The calling goroutine waits and, when tick is set,
+// reports the progress (chunks handed out, total) every tickInterval while
+// the workers are not paused.
+func parallelChunks(workers, size, chunk int, ctrl *Control, tick func(done, total int), fn func(lo, hi int) (int, int)) (int, int) {
 	if workers < 1 {
 		workers = 1
 	}
@@ -347,7 +373,28 @@ func parallelChunks(workers, size, chunk int, ctrl *Control, fn func(lo, hi int)
 			}
 		}()
 	}
-	wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	if tick == nil {
+		<-done
+	} else {
+		last := time.Now()
+	wait:
+		for {
+			select {
+			case <-done:
+				break wait
+			case <-time.After(100 * time.Millisecond):
+				if time.Since(last) >= tickInterval && !ctrl.Paused() {
+					last = time.Now()
+					tick(min(int(next.Load()), size), size)
+				}
+			}
+		}
+	}
 	return int(a.Load()), int(b.Load())
 }
 

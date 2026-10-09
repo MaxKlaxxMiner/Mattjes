@@ -161,7 +161,16 @@ impl Set {
         let aborted = || ctrl.is_some_and(|c| c.aborted());
 
         let mut st = Stats::default();
-        let (legal, mates) = parallel_chunks(workers, t.size, 1 << 16, g.ctrl, &|lo, hi| g.init_range(lo, hi));
+        let name = t.mat.name();
+        let mut phase = Instant::now();
+        let (legal, mates) = parallel_chunks(
+            workers,
+            t.size,
+            1 << 16,
+            g.ctrl,
+            Some(&mut |done, total| progress(&format!("{:<5} scanning {} ({:.0} s)", name, percent(done, total), phase.elapsed().as_secs_f64()))),
+            &|lo, hi| g.init_range(lo, hi),
+        );
         if aborted() {
             drop(g);
             self.tables[ti].clear();
@@ -183,7 +192,14 @@ impl Set {
                 }
                 pending[level as usize].clear();
             }
-            let (changed, evals) = parallel_bits(workers, cur, g.ctrl, &|idx| g.scan_candidate(level, idx));
+            phase = Instant::now();
+            let (changed, evals) = parallel_bits(
+                workers,
+                cur,
+                g.ctrl,
+                Some(&mut |done, total| progress(&format!("      level {:>3}: {} ({:.0} s)", level, percent(done, total), phase.elapsed().as_secs_f64()))),
+                &|idx| g.scan_candidate(level, idx),
+            );
             if aborted() {
                 drop(g);
                 self.tables[ti].clear();
@@ -221,7 +237,7 @@ impl Set {
                 }
                 pending[level as usize].clear();
             }
-            let (beyond, evals) = parallel_bits(workers, cur, g.ctrl, &|idx| g.scan_candidate(level, idx));
+            let (beyond, evals) = parallel_bits(workers, cur, g.ctrl, None, &|idx| g.scan_candidate(level, idx));
             st.evaluations += evals;
             st.beyond = beyond + g.beyond.load(Ordering::Relaxed);
             st.overflow = true;
@@ -253,7 +269,7 @@ impl Set {
         let t = &self.tables[ti];
         let g = Generator::new(self, t, false, None);
         let reported = AtomicU32::new(0);
-        let (bad, _) = parallel_chunks(workers, t.size, 1 << 16, None, &|lo, hi| {
+        let (bad, _) = parallel_chunks(workers, t.size, 1 << 16, None, None, &|lo, hi| {
             let mut sq = [Pos::NONE; 6];
             let mut buf = new_buffer();
             let n = g.pieces.len();
@@ -700,29 +716,63 @@ impl Bitset {
 }
 
 /// Runs f over the index range in chunks on `workers` threads and sums its two results.
-fn parallel_chunks(workers: usize, size: usize, chunk: usize, ctrl: Option<&Control>, f: &(dyn Fn(usize, usize) -> (usize, usize) + Sync)) -> (usize, usize) {
+/// How often a long parallel phase reports its progress (six-piece tables
+/// scan for minutes before the first level line).
+const TICK_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Runs f over [0, size) in chunks on `workers` threads and sums its two
+/// results. The calling thread waits and, when `tick` is set, reports the
+/// progress (chunks handed out, total) every TICK_INTERVAL while the workers
+/// are not paused.
+fn parallel_chunks(
+    workers: usize,
+    size: usize,
+    chunk: usize,
+    ctrl: Option<&Control>,
+    tick: Option<&mut dyn FnMut(usize, usize)>,
+    f: &(dyn Fn(usize, usize) -> (usize, usize) + Sync),
+) -> (usize, usize) {
     let workers = workers.max(1);
     let next = AtomicI64::new(0);
     let (a, b) = (AtomicI64::new(0), AtomicI64::new(0));
+    let finished = AtomicUsize::new(0);
     std::thread::scope(|s| {
         for _ in 0..workers {
-            s.spawn(|| loop {
-                if let Some(c) = ctrl {
-                    if !c.wait() {
-                        return; // blocks while paused
+            s.spawn(|| {
+                loop {
+                    if let Some(c) = ctrl {
+                        if !c.wait() {
+                            break; // blocks while paused
+                        }
                     }
+                    let lo = next.fetch_add(chunk as i64, Ordering::Relaxed) as usize;
+                    if lo >= size {
+                        break;
+                    }
+                    let (x, y) = f(lo, (lo + chunk).min(size));
+                    a.fetch_add(x as i64, Ordering::Relaxed);
+                    b.fetch_add(y as i64, Ordering::Relaxed);
                 }
-                let lo = next.fetch_add(chunk as i64, Ordering::Relaxed) as usize;
-                if lo >= size {
-                    return;
-                }
-                let (x, y) = f(lo, (lo + chunk).min(size));
-                a.fetch_add(x as i64, Ordering::Relaxed);
-                b.fetch_add(y as i64, Ordering::Relaxed);
+                finished.fetch_add(1, Ordering::Relaxed);
             });
+        }
+        if let Some(tick) = tick {
+            let mut last = Instant::now();
+            while finished.load(Ordering::Relaxed) < workers {
+                std::thread::sleep(Duration::from_millis(100));
+                if last.elapsed() >= TICK_INTERVAL && !ctrl.is_some_and(|c| c.paused()) {
+                    last = Instant::now();
+                    tick((next.load(Ordering::Relaxed) as usize).min(size), size);
+                }
+            }
         }
     });
     (a.load(Ordering::Relaxed) as usize, b.load(Ordering::Relaxed) as usize)
+}
+
+/// Formats the progress of a phase: "37.12% - 1,345,678,551 / 8,232,021,000".
+fn percent(done: usize, total: usize) -> String {
+    format!("{:.2}% - {} / {}", done as f64 * 100.0 / total.max(1) as f64, group(done), group(total))
 }
 
 /// Formats a count with thousands separators ("242,221,056").
@@ -739,8 +789,11 @@ pub fn group(n: usize) -> String {
 }
 
 /// Runs f over the set bits of a candidate set in chunks of words.
-fn parallel_bits(workers: usize, bits: &Bitset, ctrl: Option<&Control>, f: &(dyn Fn(usize) -> (usize, usize) + Sync)) -> (usize, usize) {
-    parallel_chunks(workers, bits.0.len(), 1 << 10, ctrl, &|lo, hi| {
+fn parallel_bits(workers: usize, bits: &Bitset, ctrl: Option<&Control>, tick: Option<&mut dyn FnMut(usize, usize)>, f: &(dyn Fn(usize) -> (usize, usize) + Sync)) -> (usize, usize) {
+    // words -> indices for the progress report
+    let mut scaled = tick.map(|t| move |done: usize, total: usize| t(done * 64, total * 64));
+    let scaled: Option<&mut dyn FnMut(usize, usize)> = scaled.as_mut().map(|t| t as &mut dyn FnMut(usize, usize));
+    parallel_chunks(workers, bits.0.len(), 1 << 10, ctrl, scaled, &|lo, hi| {
         let (mut x, mut y) = (0, 0);
         for w in lo..hi {
             let mut word = bits.0[w].load(Ordering::Relaxed);

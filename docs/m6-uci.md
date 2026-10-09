@@ -93,7 +93,12 @@ info depth 23 multipv 1 score mate 12 pv a1b2 e5d6 b2c3 ...
 **Wenige, kompakte Statuszeilen** (Vorgabe des Autors, 2026-10-08): eine Start- und eine
 Abschlusszeile pro Tabelle, die bis zu 254 Ebenen-Zeilen werden auf eine alle fünf
 Sekunden gedrosselt (`progressInterval`), die Erzeugung der Basis beim ersten `isready`
-meldet jede der 35 Tabellen mit einer Zeile. Die Spaltenausrichtung der Konsole wird für
+meldet jede der 35 Tabellen mit einer Zeile. **Lange Phasen melden Prozent** (2026-10-09,
+nach dem ersten Sechs-Steiner-Versuch KRRKBN, der minutenlang stumm blieb): Der
+Generator scannt vor der ersten Ebene alle Indizes, bei 15,5 Mrd. dauert das Minuten,
+und einzelne Ebenen können ebenso lange laufen. Der wartende Thread gibt deshalb alle
+fünf Sekunden `KRRKBN scanning 23% (62 s)` bzw. `level 12: 37% (41 s)` aus
+(`tickInterval` im Generator, gilt auch für die Konsole). Die Spaltenausrichtung der Konsole wird für
 die GUI auf einfache Leerzeichen zusammengezogen (`compact`), Arena zeigt keine
 Festbreitenschrift.
 Go und Rust verhalten sich in beiden Läufen (mit und ohne Schreiben) gleich, die

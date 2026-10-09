@@ -52,7 +52,8 @@ var TableChecksums = map[string]uint64{
 	"KQPK": 0x1c74eb840969f447, "KRPK": 0x05107c598fafd5ec, "KBPK": 0x7943932114500468, "KNPK": 0xa6464dc2cc6a01f8,
 	"KQKP": 0x24b8b54772f35819, "KRKP": 0x57b1f53eaee0a89c, "KBKP": 0x74931eaafaa29dd8, "KNKP": 0x627ee5ef42b600f5,
 	"KPPK": 0x829f48ba8cf92ce4, "KPKP": 0xae084110af4ab131,
-	// five pieces: to be recorded from egtb-measure runs
+	// five pieces (format v3, 2026-10-09, Go and Rust identical), added as they are measured
+	"KBBBK": 0xa552a70f5be1c3db, "KBNKQ": 0xa03df227d9f5eb72,
 }
 
 // Checksum is a 64-bit hash over 8-byte little-endian words (FNV-1a style

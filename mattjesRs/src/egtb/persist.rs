@@ -74,7 +74,9 @@ pub const TABLE_CHECKSUMS: &[(&str, u64)] = &[
     ("KNKP", 0x627ee5ef42b600f5),
     ("KPPK", 0x829f48ba8cf92ce4),
     ("KPKP", 0xae084110af4ab131),
-    // five pieces: to be recorded from egtb-measure runs
+    // five pieces (format v3, 2026-10-09, Go and Rust identical), added as they are measured
+    ("KBBBK", 0xa552a70f5be1c3db),
+    ("KBNKQ", 0xa03df227d9f5eb72),
 ];
 
 /// The recorded checksum of a table, if any.
