@@ -129,8 +129,12 @@ fn experiments() {
     // tests_mate::mateab_solve_tables(31, 0, false); // four-piece positions are root hits, pawns 464,248 nodes (identical to Go)
     // tests_mate::mateab_solve_tables_named("KQ-KBN", 1024, true); // mate in 39 with five pieces: open how long, user runs it
 
-    // --- milestone 4, step 4: df-pn (size_mb, codec "sat"/"float", options m mobility, e/E/x/X epsilon 1/8 1/2 1 2, f final entries, t tables, i iterative) ---
-    // tests_pn::matepn_solve(15, 256, "sat", "mEf"); // KQ-KN 181,065 visits, KR-KR 1,125,947, identical to Go
+    // --- milestone 4, step 4: df-pn (size_mb, codec "sat"/"float", options m mobility, l lazy mobility, e/E/x/X epsilon 1/8 1/2 1 2, f final entries, t tables, i iterative) ---
+    // tests_pn::matepn_solve(15, 256, "sat", "mEf"); // KQ-KN 368,362 visits, KR-KR 1,206,343, identical to Go (the visits swing 4x with the table size, m4-mate-search.md step 5)
+    // --- mobility experiment (docs/handout-matepn-mobility.md): the three leaf initialisations, visits must match Go per variant ---
+    // tests_pn::matepn_solve(15, 256, "sat", "mEf"); // A: mobility, 1,672,777 visits in total (the default, won the benchmark: 70.5 s)
+    // tests_pn::matepn_solve(15, 256, "sat", "Ef"); // B: 1/1 leaves, 3,227,469 visits (benchmark 114.4 s)
+    // tests_pn::matepn_solve(15, 256, "sat", "lEf"); // C: lazy, the move count when a node is entered, 8,694,695 visits (benchmark 83.8 s)
     // tests_pn::matepn_solve_named("KBB-K", 1024, "sat", "mEf"); // proven after 109.5 M visits, 336 s, proof tree incomplete (27 M replaced)
     // --- five pieces with the endgame tables as oracle: the first case where search and tables must cooperate, open how long ---
     // tests_mate::mateab_solve_tables_named("KQ-KBN", 1024, true);

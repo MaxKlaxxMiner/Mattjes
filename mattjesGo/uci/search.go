@@ -37,6 +37,9 @@ const (
 	// defaultAlgo is the Search option's default: df-pn proves mates with the
 	// fewest nodes (docs/m4-mate-search.md).
 	defaultAlgo = "matepn"
+	// defaultMobility is the MatePnMobility option's default: how df-pn
+	// initialises fresh leaves (docs/handout-matepn-mobility.md).
+	defaultMobility = "on"
 	// defaultHashMB is the Hash option's default (the transposition table of
 	// mateab and matepn, the position budget of matelist); minHashMB is what
 	// mateab's 21 value bits need from a direct-mapped table (2^21 slots).
@@ -60,6 +63,14 @@ const (
 func isAlgo(s string) bool {
 	switch strings.ToLower(s) {
 	case "none", "mateab", "matepn", "matelist":
+		return true
+	}
+	return false
+}
+
+func isMobility(s string) bool {
+	switch strings.ToLower(s) {
+	case "on", "off", "lazy":
 		return true
 	}
 	return false
@@ -236,7 +247,7 @@ func (e *Engine) startSearch(p goParams) {
 	if p.budget > 0 {
 		e.timer = time.AfterFunc(p.budget, func() { stop.Store(true) })
 	}
-	root, algo, maxPlies, multiPV := e.board, e.algo, p.maxPlies, e.multiPV
+	root, algo, maxPlies, multiPV, mobility := e.board, e.algo, p.maxPlies, e.multiPV, e.mobility
 	oracle := mateab.Tables{Set: e.set}
 	var direct *tt.Table
 	var abTable mateab.Table
@@ -264,7 +275,8 @@ func (e *Engine) startSearch(p goParams) {
 				return childResult{proven: cr.MatePlies != 0, length: max(cr.MatePlies, -cr.MatePlies), pv: cr.PV, nodes: cr.Nodes, aborted: cr.Aborted}
 			})
 		case "matepn":
-			s := matepn.New(oracle, direct, matepn.Saturating{Bits: direct.ValueBits()}, true)
+			s := matepn.New(oracle, direct, matepn.Saturating{Bits: direct.ValueBits()}, mobility == "on")
+			s.LazyMobility = mobility == "lazy"
 			s.Epsilon, s.Final, s.Stop, s.ProgressEvery, s.Progress = 4, true, stop, progressEvery, rep.progress
 			r = runRoot(&root, maxPlies, multiPV, rep, func(c *bitboard.Board, plies int) childResult {
 				cr := s.Solve(c, plies)

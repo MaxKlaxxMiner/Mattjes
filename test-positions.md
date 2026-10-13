@@ -19,7 +19,7 @@ Regressionsstellungen der Suchen; die acht Endspiele bis fünf Steine wurden am
 | 4 | Bauern | 12 | `5k2/5P1P/4P3/pP6/P6q/3P2P1/2P5/K7 w - a6 0 1` | Matt in 6 (`g3h4 f8g7 h7h8q ...`) | Suche | `matepn` (7.800 Knoten) und `mateab` (216.429) stimmen überein, keine externe Quelle | | Umwandlung, En passant, schwarze Dame; aus dem alten C#-Code |
 | 5 | KRR-K | 4 | `8/8/8/4k3/8/R7/R7/K7 w - - 0 1` | Matt in 7 | Tabelle | Tablebase, eigene Tabelle | 907 | Treppenmatt, stille Züge |
 | 6 | KRR-KN | 5 | `8/8/4k3/8/8/8/R7/K1R2n2 w - - 0 1` | Matt in 7 (`a2a6 e6d5 c1f1 ...`) | Tabelle (`5-KRRKN.bin`) | eigene Fünf-Steiner-Tabelle | | ohne Cache-Datei ein Suchfall |
-| 7 | KQ-KN | 4 | `7k/5n2/8/8/8/8/5Q2/K7 w - - 0 1` | Matt in 12 | Tabelle | Tablebase, eigene Tabelle | 2.687 | Zugzwang, Pattfallen; `matepn` 181.065 Besuche ohne Tabellen |
+| 7 | KQ-KN | 4 | `7k/5n2/8/8/8/8/5Q2/K7 w - - 0 1` | Matt in 12 | Tabelle | Tablebase, eigene Tabelle | 2.687 | Zugzwang, Pattfallen; `matepn` 214 Tsd. bis 848 Tsd. Besuche ohne Tabellen, je nach Tabellengröße (`docs/m4-mate-search.md`, Schritt 5) |
 | 8 | KR-KR | 4 | `8/5rK1/6R1/8/4k3/8/8/8 w - - 0 1` | Matt in 15 | Tabelle | Tablebase, eigene Tabelle | | Gegenspiel des Verteidigers; `matepn` 1,1 Mio. Besuche |
 | 9 | KBB-K | 4 | `8/8/4k3/8/8/8/8/K2BB3 w - - 0 1` | Matt in 17 | Tabelle | Tablebase, eigene Tabelle | 9.825 | lange stille Manöver; `matepn` 109 Mio. Besuche mit 1 GB |
 | 10 | KP-KP | 4 | `8/7k/1p6/1P6/7K/8/8/8 w - - 0 1` | Matt in 25 (nur `1.Kh5`), Schwarz am Zug Remis | Tabelle | eigene KPKP-Tabelle, `matelist` | 4.125 | Oppositionsstudie, `1.Kg5?` remis |
@@ -63,9 +63,49 @@ Mattjes ohne Tabelle, ein Thread, Hash 256, bis alle zwölf Werte exakt standen
 
 Nach 40 s (`matepn`) bzw. 20 s (`mateab`) stand Tiefe 15 mit neun exakten Werten
 (`Kf7`, die Königszüge, `Nh2`); `Ne3` und `Nd2` brauchen Tiefe 16, `Ng3` Tiefe 18.
+
+Zeitleiste pro Wert (Rust, ein Thread, Hash 16384, 2026-10-13, Stand d6cdbff plus
+Option `MatePnMobility on`; `mateab` mit derselben Tabellengröße). Das ist die
+Messgröße für Algorithmus-Änderungen: pro Variante die Zeit, bis jeder Wert exakt
+steht, nicht nur die Summe. Die Varianten `off` und `lazy` stehen in
+`docs/m4-mate-search.md`, Schritt 5 (beide langsamer, `lazy` um 19 %).
+
+| Tiefe | Züge | `matepn` | Besuche | `mateab` | Knoten |
+|---|---|---|---|---|---|
+| 8 | Kf7 (−M4) | 0,3 s | 81 Tsd. | 0,06 s | 273 Tsd. |
+| 12 | Kd7, Ke7, Kd6, Kf6, Kd5, Ke5, Kf5 (−M6) | 7,3 s | 1,7 Mio. | 2,8 s | 12,0 Mio. |
+| 14 | Nh2 (−M7) | 22,4 s | 5,6 Mio. | 15,7 s | 61,5 Mio. |
+| 16 | Nd2, Ne3 (−M8) | 70,3 s | 17,8 Mio. | 53,8 s | 198 Mio. |
+| 18 | Ng3 (−M9) | 70,5 s | 17,8 Mio. | 115,7 s | 414 Mio. |
+
+Zwei Drittel der Zeit gehen in Tiefe 16 (die drei Springerzüge bei 15 Halbzügen);
+`Ng3` ist für `matepn` danach fast gratis, weil die Widerlegung bei Tiefe 16 die
+Tabelle so gefüllt hat, dass der Beweis bei 18 sofort steht; `mateab` rechnet den
+Raum für Tiefe 18 noch einmal (62 s). Bis Tiefe 16 wächst die Zeit etwa um Faktor 3
+je zwei Halbzüge. Die erste Tiefenzeile des ersten Laufs einer Sitzung enthält die
+Seitenfehler der frisch angelegten Tabelle (bei 16 GB rund 2,4 s). Die Stellung übt
+nur gerade Tiefen (Wurzel = Verteidiger). Mit Weiß am Zug taugt sie nicht als
+Angreifer-Benchmark: Rxf1 führt in den Vier-Steiner, die Tabellenstufe meldet den
+bekannten Gewinn (Matt in 6) und die Suche läuft gar nicht.
+
+Angreiferpfad: die Stellung nach `Nh2`, `8/8/4k3/8/8/8/RK5n/2R5 w - - 2 2` (Matt in
+7, 27 Züge, kein Schlag möglich, Werte aus derselben Tabelle). Dieselbe Messung,
+Zeit und Besuche bis zu den Werten je Tiefe; nach Tiefe 21 von Hand gestoppt, die
+16 übrigen Züge sind länger als Matt in 11:
+
+| Tiefe | Züge | `matepn` | Besuche | `mateab` | Knoten |
+|---|---|---|---|---|---|
+| 13 | Rc5 (M7) | 13,9 s | 3,5 Mio. | 6,9 s | 3,9 Mio. |
+| 15 | Ra5 (M8) | 48,7 s | 12,5 Mio. | 25,3 s | 94,7 Mio. |
+| 19 | Ka3, Kb3, Kc3, Ra3, Rc3, Re1+, Rh1 (M10) | 368 s | 92,6 Mio. | 382 s | 1,31 Mrd. |
+| 21 | Kc2, Ka1, Kb1 (M11) | 450 s | 107 Mio. | 858 s | 2,81 Mrd. |
+
+`mateab` findet das erste Matt schneller (0,3 µs je Knoten gegen 4 µs je Besuch),
+`matepn` holt mit jeder weiteren Tiefe auf und liegt ab Tiefe 19 vorn.
 Messgröße für Mechanik-Änderungen: die Zeit bis Tiefe 15 bei gleichen 5.528.849
 Besuchen (`matepn`, Hash 256): Rust 23,1 s vor und 16,5 s nach Prefetch und
-Orakel-Abkürzung (2026-10-09), Go 31,3 s → 25,8 s.
+Orakel-Abkürzung (2026-10-09), Go 31,3 s → 25,8 s. Bei Hash 16384 kostet ein
+Besuch 4 µs statt 3 µs (TLB-Misses der großen Tabelle).
 `matelist` ist hier das falsche Werkzeug: Es antwortet erst nach der Rückwärtsphase,
 die auf die komplette Aufzählung folgt, und der erreichbare Raum ist der ganze
 Fünf-Steiner ohne Symmetrie (50 Mio. Stellungen bei Halbzug 10, 1,4 Mrd. insgesamt).

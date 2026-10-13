@@ -67,6 +67,13 @@ type Searcher struct {
 	table    Table
 	codec    Codec
 	mobility bool
+	// LazyMobility (with mobility off) uses a node's own number of moves when
+	// mid enters it, where the generator runs anyway: if that number alone
+	// reaches the threshold, the node returns at once (defender: pn = moves,
+	// attacker: dn = moves) without expanding its children. These are exactly
+	// the numbers a full expansion over fresh 1/1 children would produce,
+	// so only children already in the table are missed until the next visit.
+	LazyMobility bool
 	// Epsilon widens the child's threshold from second+1 to second*(1+epsilon)
 	// (Pawlewicz & Lew 2007): the search returns to the parent less often and
 	// re-expands fewer nodes, at the price of a less strictly best-first order.
@@ -264,6 +271,18 @@ func (s *Searcher) mid(b *bitboard.Board, thPn, thDn uint32, depth int) (uint32,
 		return pn, dn
 	}
 	attacker := depth%2 == 1
+	if s.LazyMobility {
+		// the node's mobility as its first estimate, before any child is touched
+		if attacker {
+			pn, dn = 1, uint32(n)
+		} else {
+			pn, dn = uint32(n), 1
+		}
+		if pn >= thPn || dn >= thDn {
+			s.store(b, depth, pn, dn)
+			return pn, dn
+		}
+	}
 
 	// expand: numbers of all children from the table or as fresh leaves. The
 	// keys of all children are computed and their slots touched first, so

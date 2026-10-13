@@ -63,6 +63,7 @@ type Engine struct {
 	cacheDir   string // EgtbPath
 	algo       string // Search: the algorithm for positions the tables do not settle
 	hashMB     int    // Hash: the transposition table of the search
+	mobility   string // MatePnMobility: on (leaves start with their move count), off (1/1), lazy (move count when entered)
 	// the transposition tables, allocated on the first search, dropped when a
 	// generation starts (the generator needs the memory)
 	direct    *tt.Table   // matepn (direct-mapped: proofs must not be evicted by larger numbers)
@@ -93,7 +94,7 @@ type job struct {
 // reported to the GUI (the Go and Rust binaries differ).
 func Run(in io.Reader, out io.Writer, name string, workers int) {
 	e := &Engine{out: bufio.NewWriter(out), board: bitboard.New(), multiPV: 1, workers: workers, name: name, cacheDir: egtb.DefaultCacheDir(),
-		algo: defaultAlgo, hashMB: defaultHashMB, jobDone: make(chan *egtb.Set, 1), searchDone: make(chan searchEnd, 1)}
+		algo: defaultAlgo, hashMB: defaultHashMB, mobility: defaultMobility, jobDone: make(chan *egtb.Set, 1), searchDone: make(chan searchEnd, 1)}
 	e.send("%s", About)
 	e.flush()
 	lines := make(chan string)
@@ -152,6 +153,7 @@ func (e *Engine) command(words []string) bool {
 		e.send("option name Threads type spin default %d min 1 max 64", e.workers)
 		e.send("option name Hash type spin default %d min %d max 65536", defaultHashMB, minHashMB)
 		e.send("option name Search type combo default %s var none var mateab var matepn var matelist", defaultAlgo)
+		e.send("option name MatePnMobility type combo default %s var on var off var lazy", defaultMobility)
 		e.send("option name EgtbWriteCache type check default false")
 		e.send("option name EgtbGenerate5 type check default false")
 		e.send("option name EgtbGenerate6 type check default false")
@@ -229,6 +231,8 @@ func (e *Engine) setOption(words []string) {
 		e.hashMB = max(minHashMB, n) // applied by the next search
 	case strings.EqualFold(name, "Search") && isAlgo(value):
 		e.algo = strings.ToLower(value)
+	case strings.EqualFold(name, "MatePnMobility") && isMobility(value):
+		e.mobility = strings.ToLower(value)
 	case strings.EqualFold(name, "EgtbWriteCache"):
 		e.writeCache = flag
 		if flag && e.set != nil {

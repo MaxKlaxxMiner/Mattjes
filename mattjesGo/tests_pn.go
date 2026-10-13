@@ -23,9 +23,10 @@ import (
 // ProofPositions, counted by matelist): nodes / proof = how much more than
 // the proof was searched.
 //
-// Options is a set of letters: m = mobility initialisation, e/E/x/X = 1+epsilon
-// thresholds with epsilon 1/8, 1/2, 1, 2, f = depth-free final entries,
-// t = endgame tables as oracle, i = iterative deepening.
+// Options is a set of letters: m = mobility initialisation, l = lazy mobility
+// (1/1 leaves, the move count when a node is entered; overrides m), e/E/x/X =
+// 1+epsilon thresholds with epsilon 1/8, 1/2, 1, 2, f = depth-free final
+// entries, t = endgame tables as oracle, i = iterative deepening.
 func matepnSolve(maxMateIn int, sizeMB int, codec string, options string) {
 	runMatepn(func(p chess.MatePosition) bool { return p.MateIn <= maxMateIn }, sizeMB, codec, options)
 }
@@ -36,7 +37,15 @@ func matepnSolveNamed(name string, sizeMB int, codec string, options string) {
 
 func runMatepn(selected func(p chess.MatePosition) bool, sizeMB int, codecName string, options string) {
 	has := func(o byte) bool { return strings.IndexByte(options, o) >= 0 }
-	mobility, final, tables, iterative, mated := has('m'), has('f'), has('t'), has('i'), has('M')
+	lazy, final, tables, iterative, mated := has('l'), has('f'), has('t'), has('i'), has('M')
+	mobility := has('m') && !lazy
+	mobilityName := "off"
+	switch {
+	case lazy:
+		mobilityName = "lazy"
+	case mobility:
+		mobilityName = "on"
+	}
 	epsilon := 0 // in eighths: e = 1/8, E = 1/2, x = 1, X = 2
 	for _, o := range []struct {
 		letter byte
@@ -66,7 +75,7 @@ func runMatepn(selected func(p chess.MatePosition) bool, sizeMB int, codecName s
 	if iterative {
 		mode = "iterative deepening"
 	}
-	fmt.Printf("=== matepn / df-pn, %s, direct-mapped TT %d MB (%d value bits), codec %s, mobility %v, epsilon %d/8, final %v, mated %v, %s ===\n", mode, sizeMB, table.ValueBits(), codec.Name(), mobility, epsilon, final, mated, title)
+	fmt.Printf("=== matepn / df-pn, %s, direct-mapped TT %d MB (%d value bits), codec %s, mobility %s, epsilon %d/8, final %v, mated %v, %s ===\n", mode, sizeMB, table.ValueBits(), codec.Name(), mobilityName, epsilon, final, mated, title)
 	ok := true
 	var totalNodes uint64
 	var totalTime time.Duration
@@ -82,6 +91,7 @@ func runMatepn(selected func(p chess.MatePosition) bool, sizeMB int, codecName s
 		table.Clear()
 		table.ResetStats()
 		s := matepn.New(oracle, table, codec, mobility)
+		s.LazyMobility = lazy
 		s.Epsilon, s.Final, s.Mated = epsilon, final, mated
 		start := time.Now()
 		depthStart := start

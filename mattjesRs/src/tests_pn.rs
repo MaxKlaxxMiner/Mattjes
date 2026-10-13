@@ -13,8 +13,9 @@ use crate::tt::{self, TransTable};
 
 /// Runs the reference positions up to `max_mate_in` moves with df-pn: a
 /// direct-mapped table of `size_mb`, pn/dn packed by codec ("sat" or "float"),
-/// options as letters: m = mobility initialisation, e/E/x/X = 1+epsilon
-/// thresholds with epsilon 1/8, 1/2, 1, 2, f = depth-free final entries,
+/// options as letters: m = mobility initialisation, l = lazy mobility (1/1
+/// leaves, the move count when a node is entered; overrides m), e/E/x/X =
+/// 1+epsilon thresholds with epsilon 1/8, 1/2, 1, 2, f = depth-free final entries,
 /// t = endgame tables as oracle, i = iterative deepening (the shortest mate;
 /// otherwise a single search at the known depth 2*mate_in-1, the yardstick run).
 pub fn matepn_solve(max_mate_in: u32, size_mb: usize, codec: &str, options: &str) {
@@ -41,7 +42,15 @@ fn run_matepn(selected: &dyn Fn(&MatePosition) -> bool, size_mb: usize, codec: &
 
 fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, oracle: O, selected: &dyn Fn(&MatePosition) -> bool, options: &str) {
     let has = |o: char| options.contains(o);
-    let (mobility, final_entries, tables, iterative, mated) = (has('m'), has('f'), has('t'), has('i'), has('M'));
+    let (lazy, final_entries, tables, iterative, mated) = (has('l'), has('f'), has('t'), has('i'), has('M'));
+    let mobility = has('m') && !lazy;
+    let mobility_name = if lazy {
+        "lazy"
+    } else if mobility {
+        "on"
+    } else {
+        "off"
+    };
     let mut epsilon = 0;
     for (letter, eps) in [('e', 1), ('E', 4), ('x', 8), ('X', 16)] {
         if has(letter) {
@@ -54,7 +63,7 @@ fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, 
         (table.slots() * tt::ENTRY_BYTES) >> 20,
         table.value_bits(),
         codec.name(),
-        mobility,
+        mobility_name,
         epsilon,
         final_entries,
         mated,
@@ -74,6 +83,7 @@ fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, 
         t.clear();
         t.reset_stats();
         let mut s = matepn::Searcher::new(oracle, t, codec, mobility);
+        s.lazy_mobility = lazy;
         s.epsilon = epsilon;
         s.final_entries = final_entries;
         s.mated = mated;

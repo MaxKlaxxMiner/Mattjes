@@ -67,7 +67,9 @@ frischen Kinder sehen zunächst gleich aus), also die Besuchszahl.
 - Testbank: `matepnSolve(15, 256, "sat", "mEf")` und mit `l` statt `m` sowie ohne
   beides, Go und Rust müssen je Variante **besuchsgenau** gleich zählen (die
   Regressionszahlen für `mEf` stehen in `docs/m4-mate-search.md`: KQ-KN 181.065
-  Besuche, KR-KR 1.125.947; `mEfi` KQ-KN 7,9 Mio.).
+  Besuche, KR-KR 1.125.947; `mEfi` KQ-KN 7,9 Mio.). **Überholt (2026-10-13):**
+  seit abff3f2 zählt KQ-KN 368.362, und die Zahl schwankt allein mit der
+  Tabellengröße um Faktor 4, siehe Schritt 5 in `docs/m4-mate-search.md`.
 - Benchmark in Arena oder per Treiber-Skript (Muster in der Memory-Notiz
   "UCI test driver": `coproc`, auf `bestmove` warten): je Variante `go movetime
   120000`, notieren: Zeit und Besuche bis Tiefe 15, Zeit und Besuche bis alle zwölf
@@ -81,6 +83,41 @@ frischen Kinder sehen zunächst gleich aus), also die Besuchszahl.
 - Ergebnis in `docs/m4-mate-search.md` als neuen Abschnitt eintragen (Tabelle mit
   Variante, Besuche, Zeit je Stellung), Vorgabe der Option auf die beste Variante
   setzen, `CLAUDE.md` nachziehen.
+
+## Stand der Umsetzung (2026-10-13)
+
+Eingebaut in Go und Rust: Option `MatePnMobility` (`on`/`off`/`lazy`), Feld
+`Searcher.LazyMobility` / `lazy_mobility`, Testbank-Buchstabe `l` (überstimmt `m`),
+Kopfzeile nennt `mobility on|off|lazy`. Nichts anderes angefasst.
+
+Beim Einbau zeigte sich, dass Variante C anders aussehen muss als oben skizziert: Die
+Zuganzahl an den Elternknoten "zurückgeben" ist überflüssig, denn `mid` liefert dem
+Elternknoten ohnehin die Zahlen des betretenen Kindes, und mit 1/1-Enkeln sind das
+genau (Züge, 1) beim Verteidiger und (1, Züge) beim Angreifer, also die Mobilität.
+Variante B erzeugt die Mobilität damit von selbst, nur einen Besuch später und mit
+voller Enkel-Expansion (Keys, Prefetch, zwei Sondierungen pro Enkel, Eintrag).
+`lazy` setzt deshalb hier an: Beim Betreten eines Knotens, direkt nach `terminal`
+(wo der Generator sowieso läuft), nimmt `mid` die eigene Zuganzahl als erste
+Schätzung und kehrt sofort zurück, wenn sie die Schwelle schon reißt, ohne einen
+Enkel anzufassen. Das sind exakt die Zahlen, die die Expansion über frische Enkel
+ergäbe; nur Enkel, die bereits in der Tabelle stehen, werden bis zum nächsten Besuch
+übersehen. Wo das spart: Verteidigerknoten, deren Summe die Schwelle reißt, bevor
+alle frischen Kinder betreten sind (A hat dort alle Blätter vorab bezahlt). Wo es
+kostet: Angreiferknoten müssen jedes frische Kind einmal betreten, bevor ihr pn über
+1 steigt (A kennt die Zahl ohne Besuch, `lazy` zahlt Besuch plus Eintrag).
+
+## Ergebnis (2026-10-13)
+
+Gemessen auf der Benchmark-Stellung mit Hash 16384 (Rust, ein Thread, Tabellen
+in `docs/m4-mate-search.md`, Schritt 5): `on` 70,5 s mit 17,8 Mio. Besuchen,
+`lazy` 83,8 s mit 98,7 Mio., `off` 114,4 s mit 43,0 Mio.; auf dem Angreiferpfad
+nach Nh2 bis Tiefe 21 `on` 450 s, `lazy` 481 s, `off` nach Tiefe 19 bei 544 s
+gestoppt. `lazy` macht den Besuch viermal billiger, braucht aber fünfmal so
+viele; `off` zahlt beides. **Die Vorgabe bleibt `on`**, Option und Buchstabe
+bleiben als Schalter. Die Erwartung unten (B könnte netto positiv sein, C nahe
+an A) hat sich nicht bestätigt: Frische Angreiferkinder sind ohne Vorprüfung
+ununterscheidbar, und jedes braucht einen eigenen Besuch, bevor sein pn über 1
+steigt.
 
 ## Erwartung und Fallen
 

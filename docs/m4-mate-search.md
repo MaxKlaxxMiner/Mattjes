@@ -503,3 +503,124 @@ Zwei weitere Ideen aus dem Gespräch, vorerst nur notiert:
   kanonisieren (die Transformationen aus `egtb` existieren): acht Spiegelbilder
   werden ein Eintrag. Für KQ-KBN würde das die Liste von 700 Mio. auf rund
   90 Mio. Stellungen bringen (Spitze um 40 GB, zuhause machbar).
+
+## Schritt 5: Blatt-Initialisierung als Messexperiment (2026-10-13)
+
+Handout `docs/handout-matepn-mobility.md`: Die Mobilität neuer Blätter (Orakel
+plus Generator pro frischem Kind) war 37 % des Profils. Drei Varianten als
+UCI-Option `MatePnMobility` und Testbank-Buchstaben: `on` (`m`, bisher),
+`off` (1/1-Blätter, keine Vorprüfung), `lazy` (`l`: 1/1-Blätter, und beim
+Betreten nimmt `mid` die eigene Zuganzahl als erste Schätzung und kehrt ohne
+Enkel-Expansion zurück, wenn sie die Schwelle schon reißt). Go und Rust zählen
+in allen drei Varianten besuchsgenau gleich.
+
+**Vorweg eine Entdeckung an der Messgröße.** Die Regressionszahl KQ-KN 181.065
+Besuche (`mEf`, 256 MB) gilt seit abff3f2 nicht mehr, dort sind es 368.362.
+Bisektion: Der Commit hat die Endeinträge der Verteidigerknoten gesalzen
+(`finalKey`), was bei ungeraden Zieltiefen keine Semantik ändert (jede
+Stellung hat dort eine feste Rolle), sondern nur die Slot-Lage in der direkten
+Tabelle und damit, welche Einträge ersetzt werden. Dass das die Besuche
+verdoppelt, zeigt der Lauf über Tabellengrößen (Go, Arbeitsrechner, Zeit eines
+Einzellaufs):
+
+| TT | `on` Besuche | Zeit | `off` Besuche | Zeit | `lazy` Besuche | Zeit |
+|---|---|---|---|---|---|---|
+| 64 MB | 243.179 | 0,78 s | 903.474 | 1,96 s | 1.201.099 | 0,95 s |
+| 128 MB | 848.088 | 2,81 s | 722.077 | 1,51 s | 934.910 | 0,74 s |
+| 256 MB | 368.362 | 1,23 s | 970.937 | 2,09 s | 1.450.453 | 1,19 s |
+| 512 MB | 344.425 | 1,16 s | 1.193.924 | 2,75 s | 1.435.691 | 1,31 s |
+| 1024 MB | 213.994 | 0,78 s | 2.823.809 | 7,62 s | 2.602.209 | 2,41 s |
+| 2048 MB | 244.912 | 0,95 s | 985.463 | 2,79 s | 2.512.333 | 2,56 s |
+
+Die Besuche schwanken bei 1 bis 8 % Füllgrad um Faktor 4, und 128 MB ist
+schlechter als 64 MB: df-pn reagiert chaotisch darauf, welche wenigen tausend
+Einträge "immer ersetzen" verdrängt (ein verdrängter Beweis kostet den ganzen
+Teilbaum noch einmal). **Eine Besuchszahl bei einer Größe ist deshalb kein
+Regressionswert und kein Varianten-Vergleich**, nur die Gleichheit von Go und
+Rust bleibt als Prüfung. Das ist das stärkste Argument bisher für die
+Ersetzung nach Wert (Beweise und Endeinträge nie verdrängen), die als nächster
+`matepn`-Schritt ohnehin vorgemerkt ist; danach wären die Zahlen wieder
+belastbar.
+
+**Testbank bis Matt in 15, 256 MB** (Besuche Go = Rust, Zeit Rust, Go und Rust
+liefen gleichzeitig, Zeiten daher nur grob):
+
+| Stellung | `on` | Zeit | `off` | Zeit | `lazy` | Zeit |
+|---|---|---|---|---|---|---|
+| KQQ-K | 31 | | 1.086 | | 1.084 | |
+| KQR-K | 10.285 | 22 ms | 51.391 | 36 ms | 50.882 | 19 ms |
+| KRR-K | 86.803 | 0,15 s | 223.687 | 0,22 s | 318.089 | 0,14 s |
+| KQ-KN | 368.362 | 0,82 s | 970.937 | 1,18 s | 1.450.453 | 0,75 s |
+| KR-KR | 1.206.343 | 1,94 s | 1.975.657 | 2,22 s | 6.869.270 | 5,57 s |
+| Bauern | 953 | | 4.711 | | 4.917 | |
+| Summe | 1.672.777 | 2,93 s | 3.227.469 | 3,67 s | 8.694.695 | 6,49 s |
+
+Lesart: `off` ist in Besuchen und Zeit überall schlechter, die Vorprüfung der
+Blätter zahlt sich aus. `lazy` macht die Besuche billig (0,5 bis 0,8 µs statt
+2 bis 3 µs, weil viele Besuche nach `terminal` sofort zurückkehren) und ist
+auf KQ-KN und KRR-K zeitlich gleichauf oder vorn, braucht aber drei- bis
+fünfmal so viele Besuche und verliert auf KR-KR deutlich; mit den vielen
+Besuchen füllt es die Tabelle schneller (16 % statt 5 % bei KR-KR) und leidet
+entsprechend mehr unter Ersetzungen. Die Vorgabe bleibt `on`. Entscheidend ist
+die Benchmark-Stellung KRR-KN mit großem Hash (`test-positions.md`), die der
+Autor misst.
+
+**Benchmark KRR-KN mit großem Hash** (Messung des Autors, Rust, ein Thread,
+Hash 16384, zuhause, 2026-10-13, Stand d6cdbff plus Option; je Tiefe die Zeit
+und die Besuche, bis die Werte dieser Tiefe stehen; `mateab` mit derselben
+Tabellengröße zum Vergleich, dort Knoten statt Besuche).
+
+Schwarz am Zug, Wurzel = Verteidiger, `8/8/4k3/8/8/8/RK6/2R2n2 b - - 1 1`:
+
+| Tiefe | Züge | `off` | `on` | `lazy` | `mateab` |
+|---|---|---|---|---|---|
+| 8 | Kf7 (−M4) | 2,7 s, 337 Tsd. | 0,3 s, 81 Tsd. | 0,3 s, 473 Tsd. | 0,06 s, 273 Tsd. |
+| 12 | sieben Königszüge (−M6) | 16,9 s, 6,0 Mio. | 7,3 s, 1,7 Mio. | 8,1 s, 11,2 Mio. | 2,8 s, 12,0 Mio. |
+| 14 | Nh2 (−M7) | 41,9 s, 15,8 Mio. | 22,4 s, 5,6 Mio. | 26,0 s, 33,9 Mio. | 15,7 s, 61,5 Mio. |
+| 16 | Nd2, Ne3 (−M8) | 114,3 s, 43,0 Mio. | 70,3 s, 17,8 Mio. | 83,8 s, 98,7 Mio. | 53,8 s, 198 Mio. |
+| 18 | Ng3 (−M9) | 114,4 s, 43,0 Mio. | 70,5 s, 17,8 Mio. | 83,8 s, 98,7 Mio. | 115,7 s, 414 Mio. |
+| µs je Besuch | | 2,7 | 4,0 | 0,85 | 0,28 |
+
+Weiß am Zug nach Nh2, Wurzel = Angreifer, `8/8/4k3/8/8/8/RK5n/2R5 w - - 2 2`,
+27 Züge, Matt in 7 (`off` nach Tiefe 19 von Hand gestoppt, die anderen nach
+Tiefe 21; die 16 übrigen Züge sind länger als Matt in 11):
+
+| Tiefe | Züge | `off` | `on` | `lazy` | `mateab` |
+|---|---|---|---|---|---|
+| 13 | Rc5 (M7) | 27,3 s, 11,4 Mio. | 13,9 s, 3,5 Mio. | 15,8 s, 21,2 Mio. | 6,9 s, 3,9 Mio. |
+| 15 | Ra5 (M8) | 88,0 s, 34,9 Mio. | 48,7 s, 12,5 Mio. | 59,4 s, 73,0 Mio. | 25,3 s, 94,7 Mio. |
+| 19 | Ka3, Kb3, Kc3, Ra3, Rc3, Re1+, Rh1 (M10) | 544 s, 199 Mio. | 368 s, 92,6 Mio. | 407 s, 412 Mio. | 382 s, 1,31 Mrd. |
+| 21 | Kc2, Ka1, Kb1 (M11) | gestoppt | 450 s, 107 Mio. | 481 s, 475 Mio. | 858 s, 2,81 Mrd. |
+| µs je Besuch | | 2,7 | 4,2 | 1,0 | 0,31 |
+
+Lesart:
+
+- **`on` gewinnt auf beiden Stellungen, die Vorgabe bleibt `on`.** `lazy`
+  braucht 4,4- bis 5,5-mal so viele Besuche zu einem Viertel der Kosten pro
+  Besuch und landet 19 % (Verteidiger) bzw. 7 % (Angreifer) hinter `on`; `off`
+  liegt 48 bis 62 % zurück. Die 37 % Blattkosten im Profil sind echt, aber die
+  Vorprüfung spart mehr Besuche, als sie kostet: Ohne sie muss jedes frische
+  Angreiferkind einmal betreten werden (Besuch plus Eintrag), bevor sein pn über
+  1 steigt, und davon gibt es auf jeder zweiten Ebene 27 pro Knoten.
+- **`mateab` findet das erste Matt schneller, `matepn` alle.** Ein
+  `mateab`-Knoten kostet 0,3 µs, ein `matepn`-Besuch 4 µs; bis Tiefe 13 bzw. 16
+  liegt `mateab` deshalb vorn (6,9 gegen 13,9 s, 53,8 gegen 70,3 s). Jede
+  weitere Tiefe kostet `mateab` aber den Raum noch einmal: Ng3 bei Tiefe 18
+  kostet `mateab` 62 s und `matepn` 0,2 s, Tiefe 21 des Angreifers 858 gegen
+  450 s. Je länger die Matts, desto deutlicher gewinnt df-pn.
+- **4 µs je Besuch bei 16 GB gegen 3 µs bei 256 MB** (Mechanik-Messgröße in
+  `test-positions.md`: 16,5 s für 5,53 Mio. Besuche). Die große Tabelle kostet
+  bei jeder Sondierung einen TLB-Miss zusätzlich zum Cache-Miss; Abhilfe wären
+  2-MB-Seiten (Large Pages), notiert, nicht Teil dieses Schritts.
+- **Fallen beim Messen:** Die erste Tiefenzeile des ersten Laufs einer Sitzung
+  enthält die Seitenfehler der frisch angelegten 16-GB-Tabelle (hier 2,7 s bei
+  `off`, beim Einzellauf von `on` am Vormittag 2,4 s für dieselben 81 Tsd.
+  Besuche, die jetzt 0,3 s brauchen). Und die Tabelle bleibt zwischen Suchen
+  stehen, nur `ucinewgame` leert sie; Varianten deshalb aus frischer Engine oder
+  nach `ucinewgame` messen. Der `on`-Lauf deckt sich mit dem Einzellauf (70,5
+  gegen 72,7 s), die Reihenfolge hat hier also nicht sichtbar verzerrt.
+
+Damit ist das Messexperiment abgeschlossen: Option und Testbank-Buchstabe
+bleiben als Schalter für spätere Vergleiche, die Suche läuft weiter mit
+Mobilität. Nächster `matepn`-Schritt: Ersetzung nach Wert (Beweise und
+Endeinträge nie verdrängen), danach das Beweisziel "Gewinn".

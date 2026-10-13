@@ -107,8 +107,12 @@ func experiments() {
 	// egtbProbe("8/7k/1p6/1P6/7K/8/8/8 w - - 0 1", "8/7k/1p6/1P6/7K/8/8/8 b - - 0 1") // KP-KP study: win in 49 plies / draw, with the line from the tables
 	// matelistSolve("KP-KP", 0, 200, 30_000_000) // independent check of the table value: mate in 25 in 4 s, 2.9 M positions
 
-	// --- milestone 4, step 4: df-pn (sizeMB, codec "sat"/"float", options m mobility, e/E/x/X epsilon 1/8 1/2 1 2, f final entries, t tables, i iterative) ---
-	// matepnSolve(15, 256, "sat", "mEf") // KQ-KN 181,065 visits in 0.8 s, KR-KR 1,125,947 in 3.6 s
+	// --- milestone 4, step 4: df-pn (sizeMB, codec "sat"/"float", options m mobility, l lazy mobility, e/E/x/X epsilon 1/8 1/2 1 2, f final entries, t tables, i iterative) ---
+	// matepnSolve(15, 256, "sat", "mEf") // KQ-KN 368,362 visits in 1.2 s, KR-KR 1,206,343 in 2.9 s (the visits swing 4x with the table size, m4-mate-search.md step 5)
+	// --- mobility experiment (docs/handout-matepn-mobility.md): the three leaf initialisations, visits must match Rust per variant ---
+	// matepnSolve(15, 256, "sat", "mEf")  // A: mobility, 1,672,777 visits in total (the default, won the benchmark: 70.5 s)
+	// matepnSolve(15, 256, "sat", "Ef")   // B: 1/1 leaves, 3,227,469 visits (benchmark 114.4 s)
+	// matepnSolve(15, 256, "sat", "lEf")  // C: lazy, the move count when a node is entered, 8,694,695 visits (benchmark 83.8 s)
 	// matepnSolveNamed("KBB-K", 1024, "sat", "mEf") // proven after 109.5 M visits, 336 s (Rust), proof tree incomplete (27 M replaced)
 	// --- five pieces with the endgame tables as oracle: the first case where search and tables must cooperate, open how long ---
 	// mateabSolveTablesNamed("KQ-KBN", 1024, true)

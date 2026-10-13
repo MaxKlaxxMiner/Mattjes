@@ -97,6 +97,13 @@ pub struct Searcher<O: Oracle, T: TransTable, C: Codec> {
     table: T,
     codec: C,
     mobility: bool,
+    /// With mobility off: uses a node's own number of moves when `mid` enters
+    /// it, where the generator runs anyway. If that number alone reaches the
+    /// threshold, the node returns at once (defender: pn = moves, attacker:
+    /// dn = moves) without expanding its children. These are exactly the
+    /// numbers a full expansion over fresh 1/1 children would produce, so
+    /// only children already in the table are missed until the next visit.
+    pub lazy_mobility: bool,
     /// Widens the child's threshold from second+1 to second*(1+epsilon)
     /// (Pawlewicz & Lew 2007), in eighths: 0 = off, 1 = 1/8, 4 = 1/2.
     pub epsilon: u32,
@@ -125,7 +132,7 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
     /// `mobility` initialises unknown children with their number of legal moves
     /// instead of 1 (one generator call per new leaf).
     pub fn new(oracle: O, table: T, codec: C, mobility: bool) -> Self {
-        Searcher { oracle, table, codec, mobility, epsilon: 0, final_entries: false, mated: false, progress: None, progress_every: PROGRESS_NODES, stop: None, aborted: false, nodes: 0, leaves: 0, tt_hits: 0, final_hits: 0 }
+        Searcher { oracle, table, codec, mobility, lazy_mobility: false, epsilon: 0, final_entries: false, mated: false, progress: None, progress_every: PROGRESS_NODES, stop: None, aborted: false, nodes: 0, leaves: 0, tt_hits: 0, final_hits: 0 }
     }
 
     /// Polls the stop flag every `STOP_NODES` visits.
@@ -258,6 +265,14 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
             return (pn, dn);
         }
         let attacker = depth % 2 == 1;
+        if self.lazy_mobility {
+            // the node's mobility as its first estimate, before any child is touched
+            let (pn, dn) = if attacker { (1, n as u32) } else { (n as u32, 1) };
+            if pn >= th_pn || dn >= th_dn {
+                self.store(b, depth, pn, dn);
+                return (pn, dn);
+            }
+        }
 
         // expand: numbers of all children from the table or as fresh leaves. The
         // keys of all children are computed and their slots prefetched first, so

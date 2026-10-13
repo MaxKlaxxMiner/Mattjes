@@ -133,6 +133,7 @@ Zwei neue Optionen:
 |---|---|
 | `Search` | Combo `none`, `mateab`, `matepn` (Vorgabe), `matelist`: der Algorithmus aus Milestone 4 für Stellungen, die die Tabellen nicht entscheiden |
 | `Hash` | MB für die Transposition Table der Suche (Vorgabe 256, Minimum 32, weil `mateab` 21 Value-Bits braucht); bei `matelist` das Stellungsbudget (128 Byte pro Stellung) |
+| `MatePnMobility` | Combo `on` (Vorgabe), `off`, `lazy` (seit 2026-10-13): wie `matepn` frische Blätter initialisiert, `on` = Zuganzahl per Orakel und Generator pro Blatt, `off` = 1/1, `lazy` = 1/1 und beim Betreten die eigene Zuganzahl als erste Schätzung, die bei gerissener Schwelle ohne Enkel-Expansion zurückkehrt; Messexperiment aus `docs/handout-matepn-mobility.md` |
 
 **Wann gesucht wird:** Zuerst antwortet die Tabellenstufe wie bisher. Sie gilt als
 abschließend, wenn es keine Züge gibt, der beste Zug ein bekannter Gewinn ist oder alle

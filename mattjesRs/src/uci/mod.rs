@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use crate::bitboard::Board;
 use crate::chess::{new_buffer, Move, Piece};
 use crate::egtb::{self, Control, Material, Set, Value, MAX_PLIES};
-use search::{GoParams, SearchEnd, SearchTable, DEFAULT_ALGO, DEFAULT_HASH_MB, MAX_SEARCH_PLIES, MIN_HASH_MB};
+use search::{GoParams, SearchEnd, SearchTable, DEFAULT_ALGO, DEFAULT_HASH_MB, DEFAULT_MOBILITY, MAX_SEARCH_PLIES, MIN_HASH_MB};
 
 /// Reported in "id name"; it follows the milestone that is being worked on.
 pub const VERSION: &str = "0.6";
@@ -71,6 +71,7 @@ pub struct Engine<W: Write + Send + 'static> {
     cache_dir: PathBuf, // EgtbPath
     algo: String,      // Search: the algorithm for positions the tables do not settle
     hash_mb: usize,    // Hash: the transposition table of the search
+    mobility: String,  // MatePnMobility: on (leaves start with their move count), off (1/1), lazy (move count when entered)
     /// The search's transposition table, allocated on the first search,
     /// dropped when a generation starts (the generator needs the memory).
     tables: Option<SearchTable>,
@@ -118,6 +119,7 @@ pub fn run<R: Read + Send + 'static, W: Write + Send + 'static>(input: R, out: W
         cache_dir: egtb::default_cache_dir(),
         algo: DEFAULT_ALGO.to_string(),
         hash_mb: DEFAULT_HASH_MB,
+        mobility: DEFAULT_MOBILITY.to_string(),
         tables: None,
         table_mb: 0,
         table_algo: String::new(),
@@ -204,6 +206,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                 self.send(&format!("option name Threads type spin default {} min 1 max 64", self.workers));
                 self.send(&format!("option name Hash type spin default {} min {} max 65536", DEFAULT_HASH_MB, MIN_HASH_MB));
                 self.send(&format!("option name Search type combo default {} var none var mateab var matepn var matelist", DEFAULT_ALGO));
+                self.send(&format!("option name MatePnMobility type combo default {} var on var off var lazy", DEFAULT_MOBILITY));
                 self.send("option name EgtbWriteCache type check default false");
                 self.send("option name EgtbGenerate5 type check default false");
                 self.send("option name EgtbGenerate6 type check default false");
@@ -287,6 +290,8 @@ impl<W: Write + Send + 'static> Engine<W> {
             self.hash_mb = number.unwrap_or(MIN_HASH_MB).max(MIN_HASH_MB); // applied by the next search
         } else if name.eq_ignore_ascii_case("Search") && search::is_algo(&value) {
             self.algo = value.to_ascii_lowercase();
+        } else if name.eq_ignore_ascii_case("MatePnMobility") && search::is_mobility(&value) {
+            self.mobility = value.to_ascii_lowercase();
         } else if name.eq_ignore_ascii_case("EgtbWriteCache") {
             self.write_cache = flag;
             if flag {

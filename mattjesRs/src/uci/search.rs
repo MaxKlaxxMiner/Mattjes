@@ -30,6 +30,9 @@ use crate::tt::{self, TransTable};
 /// The Search option's default: df-pn proves mates with the fewest nodes
 /// (docs/m4-mate-search.md).
 pub const DEFAULT_ALGO: &str = "matepn";
+/// The MatePnMobility option's default: how df-pn initialises fresh leaves
+/// (docs/handout-matepn-mobility.md).
+pub const DEFAULT_MOBILITY: &str = "on";
 /// The Hash option's default (the transposition table of mateab and matepn,
 /// the position budget of matelist); the minimum is what mateab's 21 value
 /// bits need from a direct-mapped table (2^21 slots).
@@ -51,6 +54,10 @@ const PROGRESS_EVERY: u64 = 1 << 16;
 
 pub fn is_algo(s: &str) -> bool {
     matches!(s.to_ascii_lowercase().as_str(), "none" | "mateab" | "matepn" | "matelist")
+}
+
+pub fn is_mobility(s: &str) -> bool {
+    matches!(s.to_ascii_lowercase().as_str(), "on" | "off" | "lazy")
 }
 
 /// What "go" asks for: infinite, a depth bound in plies (mate N = 2N-1 plies,
@@ -286,7 +293,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                 s.store(true, Ordering::Relaxed);
             });
         }
-        let (root, algo, max_plies, multi_pv) = (self.board, self.algo.clone(), p.max_plies, self.multi_pv);
+        let (root, algo, max_plies, multi_pv, mobility) = (self.board, self.algo.clone(), p.max_plies, self.multi_pv, self.mobility.clone());
         let table = if algo == "matelist" { None } else { self.search_table(&algo) };
         let max_positions = (self.hash_mb << 20) / MATELIST_BYTES_PER_POSITION;
         let set = self.set.take().expect("tables are loaded before searching");
@@ -313,7 +320,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                         (c, Some(SearchTable::Direct(t)))
                     }
                     ("matepn", Some(SearchTable::Direct(t))) => {
-                        let (c, t) = run_matepn(&root, max_plies, multi_pv, oracle, t, &stop, &rep);
+                        let (c, t) = run_matepn(&root, max_plies, multi_pv, oracle, t, &mobility, &stop, &rep);
                         (c, Some(SearchTable::Direct(t)))
                     }
                     ("matelist", table) => (run_matelist(&root, max_plies, max_positions, &stop, &rep), table),
@@ -552,11 +559,14 @@ fn run_mateab<W: Write + Send + 'static, T: TransTable + 'static>(root: &Board, 
     (core, s.into_table().expect("the table was given"))
 }
 
-/// df-pn (matepn, the measured best settings: mobility, epsilon 1/2, final
-/// entries), direct-mapped table.
-fn run_matepn<W: Write + Send + 'static, T: TransTable + 'static>(root: &Board, max_plies: usize, multi_pv: usize, oracle: Tables<'_>, table: T, stop: &Arc<AtomicBool>, rep: &Arc<Reporter<W>>) -> (Core, T) {
+/// df-pn (matepn, the measured best settings: epsilon 1/2, final entries;
+/// the leaf initialisation follows the MatePnMobility option), direct-mapped
+/// table.
+#[allow(clippy::too_many_arguments)]
+fn run_matepn<W: Write + Send + 'static, T: TransTable + 'static>(root: &Board, max_plies: usize, multi_pv: usize, oracle: Tables<'_>, table: T, mobility: &str, stop: &Arc<AtomicBool>, rep: &Arc<Reporter<W>>) -> (Core, T) {
     let bits = table.value_bits();
-    let mut s = matepn::Searcher::new(oracle, table, matepn::Saturating { bits }, true);
+    let mut s = matepn::Searcher::new(oracle, table, matepn::Saturating { bits }, mobility == "on");
+    s.lazy_mobility = mobility == "lazy";
     s.epsilon = 4;
     s.final_entries = true;
     s.stop = Some(stop.clone());
