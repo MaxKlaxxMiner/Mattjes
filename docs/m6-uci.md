@@ -69,18 +69,30 @@ Vier Optionen, alle mit Vorgabe aus:
 | `EgtbGenerate6` | fehlende Sechs-Steiner (Stunden, 23 bis 68 GB RAM), nur mit viel RAM sinnvoll |
 | `EgtbPath` | Cache-Ordner, Vorgabe `mattjes-egtb-cache` neben der Binary |
 
-Ablauf: Eine Erzeugung startet **nur bei `go infinite`**, wenn die Tabelle des
+Ablauf (seit 2026-10-16 **bei jedem `go`, neben der Suche**; bis dahin nur bei
+`go infinite` und anstelle der Suche): Eine Erzeugung startet, wenn die Tabelle des
 Wurzelmaterials fehlt und die Option es erlaubt. Die Engine antwortet zuerst wie bisher
-(ohne Tabelle: erster legaler Zug), hält `bestmove` wie bei `go infinite` üblich zurück
-und meldet `info string egtb: generating KBBBK (231 MB table, about 346 MB RAM), stop
-pauses it`. Die Erzeugung läuft in einem eigenen Thread auf einer Kopie der geladenen
-Tabellen (`Set.Fork`, 173 MB für die Basis), damit die Hauptschleife jederzeit `isready`
-beantwortet und weitere Kommandos liest. `stop` schickt das zurückgehaltene `bestmove`
-und **pausiert** die Erzeugung: Die Worker halten an der nächsten Chunk-Grenze an
-(Millisekunden), alles Gerechnete bleibt im RAM. Das nächste `go infinite` mit demselben
-Material setzt genau dort fort; ein anderes Material verwirft den pausierten Job. Ist die
-Tabelle fertig, übernimmt die Hauptschleife sie (`Set.Adopt`), schreibt sie bei
-`EgtbWriteCache` in den Cache und rechnet bei laufendem `go infinite` die Antwort neu:
+aus den Tabellen, startet die Suche wie sonst auch in ihrem Thread und daneben die
+Erzeugung in einem eigenen Thread auf einer Kopie der geladenen Tabellen (`Set.Fork`,
+173 MB für die Basis), damit die Hauptschleife jederzeit `isready` beantwortet und
+weitere Kommandos liest. Die Erzeugung bekommt **physische Kerne minus eins** Worker
+(`egtb.PhysicalCores`, durch `Threads` begrenzt; beim Autor 5 neben dem Such-Thread auf
+6 Kernen mit 12 Threads, damit sich die Suche keinen Kern mit einem SMT-Geschwister
+teilt), die Hash-Tabelle der Suche bleibt stehen, solange die RAM-Schätzung neben sie
+passt. `stop` beendet die Suche wie sonst und **pausiert** die Erzeugung: Die Worker
+halten an der nächsten Chunk-Grenze an (Millisekunden), alles Gerechnete bleibt im RAM.
+Das nächste `go` mit demselben Material setzt genau dort fort; ein anderes Material
+verwirft den pausierten Job. Ist die Tabelle fertig, stoppt die Hauptschleife die
+laufende Suche (ihr Teilergebnis wird verworfen, weil das Set sich ändert; der
+Rust-Such-Thread besitzt es sogar), übernimmt die Tabelle (`Set.Adopt`), schreibt sie
+bei `EgtbWriteCache` in den Cache und rechnet die Antwort neu: Tabellenstufe, und wo
+die Tabelle nur Eimer liefert (geschrieben = quantisiert), die Suche noch einmal mit
+der Restzeit des ursprünglichen `go` (`go infinite` läuft als `go infinite` weiter).
+Benchmark-Stellung KRR-KN ohne `5-KRRKN.bin`, `go movetime 120000`, Arbeitsrechner:
+Rust antwortet nach 26,8 s mit allen zwölf exakten Werten (Erzeugung 26,0 s mit fünf
+Workern, die Suche kam nebenher bis Tiefe 15), Go nach 30,6 s; Suche allein 70 s,
+Erzeugung allein mit zwölf Workern 20 s. Mit `EgtbWriteCache` kommt die Tabelle
+quantisiert an und die neu gestartete Suche löst die Eimer in rund 0,3 s auf.
 
 ```
 info string egtb: generating KBBBK (231 MB table, about 346 MB RAM), stop pauses it

@@ -75,6 +75,9 @@ type Engine struct {
 	pendingBest string
 	tableBest   bool       // pendingBest has a table value (a search without result keeps it)
 	rootTable   []rootMove // the root moves the table stage knows exactly, handed to the search's root driver
+	lastGo      goParams   // the parameters of the last "go": a search is repeated with them when a generation finishes beside it
+	deadline    time.Time  // when the running timed search ends (the repeat gets the rest)
+	restart     bool       // the running search is stopped to be repeated: no result lines, no bestmove
 	job         *job
 	jobDone     chan *egtb.Set
 	// the running search, if any
@@ -176,10 +179,12 @@ func (e *Engine) command(words []string) bool {
 		e.stopSearch() // a GUI sends stop first; if not, the old search ends here
 		p := e.parseGo(words[1:])
 		e.infinite = p.infinite
+		e.lastGo = p
 		settled := e.search()
-		if e.infinite && e.maybeGenerate() {
-			return true // the generation runs instead of a search; its result answers again
-		}
+		// a missing table of the root material is generated in the background
+		// beside the search (every "go", not only infinite); when it is ready,
+		// finishJob answers again with it
+		e.maybeGenerate()
 		if !settled && e.algo != "none" {
 			e.startSearch(p)
 			return true
@@ -418,8 +423,9 @@ func (e *Engine) search() bool {
 }
 
 // maybeGenerate starts (or resumes) the background generation of the root
-// material's table during a "go infinite", when the options allow it. Returns
-// whether a generation is running afterwards.
+// material's table on every "go", when the options allow it; it runs beside
+// the search with backgroundWorkers threads and finishJob answers again when
+// it is ready. Returns whether a generation is running afterwards.
 func (e *Engine) maybeGenerate() bool {
 	m, ok := egtb.MaterialOf(&e.board)
 	if !ok || m.Pieces() <= 4 || e.board.Castling != 0 {
@@ -466,10 +472,17 @@ func (e *Engine) startJob(m egtb.Material) bool {
 	} else {
 		e.send("info string egtb: generating %s (%d MB table, about %s RAM %s), stop pauses it", m.Name(), t.Size>>20, egtb.FormatBytes(uint64(need)), how)
 	}
-	e.dropTables() // the generator gets the search's memory
+	// the search keeps its hash table unless the generation would not fit
+	// beside it (the estimate against the free memory, which the table
+	// already took from)
+	if _, avail, ok := egtb.AvailableMemory(); ok && uint64(need) > avail && e.tableMB > 0 {
+		e.send("info string egtb: the search's hash table (%d MB) is released for the generation", e.tableMB)
+		e.dropTables()
+	}
 	j := &job{mat: m, ctrl: egtb.NewControl()}
 	e.job = j
-	workers, write := e.workers, e.writeCache
+	workers, write := e.backgroundWorkers(), e.writeCache
+	e.send("info string egtb: %d workers beside the search thread (%d cores)", workers, egtb.PhysicalCores())
 	go func() {
 		// level lines come up to 254 times per table: at most one every few seconds
 		var lastLevel time.Time
@@ -510,14 +523,20 @@ func (e *Engine) startJob(m egtb.Material) bool {
 	return true
 }
 
-// finishJob takes the generated tables over and, during a "go infinite",
-// answers again with them (searching on if the tables still do not settle
-// the position).
+// finishJob takes the generated tables over and, when a search was running
+// beside the generation (or a "go infinite" is open), answers again with
+// them: the table stage, and the search once more with the rest of the time
+// budget where the tables still do not settle the position. The running
+// search has to stop first, because the set changes under it (the Rust
+// search thread even owns it); its partial result is discarded.
 func (e *Engine) finishJob(set *egtb.Set) {
 	if e.job == nil {
 		return
 	}
-	e.stopSearch() // the set is about to change under a running search
+	again := e.searching || e.infinite
+	e.restart = e.searching
+	e.stopSearch()
+	e.restart = false
 	name := e.job.mat.Name()
 	e.job = nil
 	e.set.Adopt(set)
@@ -526,11 +545,29 @@ func (e *Engine) finishJob(set *egtb.Set) {
 	} else {
 		e.send("info string egtb: %s ready", name)
 	}
-	if e.infinite {
-		if !e.search() && e.algo != "none" {
-			e.startSearch(goParams{infinite: true, maxPlies: maxSearchPlies})
-		}
+	if !again {
+		return
 	}
+	if !e.search() && e.algo != "none" {
+		p := e.lastGo
+		if !p.infinite && p.budget > 0 {
+			p.budget = max(time.Until(e.deadline), 50*time.Millisecond)
+		}
+		e.startSearch(p)
+	} else if !e.infinite {
+		e.send("bestmove %s", e.pendingBest)
+	}
+}
+
+// backgroundWorkers is the thread count of a generation beside a running
+// search: the search needs a core of its own, and an SMT sibling would share
+// one with it, so physical cores minus one, bounded by Threads, at least one.
+func (e *Engine) backgroundWorkers() int {
+	cores := egtb.PhysicalCores()
+	if cores <= 0 {
+		cores = e.workers
+	}
+	return max(1, min(e.workers, cores)-1)
 }
 
 // rank orders root moves: wins by shortest distance, then draws, then moves

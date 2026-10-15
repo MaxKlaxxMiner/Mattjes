@@ -85,6 +85,13 @@ pub struct Engine<W: Write + Send + 'static> {
     table_best: bool,
     /// The root moves the table stage knows exactly, handed to the search's root driver.
     root_table: Vec<RootMove>,
+    /// The parameters of the last "go": a search is repeated with them when a
+    /// generation finishes beside it.
+    last_go: GoParams,
+    /// When the running timed search ends (the repeat gets the rest).
+    deadline: Option<Instant>,
+    /// The running search is stopped to be repeated: no result lines, no bestmove.
+    restart: bool,
     job: Option<Job>,
     tx: mpsc::Sender<Event>,
     // the running search, if any
@@ -129,6 +136,9 @@ pub fn run<R: Read + Send + 'static, W: Write + Send + 'static>(input: R, out: W
         pending_best: String::new(),
         table_best: false,
         root_table: Vec::new(),
+        last_go: GoParams { infinite: false, max_plies: MAX_SEARCH_PLIES, budget: None },
+        deadline: None,
+        restart: false,
         job: None,
         tx: tx.clone(),
         searching: false,
@@ -231,10 +241,12 @@ impl<W: Write + Send + 'static> Engine<W> {
                 self.stop_search(); // a GUI sends stop first; if not, the old search ends here
                 let p = self.parse_go(&words[1..]);
                 self.infinite = p.infinite;
+                self.last_go = p;
                 let settled = self.search();
-                if self.infinite && self.maybe_generate() {
-                    return true; // the generation runs instead of a search; its result answers again
-                }
+                // a missing table of the root material is generated in the
+                // background beside the search (every "go", not only infinite);
+                // when it is ready, finish_job answers again with it
+                self.maybe_generate();
                 if !settled && self.algo != "none" {
                     self.start_search(p);
                     return true;
@@ -462,8 +474,9 @@ impl<W: Write + Send + 'static> Engine<W> {
     }
 
     /// Starts (or resumes) the background generation of the root material's
-    /// table during a "go infinite", when the options allow it. Returns
-    /// whether a generation is running afterwards.
+    /// table on every "go", when the options allow it; it runs beside the
+    /// search with `background_workers` threads and `finish_job` answers again
+    /// when it is ready. Returns whether a generation is running afterwards.
     fn maybe_generate(&mut self) -> bool {
         let Some(m) = Material::of_board(&self.board) else { return false };
         if m.pieces() <= 4 || self.board.castling != 0 {
@@ -521,10 +534,20 @@ impl<W: Write + Send + 'static> Engine<W> {
             }
             None => self.send(&format!("info string egtb: generating {} ({} MB table, about {} RAM {}), stop pauses it", m.name(), size >> 20, egtb::format_bytes(need as u64), how)),
         }
-        self.drop_tables(); // the generator gets the search's memory
+        // the search keeps its hash table unless the generation would not fit
+        // beside it (the estimate against the free memory, which the table
+        // already took from)
+        if let Some((_, avail)) = egtb::available_memory() {
+            if need as u64 > avail && self.table_mb > 0 {
+                self.send(&format!("info string egtb: the search's hash table ({} MB) is released for the generation", self.table_mb));
+                self.drop_tables();
+            }
+        }
         let ctrl = Arc::new(Control::new());
         self.job = Some(Job { mat: m.clone(), ctrl: ctrl.clone() });
-        let (out, tx, workers, write) = (self.out.clone(), self.tx.clone(), self.workers, self.write_cache);
+        let workers = self.background_workers();
+        self.send(&format!("info string egtb: {} workers beside the search thread ({} cores)", workers, egtb::physical_cores()));
+        let (out, tx, write) = (self.out.clone(), self.tx.clone(), self.write_cache);
         std::thread::spawn(move || {
             // level lines come up to 254 times per table: at most one every few seconds
             let mut last_level: Option<Instant> = None;
@@ -569,18 +592,49 @@ impl<W: Write + Send + 'static> Engine<W> {
     /// Takes the generated tables over and, during a "go infinite", answers
     /// again with them (searching on if the tables still do not settle the
     /// position).
+    /// Takes the generated tables over and, when a search was running beside
+    /// the generation (or a "go infinite" is open), answers again with them:
+    /// the table stage, and the search once more with the rest of the time
+    /// budget where the tables still do not settle the position. The running
+    /// search has to stop first, because it owns the set; its partial result
+    /// is discarded.
     fn finish_job(&mut self, set: Set) {
         let Some(j) = self.job.take() else { return };
-        self.stop_search(); // the set is about to change under a running search
+        let again = self.searching || self.infinite;
+        self.restart = self.searching;
+        self.stop_search();
+        self.restart = false;
         let name = j.mat.name();
         self.set.as_mut().expect("tables are loaded before a job runs").adopt(set);
         match egtb::peak_memory() {
             Some((committed, working)) => self.send(&format!("info string egtb: {} ready, peak memory {} committed / {} working set", name, egtb::format_bytes(committed), egtb::format_bytes(working))),
             None => self.send(&format!("info string egtb: {} ready", name)),
         }
-        if self.infinite && !self.search() && self.algo != "none" {
-            self.start_search(GoParams { infinite: true, max_plies: MAX_SEARCH_PLIES, budget: None });
+        if !again {
+            return;
         }
+        if !self.search() && self.algo != "none" {
+            let mut p = self.last_go;
+            if !p.infinite && p.budget.is_some() {
+                let rest = self.deadline.map_or(Duration::ZERO, |d| d.saturating_duration_since(Instant::now()));
+                p.budget = Some(rest.max(Duration::from_millis(50)));
+            }
+            self.start_search(p);
+        } else if !self.infinite {
+            let best = self.pending_best.clone();
+            self.send(&format!("bestmove {}", best));
+        }
+    }
+
+    /// The thread count of a generation beside a running search: the search
+    /// needs a core of its own, and an SMT sibling would share one with it, so
+    /// physical cores minus one, bounded by Threads, at least one.
+    fn background_workers(&self) -> usize {
+        let mut cores = egtb::physical_cores();
+        if cores == 0 {
+            cores = self.workers;
+        }
+        self.workers.min(cores).saturating_sub(1).max(1)
     }
 
     /// Registers the material of a position beyond the base and loads its

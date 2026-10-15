@@ -245,6 +245,7 @@ func (e *Engine) startSearch(p goParams) {
 	stop := new(atomic.Bool)
 	e.stop, e.searching = stop, true
 	if p.budget > 0 {
+		e.deadline = time.Now().Add(p.budget)
 		e.timer = time.AfterFunc(p.budget, func() { stop.Store(true) })
 	}
 	root, algo, maxPlies, multiPV, mobility := e.board, e.algo, p.maxPlies, e.multiPV, e.mobility
@@ -484,6 +485,9 @@ func (e *Engine) finishSearch(r searchEnd) {
 	if e.timer != nil {
 		e.timer.Stop()
 		e.timer = nil
+	}
+	if e.restart {
+		return // stopped for a repeat with new tables (finishJob): the partial result is not reported
 	}
 	ms := r.elapsed.Milliseconds()
 	if r.matePlies != 0 && len(r.root) > 0 {

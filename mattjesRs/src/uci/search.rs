@@ -63,6 +63,7 @@ pub fn is_mobility(s: &str) -> bool {
 /// What "go" asks for: infinite, a depth bound in plies (mate N = 2N-1 plies,
 /// depth N rounded up to odd) and a time budget (movetime, or a twentieth of
 /// the remaining time plus half the increment).
+#[derive(Clone, Copy)]
 pub struct GoParams {
     pub infinite: bool,
     pub max_plies: usize,
@@ -288,6 +289,7 @@ impl<W: Write + Send + 'static> Engine<W> {
         let stop = Arc::new(AtomicBool::new(false));
         self.stop = Some(stop.clone());
         self.searching = true;
+        self.deadline = p.budget.map(|b| Instant::now() + b);
         if let Some(budget) = p.budget {
             let s = stop.clone();
             std::thread::spawn(move || {
@@ -385,6 +387,9 @@ impl<W: Write + Send + 'static> Engine<W> {
         if self.save_pending {
             self.save_pending = false;
             self.save_tables();
+        }
+        if self.restart {
+            return; // stopped for a repeat with new tables (finish_job): the partial result is not reported
         }
         let ms = r.elapsed.as_millis() as u64;
         if r.mate_plies != 0 && !r.root.is_empty() {

@@ -36,11 +36,37 @@ type memoryStatusEx struct {
 }
 
 var (
-	kernel32                 = syscall.NewLazyDLL("kernel32.dll")
-	procGetCurrentProcess    = kernel32.NewProc("GetCurrentProcess")
-	procMemoryInfo           = kernel32.NewProc("K32GetProcessMemoryInfo")
-	procGlobalMemoryStatusEx = kernel32.NewProc("GlobalMemoryStatusEx")
+	kernel32                           = syscall.NewLazyDLL("kernel32.dll")
+	procGetCurrentProcess              = kernel32.NewProc("GetCurrentProcess")
+	procMemoryInfo                     = kernel32.NewProc("K32GetProcessMemoryInfo")
+	procGlobalMemoryStatusEx           = kernel32.NewProc("GlobalMemoryStatusEx")
+	procGetLogicalProcessorInformation = kernel32.NewProc("GetLogicalProcessorInformation")
 )
+
+// PhysicalCores returns the number of processor cores of the machine, SMT
+// siblings counted once (a generation beside the search takes cores - 1
+// workers, so the search keeps a core of its own). 0 when unknown.
+func PhysicalCores() int {
+	var length uint32
+	procGetLogicalProcessorInformation.Call(0, uintptr(unsafe.Pointer(&length)))
+	if length == 0 {
+		return 0
+	}
+	buf := make([]byte, length)
+	if r, _, _ := procGetLogicalProcessorInformation.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&length))); r == 0 {
+		return 0
+	}
+	// SYSTEM_LOGICAL_PROCESSOR_INFORMATION: ProcessorMask (8), Relationship
+	// (4, RelationProcessorCore = 0), padding, union (16): 32 bytes each
+	const entry = 32
+	cores := 0
+	for off := 0; off+entry <= int(length); off += entry {
+		if *(*uint32)(unsafe.Pointer(&buf[off+8])) == 0 {
+			cores++
+		}
+	}
+	return cores
+}
 
 // AvailableMemory returns the physical memory of the machine and the part of
 // it that is free right now, in bytes.

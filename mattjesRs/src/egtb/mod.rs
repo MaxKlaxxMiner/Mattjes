@@ -16,7 +16,7 @@ mod table;
 pub use blockstore::CACHE_BYTES;
 pub use control::Control;
 #[allow(unused_imports)]
-pub use peak::{available_memory, format_bytes, peak_memory};
+pub use peak::{available_memory, format_bytes, peak_memory, physical_cores};
 #[allow(unused_imports)]
 pub use requirements::{append_log, requirement, Requirement, LOG_FILE_NAME, REQUIREMENTS};
 #[allow(unused_imports)]

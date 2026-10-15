@@ -4,9 +4,28 @@ package egtb
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
+
+// PhysicalCores returns the number of processor cores of the machine, SMT
+// siblings counted once (a generation beside the search takes cores - 1
+// workers, so the search keeps a core of its own): the distinct
+// (package, core) pairs of the sysfs topology. 0 when unknown.
+func PhysicalCores() int {
+	paths, _ := filepath.Glob("/sys/devices/system/cpu/cpu[0-9]*/topology/core_id")
+	seen := map[string]bool{}
+	for _, p := range paths {
+		core, err1 := os.ReadFile(p)
+		pkg, err2 := os.ReadFile(filepath.Join(filepath.Dir(p), "physical_package_id"))
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		seen[strings.TrimSpace(string(pkg))+":"+strings.TrimSpace(string(core))] = true
+	}
+	return len(seen)
+}
 
 // PeakMemory returns the peak virtual size and the peak resident set of the
 // process in bytes from /proc/self/status (Linux has no committed-size

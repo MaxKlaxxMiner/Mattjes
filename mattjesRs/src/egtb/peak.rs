@@ -81,6 +81,64 @@ pub fn peak_memory() -> Option<(u64, u64)> {
     Some((proc_value("/proc/self/status", "VmPeak:")?, proc_value("/proc/self/status", "VmHWM:")?))
 }
 
+/// The number of processor cores of the machine, SMT siblings counted once
+/// (a generation beside the search takes cores - 1 workers, so the search
+/// keeps a core of its own): the distinct (package, core) pairs of the sysfs
+/// topology. 0 when unknown.
+#[cfg(not(windows))]
+pub fn physical_cores() -> usize {
+    let mut seen = std::collections::HashSet::new();
+    if let Ok(entries) = std::fs::read_dir("/sys/devices/system/cpu") {
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with("cpu") || !name[3..].chars().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            let topo = e.path().join("topology");
+            if let (Ok(core), Ok(pkg)) = (std::fs::read_to_string(topo.join("core_id")), std::fs::read_to_string(topo.join("physical_package_id"))) {
+                seen.insert(format!("{}:{}", pkg.trim(), core.trim()));
+            }
+        }
+    }
+    seen.len()
+}
+
+/// The number of processor cores of the machine, SMT siblings counted once
+/// (a generation beside the search takes cores - 1 workers, so the search
+/// keeps a core of its own), from GetLogicalProcessorInformation. 0 when
+/// unknown.
+#[cfg(windows)]
+pub fn physical_cores() -> usize {
+    use std::ffi::c_void;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetLogicalProcessorInformation(buffer: *mut c_void, length: *mut u32) -> i32;
+    }
+    let mut length: u32 = 0;
+    unsafe { GetLogicalProcessorInformation(std::ptr::null_mut(), &mut length) };
+    if length == 0 {
+        return 0;
+    }
+    let mut buf = vec![0u8; length as usize];
+    if unsafe { GetLogicalProcessorInformation(buf.as_mut_ptr() as *mut c_void, &mut length) } == 0 {
+        return 0;
+    }
+    // SYSTEM_LOGICAL_PROCESSOR_INFORMATION: ProcessorMask (8), Relationship
+    // (4, RelationProcessorCore = 0), padding, union (16): 32 bytes each
+    const ENTRY: usize = 32;
+    let mut cores = 0;
+    let mut off = 0;
+    while off + ENTRY <= length as usize {
+        if u32::from_le_bytes(buf[off + 8..off + 12].try_into().unwrap()) == 0 {
+            cores += 1;
+        }
+        off += ENTRY;
+    }
+    cores
+}
+
 /// (physical memory of the machine, the part of it that is free right now)
 /// from /proc/meminfo.
 #[cfg(not(windows))]
