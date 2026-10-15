@@ -18,20 +18,29 @@ import (
 // tables up to four pieces in the order of All(); every larger material gets
 // its own file "<pieces>-<name>.bin" (never shipped, only generated locally).
 //
-// File format (v2, 2026-10-15): 4 bytes magic "MEG2", 1 byte step (the
+// File format (v3, 2026-10-16): 4 bytes magic "MEG3", 1 byte step (the
 // resolution of the values in moves, Table.Step: 1 = exact, n = buckets of n
 // moves), 3 bytes zero, 8 bytes raw checksum (the constant in the code, over
-// the exact values as generated, dead and illegal entries as 0), then the lz
-// container with the values. Before compression every dead or illegal entry
-// is replaced by its predecessor: those positions are never looked up, so
-// their content is free and the runs get longer. Tables beyond the base are
-// written quantised to FileStep (the search resolves the exact distance from
-// the bounds, docs/m5-endgame-tables.md); the base is always exact.
+// the exact values as generated, dead and illegal entries as 0), then the
+// indexed lz container with the values (lz.PackIndexedTo: block offsets up
+// front, so a table beyond the base is read block by block through a block
+// cache instead of being unpacked as a whole; the base uses 4 MB blocks and
+// is unpacked, the rest BlockBytes). Before compression every dead or illegal
+// entry is replaced by its predecessor: those positions are never looked up,
+// so their content is free and the runs get longer. Tables beyond the base
+// are written quantised to FileStep (the search resolves the exact distance
+// from the bounds, docs/m5-endgame-tables.md); the base is always exact.
 const (
 	CacheDir     = "mattjes-egtb-cache"
 	BaseFileName = "4-all.bin"
-	magic        = "MEG2"
+	magic        = "MEG3"
 	headerBytes  = 16
+	// BlockBytes is the raw block size of the files beyond the base. Measured
+	// on KRRKN (docs/m5-endgame-tables.md, "Blockformat"): 64 KB costs 5 %
+	// file size over 4 MB blocks but a search touches 45 % of the table, 16 KB
+	// costs 17 % and touches 27 %, 4 KB costs 40 % and touches 15 %; a miss
+	// decodes one block, 16 KB in about 18 µs. 16 KB is the compromise.
+	BlockBytes = 16 << 10
 )
 
 // FileStep is the resolution in moves of every table beyond the base in the
@@ -183,9 +192,10 @@ func FormatBytes(b uint64) string {
 	return fmt.Sprintf("%d MB", b>>20)
 }
 
-// writeFile writes header + compressed values. The tables are filled first;
-// step is the resolution they all share (recorded in the header).
-func writeFile(path string, tables []*Table, rawChecksum uint64, step int, workers int) error {
+// writeFile writes header + compressed values in blocks of blockSize. The
+// tables are filled first; step is the resolution they all share (recorded
+// in the header).
+func writeFile(path string, tables []*Table, rawChecksum uint64, step, blockSize, workers int) error {
 	for _, t := range tables {
 		if t.Values == nil {
 			return fmt.Errorf("egtb: table %s not generated", t.Mat.Name())
@@ -222,7 +232,7 @@ func writeFile(path string, tables []*Table, rawChecksum uint64, step int, worke
 		f.Close()
 		return err
 	}
-	if err := lz.PackTo(w, raw, workers); err != nil {
+	if err := lz.PackIndexedTo(w, raw, blockSize, workers); err != nil {
 		f.Close()
 		return err
 	}
@@ -241,39 +251,55 @@ func sumSize(tables []*Table) int {
 	return n
 }
 
-// readFile reads a cache file into the tables. Returns the raw checksum from
-// the header; the entries are filled (dead and illegal ones hold their
-// predecessor) and the tables carry the file's step.
+// openFile opens a cache file and reads its header and block index; the
+// caller either unpacks everything (readFile) or keeps the file for block
+// reads (openTable). size is the raw length the tables expect.
+func openFile(path string, size int) (f *os.File, ix *lz.Index, step int, rawChecksum uint64, err error) {
+	f, err = os.Open(path)
+	if err != nil {
+		return nil, nil, 0, 0, err
+	}
+	fail := func(err error) (*os.File, *lz.Index, int, uint64, error) {
+		f.Close()
+		return nil, nil, 0, 0, err
+	}
+	var header [headerBytes]byte
+	if n, err := f.ReadAt(header[:], 0); n < headerBytes || string(header[:4]) != magic {
+		return fail(fmt.Errorf("egtb: %s is not a cache file (format %q, regenerate; %v)", path, string(header[:4]), err))
+	}
+	step = max(1, int(header[4]))
+	rawChecksum = binary.LittleEndian.Uint64(header[8:])
+	ix, err = lz.ReadIndex(f, headerBytes)
+	if err != nil {
+		return fail(fmt.Errorf("egtb: %s: %v", path, err))
+	}
+	if ix.RawLen != size {
+		return fail(fmt.Errorf("egtb: %s holds %d bytes, expected %d", path, ix.RawLen, size))
+	}
+	return f, ix, step, rawChecksum, nil
+}
+
+// readFile reads a cache file into the tables as a whole (the base).
+// Returns the raw checksum from the header; the entries are filled (dead and
+// illegal ones hold their predecessor) and the tables carry the file's step.
 func readFile(path string, tables []*Table, workers int) (rawChecksum uint64, compressed bool, err error) {
-	data, err := os.ReadFile(path)
+	clearTables(tables)
+	f, ix, step, rawChecksum, err := openFile(path, sumSize(tables))
 	if err != nil {
 		return 0, false, err
 	}
-	size := sumSize(tables)
+	defer f.Close()
 	for _, t := range tables {
 		t.Values = make([]Value, t.Size)
-		t.filled = false
-		t.RawChecksum = 0
-		t.invalid = nil
-		t.Step = 1
-	}
-	if len(data) < headerBytes || string(data[:4]) != magic {
-		return 0, false, fmt.Errorf("egtb: %s is not a cache file (format %q, regenerate)", path, string(data[:min(4, len(data))]))
-	}
-	step := max(1, int(data[4]))
-	rawChecksum = binary.LittleEndian.Uint64(data[8:])
-	packed := data[headerBytes:]
-	if n, err := lz.RawLen(packed); err != nil || n != size {
-		return 0, true, fmt.Errorf("egtb: %s holds %d bytes, expected %d", path, n, size)
 	}
 	// decompress into one buffer, then split (the tables are separate slices)
 	var dst []byte
 	if len(tables) == 1 {
 		dst = bytesOf(tables[0].Values)
 	} else {
-		dst = make([]byte, size)
+		dst = make([]byte, ix.RawLen)
 	}
-	if err := lz.UnpackInto(dst, packed, workers); err != nil {
+	if err := ix.UnpackAll(f, dst, workers); err != nil {
 		return 0, true, fmt.Errorf("egtb: %s: %v", path, err)
 	}
 	if len(tables) > 1 {
@@ -290,8 +316,27 @@ func readFile(path string, tables []*Table, workers int) (rawChecksum uint64, co
 	return rawChecksum, true, nil
 }
 
+// openTable opens a cache file for block reads: the table stays compressed
+// in the file, a block cache (CacheBytes) serves the lookups. Returns the
+// raw checksum from the header.
+func openTable(path string, t *Table) (rawChecksum uint64, err error) {
+	clearTables([]*Table{t})
+	f, ix, step, rawChecksum, err := openFile(path, t.Size)
+	if err != nil {
+		return 0, err
+	}
+	t.packed = newBlockStore(f, ix)
+	t.filled = true
+	t.Step = step
+	return rawChecksum, nil
+}
+
 func clearTables(tables []*Table) {
 	for _, t := range tables {
+		if t.packed != nil {
+			t.packed.close()
+			t.packed = nil
+		}
 		t.Values = nil
 		t.filled = false
 		t.RawChecksum = 0
@@ -304,9 +349,10 @@ func clearTables(tables []*Table) {
 // files (independent 4 MB blocks).
 var IOWorkers = 8
 
-// Save writes the base tables to path (compressed, always exact).
+// Save writes the base tables to path (compressed, always exact; 4 MB
+// blocks, the base is always unpacked as a whole).
 func (s *Set) Save(path string) error {
-	return writeFile(path, s.Base(), s.Checksum(), 1, IOWorkers)
+	return writeFile(path, s.Base(), s.Checksum(), 1, lz.BlockSize, IOWorkers)
 }
 
 // Load reads the base tables from path and checks size and checksum.
@@ -347,13 +393,14 @@ func (s *Set) SaveTable(t *Table, path string) error {
 	if t.Exact() {
 		t.Quantize(FileStep)
 	}
-	return writeFile(path, []*Table{t}, sum, t.Step, IOWorkers)
+	return writeFile(path, []*Table{t}, sum, t.Step, BlockBytes, IOWorkers)
 }
 
-// LoadTable reads one table from path and checks size and, when recorded,
-// the checksum.
+// LoadTable opens one table (a material beyond the base) from path: it
+// stays compressed in the file and is read block by block (openTable).
+// Checks size and, when recorded, the checksum.
 func (s *Set) LoadTable(t *Table, path string) error {
-	sum, _, err := readFile(path, []*Table{t}, IOWorkers)
+	sum, err := openTable(path, t)
 	if err != nil {
 		clearTables([]*Table{t})
 		return err

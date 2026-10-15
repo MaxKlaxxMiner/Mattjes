@@ -654,9 +654,11 @@ sechs Steinen):**
   Suche nicht leidet, muss die Trefferquote hoch sein. Erwartung aus der Lokalität
   der Suche (sie bleibt lange in einer Region des Raums) ist gut, gemessen wird
   sie an KRR-KN mit kleinem Blockcache gegen die entpackte Tabelle.
-- Reihenfolge: zuerst das Intervall-Orakel (Suche), dann das Blockformat mit
-  Entropiestufe in `lz` (byteidentisch in Go und Rust), dann die Quantisierung als
-  Schreiboption je Material, zuletzt der Blockcache in `Lookup`.
+- Reihenfolge: zuerst das Intervall-Orakel (Suche) ✅, dann das Blockformat mit
+  Blockcache in `Lookup` ✅ (Abschnitt "Blockformat" unten, 16-KB-Blöcke, faules
+  Entpacken bis 2 GB je Tabelle), die Quantisierung fest beim Schreiben ✅
+  (Schrittweite 8), offen die Entropiestufe in `lz` (byteidentisch in Go und
+  Rust).
 
 **Empfehlung zur Auflösung (aus der Benchmark-Zeitleiste, `test-positions.md`):**
 Die Suche braucht zum Auflösen eines Eimers eine Teilsuche von etwa
@@ -718,6 +720,69 @@ Frage, was Schrittweite 8 kostet, wenn eine größere Suche (Sechs-Steiner-Wurze
 per Schlag in das Band einer quantisierten Abhängigkeit fällt: dort kostet jeder
 Eintritt bis zu 60 Tsd. Besuche statt 300 bis 1.800 bei Schrittweite 4; die
 Konstante ist die einzige Stelle, die Dateien müssten neu erzeugt werden.
+
+### Blockformat: Tabellen ab fünf Steinen bleiben gepackt (2026-10-16)
+
+Umsetzung des Plans oben, Teil 1 (Blöcke und Lesepfad mit dem heutigen `lz`,
+die Entropiestufe folgt getrennt). **Format v3:** Kennung `MEG3`, derselbe
+16-Byte-Kopf wie v2, dann der **indizierte `lz`-Container**
+(`lz.PackIndexedTo`/`lz.Index`): nach dem 16-Byte-Containerkopf stehen
+`blockCount + 1` Offsets (u64) der gepackten Blöcke, dann die Blöcke; ein Block
+lässt sich allein lesen und entpacken. Die Basis schreibt 4-MB-Blöcke und wird
+weiter komplett entpackt (`Index.UnpackAll`, parallel); jede Tabelle ab fünf
+Steinen schreibt `BlockBytes` und bleibt beim Laden **gepackt in der Datei**
+(`Table.packed`, `blockStore`): `LoadTable` liest nur Kopf und Index, der
+Lesepfad `Lookup → Table.value` holt bei einem Miss einen Block per
+positionsgenauem Lesen (`ReadAt`, kein `mmap`: portabel, ohne Abhängigkeit, den
+Seitencache hat das Betriebssystem ohnehin) und entpackt ihn in einen
+direkt-abgebildeten Cache (Blocknummer modulo Plätze). Go und Rust schreiben
+byteidentische Dateien und zählen identische Treffer und Misses; alte v2-Dateien
+werden abgewiesen und neu erzeugt.
+
+**Messung** (Go, Arbeitsrechner, KRRKN Schrittweite 8, die Angreiferstellung nach
+Nh2 einmal bei Tiefe 13 gelöst: 9.988 Besuche, 178 Tsd. Sondierungen; "berührt"
+= Blöcke, die die Suche je entpackt hat, die Arbeitsmenge):
+
+| Blockgröße | Datei | berührt | Cache 32 MB | 128 MB | alles passt |
+|---|---|---|---|---|---|
+| 4 MB (v2, ganz entpackt) | 14,55 MB | 242 MB (alles) | | | ≈ 45 ms (plus 0,2 s Entpacken beim Laden) |
+| 64 KB | 15,29 MB | 1.650 Blöcke = 103 MB (45 %) | 1,26 s | 0,53 s | 0,21 s |
+| 16 KB | 17,05 MB | 3.997 Blöcke = 62 MB (27 %) | 0,54 s | 0,33 s | 0,19 s |
+| 4 KB | 20,32 MB | 8.644 Blöcke = 34 MB (15 %) | 0,36 s | 0,21 s | 0,18 s |
+
+Lesart:
+
+- **df-pn fasst eine Tabelle verstreut an.** Für 10 Tsd. Besuche braucht die
+  Suche 45 % der 64-KB-Blöcke, 27 % der 16-KB-Blöcke, 15 % der 4-KB-Blöcke:
+  Die Kinder eines Knotens liegen in einer 64-Byte-Zeile, Königszüge springen
+  um 64³ Byte. Ein Cache deutlich unter der Arbeitsmenge verdrängt ständig; ein
+  Miss kostet Lesen plus Entpacken, bei 64 KB rund 70 µs, bei 16 KB 18 µs.
+- **16 KB ist der Kompromiss:** 17 % mehr Datei als 4-MB-Blöcke, aber nur gut
+  ein Viertel der Tabelle wird je entpackt, und der Miss ist viermal billiger
+  als bei 64 KB. 4 KB spart kaum noch Zeit und kostet 19 % mehr Datei. Die
+  Blockkosten des eigenen `lz` sind viel kleiner als bei zstd gemessen (5 %
+  statt 41 % bei 64 KB), weil `lz` ohne Entropiestufe pro Block fast nichts an
+  Festkosten hat.
+- **Vorgabe: Budget 2 GB je Tabelle (`CacheBytes`), darunter keine
+  Verdrängung.** Ein Fünf-Steiner (bis 242 MB) wird damit **faul entpackt**,
+  Block für Block beim ersten Zugriff, und kostet nur die berührten Blöcke
+  (62 MB statt 242 MB für diese Lösung; die ganze Benchmark-Stellung mit zwölf
+  Zügen berührt 9.006 Blöcke = 141 MB, 61 %). Ein Sechs-Steiner (15,5 GB) läuft
+  mit 2 GB Cache und Verdrängung, verstreut langsamer, aber er läuft, statt den
+  RAM zu sprengen. Preis der Faulheit beim Wurzelmaterial: einmal pro Sitzung
+  rund 0,35 s einfädiges Entpacken (Benchmark-Stellung, Rust: 0,62 s statt
+  0,28 s mit vorab entpackter Tabelle; Go 0,79 s), danach laufen alle Suchen
+  mit Treffern. Ein paralleles Vorab-Entpacken des Wurzelmaterials wäre
+  schneller (0,2 s für 242 MB), gäbe die Ersparnis aber wieder her; offen
+  gelassen.
+- Der Generator ist nicht betroffen: Er arbeitet auf vollen Arrays, eine
+  gepackte Tabelle ist wie eine quantisierte keine brauchbare Abhängigkeit
+  (`Table.Values` leer), `GenerateControlled` rechnet sie exakt nach;
+  `Set.Fork` kopiert gepackte Tabellen nicht.
+
+Die Suche meldet nach jeder UCI-Suche `info string egtb: block cache <Treffer>
+hits, <Misses> misses, <berührt> of <Blöcke> blocks touched` (Go = Rust), die
+Testbank dasselbe als Zeile `block cache <Budget> MB: ...`.
 
 ## Offen
 

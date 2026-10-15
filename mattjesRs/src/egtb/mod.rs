@@ -3,6 +3,7 @@
 //! by retrograde analysis and kept in RAM. Direct port of `mattjesGo/egtb`;
 //! the design is explained in docs/m5-endgame-tables-design.md.
 
+mod blockstore;
 mod control;
 mod generate;
 mod index;
@@ -12,6 +13,7 @@ mod requirements;
 mod table;
 
 #[allow(unused_imports)]
+pub use blockstore::CACHE_BYTES;
 pub use control::Control;
 #[allow(unused_imports)]
 pub use peak::{available_memory, format_bytes, peak_memory};

@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::bitboard::Board;
 use crate::chess::{MatePosition, MATE_POSITIONS};
+use crate::egtb;
 use crate::mateab::{self, Oracle};
 use crate::matepn::{self, Codec};
 use crate::tests_egtb;
@@ -46,15 +47,16 @@ fn run_matepn(positions: &[MatePosition], selected: &dyn Fn(&MatePosition) -> bo
         tests_egtb::egtb_load_for_positions(set, positions, selected);
     }
     match (codec, &set) {
-        ("sat", None) => run(table, matepn::Saturating { bits }, mateab::Material, positions, selected, options),
-        ("float", None) => run(table, matepn::Float { bits }, mateab::Material, positions, selected, options),
-        ("sat", Some(set)) => run(table, matepn::Saturating { bits }, mateab::Tables { set }, positions, selected, options),
-        ("float", Some(set)) => run(table, matepn::Float { bits }, mateab::Tables { set }, positions, selected, options),
+        ("sat", None) => run(table, matepn::Saturating { bits }, mateab::Material, None, positions, selected, options),
+        ("float", None) => run(table, matepn::Float { bits }, mateab::Material, None, positions, selected, options),
+        ("sat", Some(set)) => run(table, matepn::Saturating { bits }, mateab::Tables { set }, Some(set), positions, selected, options),
+        ("float", Some(set)) => run(table, matepn::Float { bits }, mateab::Tables { set }, Some(set), positions, selected, options),
         _ => panic!("codec sat or float"),
     }
 }
 
-fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, oracle: O, positions: &[MatePosition], selected: &dyn Fn(&MatePosition) -> bool, options: &str) {
+#[allow(clippy::too_many_arguments)]
+fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, oracle: O, set: Option<&egtb::Set>, positions: &[MatePosition], selected: &dyn Fn(&MatePosition) -> bool, options: &str) {
     let has = |o: char| options.contains(o);
     let (lazy, final_entries, tables, iterative, mated) = (has('l'), has('f'), has('t'), has('i'), has('M'));
     let mobility = has('m') && !lazy;
@@ -137,6 +139,14 @@ fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, 
                 group(st.replaced),
                 100.0 * t.used() as f64 / t.slots() as f64
             );
+            if let Some(set) = set {
+                // the packed tables beyond the base (docs/m5-endgame-tables.md, "Blockformat")
+                let (hits, misses, distinct, blocks) = set.cache_stats();
+                if hits + misses > 0 {
+                    println!("    block cache {} MB: {} hits, {} misses, {} of {} blocks touched", egtb::CACHE_BYTES >> 20, group(hits), group(misses), group(distinct), group(blocks));
+                    set.reset_cache_stats();
+                }
+            }
             if r.mate_plies > 0 {
                 let mut verdict = "the shortest".to_string();
                 if r.mate_plies != want as i32 {

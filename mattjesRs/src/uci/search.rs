@@ -418,6 +418,15 @@ impl<W: Write + Send + 'static> Engine<W> {
         if !r.note.is_empty() {
             self.send(&format!("info string search: {}", r.note));
         }
+        // the block cache of the packed tables (every material beyond the base)
+        let (hits, misses, distinct, blocks) = self.set().cache_stats();
+        if hits + misses > 0 {
+            self.send(&format!("info string egtb: block cache {} hits, {} misses, {} of {} blocks touched", hits, misses, distinct, blocks));
+            self.set().reset_cache_stats();
+        }
+        if let Some(e) = self.set().cache_error() {
+            self.send(&format!("info string {}", e));
+        }
         if !self.infinite {
             let best = self.pending_best.clone();
             self.send(&format!("bestmove {}", best));

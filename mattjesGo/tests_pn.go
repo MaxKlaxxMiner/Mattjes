@@ -7,6 +7,7 @@ import (
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mateab"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/matepn"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/tt"
@@ -77,8 +78,9 @@ func runMatepn(positions []chess.MatePosition, selected func(p chess.MatePositio
 	}
 	var oracle mateab.Oracle = mateab.Material{}
 	title := "material oracle"
+	var set *egtb.Set
 	if tables {
-		set := egtbLoadOrGenerate(12)
+		set = egtbLoadOrGenerate(12)
 		egtbLoadForPositions(set, positions, selected)
 		oracle = mateab.Tables{Set: set}
 		title = "endgame tables"
@@ -134,6 +136,13 @@ func runMatepn(positions []chess.MatePosition, selected func(p chess.MatePositio
 		case r.Proven:
 			fmt.Printf("    proven: %s nodes in %s, %s leaves, %s tt hits, %s final hits, %s stores, %s replaced, fill %.1f%%\n",
 				perftGroup(r.Nodes), fmtMs(elapsed), perftGroup(r.Leaves), perftGroup(r.TTHits), perftGroup(r.FinalHits), perftGroup(st.Stores), perftGroup(st.Replaced), 100*float64(table.Used())/float64(table.Slots()))
+			if set != nil {
+				// the packed tables beyond the base (docs/m5-endgame-tables.md, "Blockformat")
+				if hits, misses, distinct, blocks := set.CacheStats(); hits+misses > 0 {
+					fmt.Printf("    block cache %d MB: %s hits, %s misses, %s of %s blocks touched\n", egtb.CacheBytes>>20, perftGroup(hits), perftGroup(misses), perftGroup(distinct), perftGroup(blocks))
+					set.ResetCacheStats()
+				}
+			}
 			if r.MatePlies > 0 {
 				verdict := "the shortest"
 				if r.MatePlies != 2*p.MateIn-1 {

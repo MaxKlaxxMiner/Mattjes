@@ -24,6 +24,7 @@ import (
 	"runtime/pprof"
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/uci"
 )
 
@@ -125,7 +126,9 @@ func experiments() {
 	// --- milestone 5, measurement series: five- and six-piece tables (time, memory, size, checksum), cache dir mattjes-egtb-cache/ ---
 	// egtbLoadOrGenerate(12) // makes sure the four-piece base exists (17 s once, then 0.2 s); larger materials via "egtb-measure <name>"
 	// --- interval oracle (docs/m5-endgame-tables.md, quantised cache files): KRR-KN with 5-KRRKN.bin (buckets of 8 moves) = the search resolves the 16-ply window; without the file 87,503 visits (Go = Rust) ---
-	matepnSolveFEN("KRR-KN after Nh2", "8/8/4k3/8/8/8/RK5n/2R5 w - - 2 2", 7, 256, "sat", "mEft")
+	// --- block cache of the packed table (docs/m5-endgame-tables.md, "Blockformat"): hits, misses and the working set; egtb.CacheBytes = 32 << 20 before the call measures a small budget ---
+	matepnSolveFEN("KRR-KN after Nh2", "8/8/4k3/8/8/8/RK5n/2R5 w - - 2 2", 7, 256, "sat", "mEft") // 9,988 visits, 3,997 of 14,784 blocks touched (Go = Rust)
+	_ = egtb.CacheBytes
 	// matepnSolveNamed("pawns", 64, "sat", "mEfiM") // M = even depths too (the side to move is mated), the UCI setting: 7,933 nodes instead of 7,800
 	// egtbMeasure([]string{"KQKBN"}, 12, true) // generated in 47 s, 845 MB process; loads the file, checks KQ-KBN = win in 77 and verifies every position forward
 	// matepnSolve(12, 256, "sat", "mEfi") // iterative deepening: the shortest mate, cost of all depths (KQ-KN 7.9 M visits)

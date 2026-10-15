@@ -471,7 +471,7 @@ impl<W: Write + Send + 'static> Engine<W> {
         }
         let set = self.set();
         if let Some(i) = set.find(&m.name()) {
-            if set.tables[i].is_generated() {
+            if set.tables[i].is_available() {
                 return false;
             }
         }

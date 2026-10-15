@@ -15,6 +15,14 @@
 //
 // Container: rawLen u64, blockSize u32, blockCount u32, then per block
 // compLen u32 and the payload (all little endian).
+//
+// Indexed container (2026-10-16, for files that are read block by block
+// instead of unpacked as a whole): the same 16-byte header, then
+// blockCount+1 offsets u64 of the compressed blocks relative to the first
+// block (the last one is the total compressed size), then the blocks back to
+// back. A block decodes alone, so a reader serves any raw position by
+// reading one compressed block (Index.ReadBlock), or everything at once
+// (Index.UnpackAll).
 package lz
 
 import (
@@ -292,6 +300,141 @@ func UnpackInto(dst, buf []byte, workers int) error {
 	errs := make([]error, n)
 	parallelFor(n, workers, func(i int) {
 		errs[i] = decompressBlock(dst[i*block:min(total, (i+1)*block)], blocks[i])
+	})
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+// PackIndexedTo compresses data in independent blocks of blockSize bytes,
+// in parallel, and writes the indexed container to w (see the package
+// comment): only the compressed blocks live in memory.
+func PackIndexedTo(w io.Writer, data []byte, blockSize, workers int) error {
+	if blockSize <= 0 {
+		return errors.New("lz: bad block size")
+	}
+	n := (len(data) + blockSize - 1) / blockSize
+	blocks := make([][]byte, n)
+	parallelFor(n, workers, func(i int) {
+		blocks[i] = compressBlock(data[i*blockSize:min(len(data), (i+1)*blockSize)], Depth)
+	})
+	var header [headerBytes]byte
+	binary.LittleEndian.PutUint64(header[0:], uint64(len(data)))
+	binary.LittleEndian.PutUint32(header[8:], uint32(blockSize))
+	binary.LittleEndian.PutUint32(header[12:], uint32(n))
+	if _, err := w.Write(header[:]); err != nil {
+		return err
+	}
+	offsets := make([]byte, 8*(n+1))
+	var off uint64
+	for i, b := range blocks {
+		binary.LittleEndian.PutUint64(offsets[8*i:], off)
+		off += uint64(len(b))
+	}
+	binary.LittleEndian.PutUint64(offsets[8*n:], off)
+	if _, err := w.Write(offsets); err != nil {
+		return err
+	}
+	for _, b := range blocks {
+		if _, err := w.Write(b); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Index is the table of contents of an indexed container that starts at
+// some offset of a file: enough to read and decode single blocks.
+type Index struct {
+	RawLen    int
+	BlockSize int
+	offsets   []uint64 // len Blocks()+1, relative to dataStart
+	dataStart int64    // file offset of the first compressed block
+	maxPacked int      // the largest compressed block: the scratch size ReadBlock needs
+}
+
+// readAt fills buf from r at off; an io.EOF that completes the buffer is fine.
+func readAt(r io.ReaderAt, buf []byte, off int64) error {
+	n, err := r.ReadAt(buf, off)
+	if err == io.EOF && n == len(buf) {
+		return nil
+	}
+	return err
+}
+
+// ReadIndex reads the header and the offsets of the indexed container at
+// base; the blocks stay in the file.
+func ReadIndex(r io.ReaderAt, base int64) (*Index, error) {
+	var header [headerBytes]byte
+	if err := readAt(r, header[:], base); err != nil {
+		return nil, err
+	}
+	ix := &Index{RawLen: int(binary.LittleEndian.Uint64(header[0:])), BlockSize: int(binary.LittleEndian.Uint32(header[8:]))}
+	n := int(binary.LittleEndian.Uint32(header[12:]))
+	if ix.BlockSize <= 0 || n != (ix.RawLen+ix.BlockSize-1)/ix.BlockSize {
+		return nil, errors.New("lz: bad header")
+	}
+	buf := make([]byte, 8*(n+1))
+	if err := readAt(r, buf, base+headerBytes); err != nil {
+		return nil, err
+	}
+	ix.offsets = make([]uint64, n+1)
+	for i := range ix.offsets {
+		ix.offsets[i] = binary.LittleEndian.Uint64(buf[8*i:])
+		if i > 0 {
+			if ix.offsets[i] < ix.offsets[i-1] {
+				return nil, errors.New("lz: bad offsets")
+			}
+			ix.maxPacked = max(ix.maxPacked, int(ix.offsets[i]-ix.offsets[i-1]))
+		}
+	}
+	ix.dataStart = base + headerBytes + int64(len(buf))
+	return ix, nil
+}
+
+// Blocks is the number of blocks.
+func (ix *Index) Blocks() int { return len(ix.offsets) - 1 }
+
+// MaxPacked is the size of the largest compressed block (the scratch buffer
+// ReadBlock needs).
+func (ix *Index) MaxPacked() int { return ix.maxPacked }
+
+// PackedLen is the total size of the compressed blocks.
+func (ix *Index) PackedLen() int64 { return int64(ix.offsets[ix.Blocks()]) }
+
+// BlockLen is the raw length of block i (only the last block can be shorter
+// than BlockSize).
+func (ix *Index) BlockLen(i int) int { return min(ix.BlockSize, ix.RawLen-i*ix.BlockSize) }
+
+// ReadBlock reads block i from r and decodes it into dst (at least
+// BlockLen(i) bytes) using scratch (at least MaxPacked bytes).
+func (ix *Index) ReadBlock(r io.ReaderAt, i int, scratch, dst []byte) error {
+	a, b := ix.offsets[i], ix.offsets[i+1]
+	src := scratch[:b-a]
+	if err := readAt(r, src, ix.dataStart+int64(a)); err != nil {
+		return err
+	}
+	return decompressBlock(dst[:ix.BlockLen(i)], src)
+}
+
+// UnpackAll reads every block and decodes the whole container into dst
+// (exactly RawLen bytes), blocks in parallel.
+func (ix *Index) UnpackAll(r io.ReaderAt, dst []byte, workers int) error {
+	if len(dst) != ix.RawLen {
+		return errors.New("lz: bad length")
+	}
+	packed := make([]byte, ix.PackedLen())
+	if err := readAt(r, packed, ix.dataStart); err != nil {
+		return err
+	}
+	n := ix.Blocks()
+	errs := make([]error, n)
+	parallelFor(n, workers, func(i int) {
+		start := i * ix.BlockSize
+		errs[i] = decompressBlock(dst[start:start+ix.BlockLen(i)], packed[ix.offsets[i]:ix.offsets[i+1]])
 	})
 	for _, e := range errs {
 		if e != nil {

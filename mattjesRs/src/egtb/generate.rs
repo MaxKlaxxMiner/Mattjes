@@ -141,26 +141,18 @@ impl Set {
     pub fn generate_controlled(&mut self, ti: usize, workers: usize, ctrl: Option<&Control>, progress: Progress) -> Stats {
         for d in self.tables[ti].mat.dependencies() {
             let di = self.add_material(d); // beyond the base this registers the dependency on the fly
-            // the levels need the exact distances of the children: a quantised
-            // table (loaded earlier, or a cache file beyond the base, which is
-            // always quantised) is regenerated in memory instead
-            if self.tables[di].is_generated() && !self.tables[di].is_exact() {
-                progress(&format!("egtb: dependency {} is quantised (step {}), generating it exactly", self.tables[di].mat.name(), self.tables[di].step()));
+            // the levels need the exact distances of the children as an
+            // array: a quantised or packed table (loaded earlier, or a cache
+            // file beyond the base, which is always both) is regenerated in
+            // memory instead
+            if self.tables[di].is_available() && (!self.tables[di].is_exact() || !self.tables[di].is_generated()) {
+                progress(&format!("egtb: dependency {} is quantised (step {}) or packed, generating it exactly", self.tables[di].mat.name(), self.tables[di].step()));
                 self.tables[di].clear();
             }
-            if !self.tables[di].is_generated() {
-                let path = self.table_path(&self.tables[di]);
-                let loaded = self.load_table(di, &path).is_ok();
-                if loaded && self.tables[di].is_exact() {
-                    progress(&format!("egtb: loaded dependency {}", path.display()));
-                } else {
-                    if loaded {
-                        self.tables[di].clear(); // quantised file: not usable here
-                    }
-                    let st = self.generate_controlled(di, workers, ctrl, progress);
-                    if st.aborted {
-                        return st;
-                    }
+            if !self.tables[di].is_available() {
+                let st = self.generate_controlled(di, workers, ctrl, progress);
+                if st.aborted {
+                    return st;
                 }
             }
         }

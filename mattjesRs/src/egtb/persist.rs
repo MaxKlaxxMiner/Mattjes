@@ -3,16 +3,19 @@
 //! `Material::all()`) and one file per larger material ("<pieces>-<name>.bin",
 //! never shipped, only generated locally).
 //!
-//! File format (v2, 2026-10-15): 4 bytes magic "MEG2", 1 byte step (the
+//! File format (v3, 2026-10-16): 4 bytes magic "MEG3", 1 byte step (the
 //! resolution of the values in moves, `Table::step`: 1 = exact, n = buckets of
 //! n moves), 3 bytes zero, 8 bytes raw checksum (the constant in the code, over
-//! the exact values as generated, dead and illegal entries as 0), then the lz
-//! container with the values. Before compression every dead or illegal entry
-//! is replaced by its predecessor: those positions are never looked up, so
-//! their content is free and the runs get longer. Tables beyond the base are
-//! written quantised to `FILE_STEP` (the search resolves the exact distance
-//! from the bounds, docs/m5-endgame-tables.md); the base is always exact. Go
-//! and Rust must produce byte-identical files.
+//! the exact values as generated, dead and illegal entries as 0), then the
+//! indexed lz container with the values (`lz::pack_indexed_to`: block offsets
+//! up front, so a table beyond the base is read block by block through a
+//! block cache instead of being unpacked as a whole; the base uses 4 MB blocks
+//! and is unpacked, the rest `BLOCK_BYTES`). Before compression every dead or
+//! illegal entry is replaced by its predecessor: those positions are never
+//! looked up, so their content is free and the runs get longer. Tables beyond
+//! the base are written quantised to `FILE_STEP` (the search resolves the
+//! exact distance from the bounds, docs/m5-endgame-tables.md); the base is
+//! always exact. Go and Rust must produce byte-identical files.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU8;
@@ -25,8 +28,14 @@ use crate::lz;
 
 pub const CACHE_DIR: &str = "mattjes-egtb-cache";
 pub const BASE_FILE_NAME: &str = "4-all.bin";
-const MAGIC: &[u8; 4] = b"MEG2";
+const MAGIC: &[u8; 4] = b"MEG3";
 const HEADER_BYTES: usize = 16;
+/// The raw block size of the files beyond the base. Measured on KRRKN
+/// (docs/m5-endgame-tables.md, "Blockformat"): 64 KB costs 5 % file size over
+/// 4 MB blocks but a search touches 45 % of the table, 16 KB costs 17 % and
+/// touches 27 %, 4 KB costs 40 % and touches 15 %; a miss decodes one block,
+/// 16 KB in about 18 µs. 16 KB is the compromise.
+pub const BLOCK_BYTES: usize = 16 << 10;
 
 /// The resolution in moves of every table beyond the base in the cache files
 /// ("mate in at most 8 moves" instead of the exact count). It halves the files
@@ -136,9 +145,10 @@ fn io_err(msg: String) -> std::io::Error {
     std::io::Error::other(msg)
 }
 
-/// Writes header + compressed values. The tables are filled first; `step` is
-/// the resolution they all share (recorded in the header).
-fn write_file(path: &Path, tables: &[&Table], raw_checksum: u64, step: u32, workers: usize) -> std::io::Result<()> {
+/// Writes header + compressed values in blocks of `block_size`. The tables
+/// are filled first; `step` is the resolution they all share (recorded in the
+/// header).
+fn write_file(path: &Path, tables: &[&Table], raw_checksum: u64, step: u32, block_size: usize, workers: usize) -> std::io::Result<()> {
     for t in tables {
         if !t.is_generated() {
             return Err(io_err(format!("egtb: table {} not generated", t.mat.name())));
@@ -170,36 +180,47 @@ fn write_file(path: &Path, tables: &[&Table], raw_checksum: u64, step: u32, work
     w.write_all(MAGIC)?;
     w.write_all(&[step as u8, 0, 0, 0])?;
     w.write_all(&raw_checksum.to_le_bytes())?;
-    lz::pack_to(&mut w, raw, workers)?;
+    lz::pack_indexed_to(&mut w, raw, block_size, workers)?;
     w.flush()
 }
 
-/// Reads a cache file into the tables. Returns the raw checksum from the
-/// header; the entries are filled (dead and illegal ones hold their
-/// predecessor) and the tables carry the file's step.
+/// Opens a cache file and reads its header and block index; the caller either
+/// unpacks everything (`read_file`) or keeps the file for block reads
+/// (`open_table`). `size` is the raw length the tables expect. Returns the
+/// file, the index, the step and the raw checksum.
+fn open_file(path: &Path, size: usize) -> std::io::Result<(std::fs::File, lz::Index, u32, u64)> {
+    let f = std::fs::File::open(path)?;
+    let mut header = [0u8; HEADER_BYTES];
+    if lz::read_exact_at(&f, &mut header, 0).is_err() || &header[..4] != MAGIC {
+        return Err(io_err(format!("egtb: {} is not a cache file (format {:?}, regenerate)", path.display(), String::from_utf8_lossy(&header[..4]))));
+    }
+    let step = (header[4] as u32).max(1);
+    let raw_checksum = u64::from_le_bytes(header[8..16].try_into().unwrap());
+    let ix = lz::Index::read(&f, HEADER_BYTES as u64).map_err(|e| io_err(format!("egtb: {}: {}", path.display(), e)))?;
+    if ix.raw_len != size {
+        return Err(io_err(format!("egtb: {} holds {} bytes, expected {}", path.display(), ix.raw_len, size)));
+    }
+    Ok((f, ix, step, raw_checksum))
+}
+
+/// Reads a cache file into the tables as a whole (the base). Returns the raw
+/// checksum from the header; the entries are filled (dead and illegal ones
+/// hold their predecessor) and the tables carry the file's step.
 fn read_file(path: &Path, tables: &mut [&mut Table], workers: usize) -> std::io::Result<u64> {
-    let data = std::fs::read(path)?;
     let size: usize = tables.iter().map(|t| t.size).sum();
     for t in tables.iter_mut() {
         t.clear();
+    }
+    let (f, ix, step, raw_checksum) = open_file(path, size)?;
+    for t in tables.iter_mut() {
         t.values = (0..t.size).map(|_| AtomicU8::new(0)).collect();
     }
-    if data.len() < HEADER_BYTES || &data[..4] != MAGIC {
-        return Err(io_err(format!("egtb: {} is not a cache file (format {:?}, regenerate)", path.display(), String::from_utf8_lossy(&data[..data.len().min(4)]))));
-    }
-    let step = (data[4] as u32).max(1);
-    let raw_checksum = u64::from_le_bytes(data[8..16].try_into().unwrap());
-    let packed = &data[HEADER_BYTES..];
-    match lz::raw_len(packed) {
-        Ok(n) if n == size => {}
-        Ok(n) => return Err(io_err(format!("egtb: {} holds {} bytes, expected {}", path.display(), n, size))),
-        Err(e) => return Err(io_err(format!("egtb: {}: {}", path.display(), e))),
-    }
+    // decompress into one buffer, then split (the tables are separate slices)
     if tables.len() == 1 {
-        lz::unpack_into(tables[0].bytes_mut(), packed, workers).map_err(|e| io_err(format!("egtb: {}: {}", path.display(), e)))?;
+        ix.unpack_all(&f, tables[0].bytes_mut(), workers).map_err(|e| io_err(format!("egtb: {}: {}", path.display(), e)))?;
     } else {
         let mut dst = vec![0u8; size];
-        lz::unpack_into(&mut dst, packed, workers).map_err(|e| io_err(format!("egtb: {}: {}", path.display(), e)))?;
+        ix.unpack_all(&f, &mut dst, workers).map_err(|e| io_err(format!("egtb: {}: {}", path.display(), e)))?;
         let mut off = 0;
         for t in tables.iter_mut() {
             let n = t.size;
@@ -211,6 +232,18 @@ fn read_file(path: &Path, tables: &mut [&mut Table], workers: usize) -> std::io:
         t.set_filled(true);
         t.set_step(step);
     }
+    Ok(raw_checksum)
+}
+
+/// Opens a cache file for block reads: the table stays compressed in the
+/// file, a block cache (`CACHE_BYTES`) serves the lookups. Returns the raw
+/// checksum from the header.
+fn open_table(path: &Path, t: &mut Table) -> std::io::Result<u64> {
+    t.clear();
+    let (f, ix, step, raw_checksum) = open_file(path, t.size)?;
+    t.set_packed(super::blockstore::BlockStore::new(f, ix));
+    t.set_filled(true);
+    t.set_step(step);
     Ok(raw_checksum)
 }
 
@@ -246,7 +279,7 @@ impl Set {
     /// Writes the base tables to path (compressed).
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let tables: Vec<&Table> = self.base().iter().collect();
-        write_file(path, &tables, self.checksum(), 1, IO_WORKERS)
+        write_file(path, &tables, self.checksum(), 1, lz::BLOCK_SIZE, IO_WORKERS)
     }
 
     /// Reads the base tables from path and checks size and checksum.
@@ -296,12 +329,14 @@ impl Set {
         if t.is_exact() {
             t.quantize(FILE_STEP);
         }
-        write_file(path, &[t], sum, t.step(), IO_WORKERS)
+        write_file(path, &[t], sum, t.step(), BLOCK_BYTES, IO_WORKERS)
     }
 
-    /// Reads one table from path and checks size and, when recorded, the checksum.
+    /// Opens one table (a material beyond the base) from path: it stays
+    /// compressed in the file and is read block by block (`open_table`).
+    /// Checks size and, when recorded, the checksum.
     pub fn load_table(&mut self, ti: usize, path: &Path) -> std::io::Result<()> {
-        let result = read_file(path, &mut [&mut self.tables[ti]], IO_WORKERS);
+        let result = open_table(path, &mut self.tables[ti]);
         let t = &mut self.tables[ti];
         let sum = match result {
             Ok(r) => r,

@@ -117,8 +117,14 @@ pub struct Table {
     equal_prev: Vec<bool>,
     pawns: bool,
     pub size: usize,
-    /// Empty until generated or loaded.
+    /// Empty until generated or loaded as a whole (the base); a table beyond
+    /// the base loads packed, see `packed`.
     pub values: Vec<AtomicU8>,
+    /// Serves a table that stays compressed in its cache file (every material
+    /// beyond the base once loaded): a block cache behind `value()`. `values`
+    /// is empty then; the generator never uses such a table. A mutex, because
+    /// lookups take a shared reference (uncontended: one search thread).
+    packed: Option<Mutex<super::blockstore::BlockStore>>,
     /// The checksum of the values as generated (dead and illegal entries as 0);
     /// set after generation or read from the cache file header. Checksum
     /// constants in the code refer to this. 0 = not computed yet.
@@ -155,6 +161,7 @@ impl Table {
             pawns,
             size,
             values: Vec::new(),
+            packed: None,
             raw_checksum: std::sync::atomic::AtomicU64::new(0),
             invalid: Mutex::new(None),
             filled: std::sync::atomic::AtomicBool::new(false),
@@ -238,6 +245,7 @@ impl Table {
     /// Resets the table to "not generated".
     pub(super) fn clear(&mut self) {
         self.values = Vec::new();
+        self.packed = None;
         self.raw_checksum.store(0, Ordering::Relaxed);
         *self.invalid.lock().unwrap() = None;
         self.set_filled(false);
@@ -253,13 +261,37 @@ impl Table {
         }
     }
 
+    /// Whether the values are in memory as an array (generated, or the loaded base).
     pub fn is_generated(&self) -> bool {
         !self.values.is_empty()
     }
 
+    /// Whether the table answers lookups: generated or loaded as a whole, or
+    /// loaded packed.
+    pub fn is_available(&self) -> bool {
+        !self.values.is_empty() || self.packed.is_some()
+    }
+
+    /// Whether the table stays compressed in its file.
+    pub fn is_packed(&self) -> bool {
+        self.packed.is_some()
+    }
+
+    pub(super) fn set_packed(&mut self, store: super::blockstore::BlockStore) {
+        self.packed = Some(Mutex::new(store));
+    }
+
+    pub(super) fn packed(&self) -> Option<&Mutex<super::blockstore::BlockStore>> {
+        self.packed.as_ref()
+    }
+
+    /// One entry: from the array, or from the block cache of a packed table.
     #[inline(always)]
     pub fn value(&self, idx: usize) -> Value {
-        Value(self.values[idx].load(Ordering::Relaxed))
+        if !self.values.is_empty() {
+            return Value(self.values[idx].load(Ordering::Relaxed));
+        }
+        self.packed.as_ref().expect("a table answers lookups only when available").lock().unwrap().value(idx)
     }
 
     #[inline(always)]
@@ -509,7 +541,7 @@ impl Set {
             return Some((None, Value::DRAW));
         }
         let (t, flip) = self.find_table(b)?;
-        if !t.is_generated() {
+        if !t.is_available() {
             return None; // registered but not generated: no index for nothing (a search asks millions of times)
         }
         let idx = t.index_of(b, flip);
@@ -517,6 +549,37 @@ impl Set {
             return None; // adjacent kings, never reached from a legal position
         }
         Some((Some(t), t.value(idx as usize)))
+    }
+
+    /// Sums the block cache hits and misses of every packed table, and the
+    /// blocks ever decoded (the working set) out of all their blocks.
+    pub fn cache_stats(&self) -> (u64, u64, u64, u64) {
+        let mut sums = (0, 0, 0, 0);
+        for t in &self.tables {
+            if let Some(p) = t.packed() {
+                let p = p.lock().unwrap();
+                sums.0 += p.hits;
+                sums.1 += p.misses;
+                sums.2 += p.distinct;
+                sums.3 += p.blocks() as u64;
+            }
+        }
+        sums
+    }
+
+    /// Zeroes the counters of `cache_stats` (the working set too).
+    pub fn reset_cache_stats(&self) {
+        for t in &self.tables {
+            if let Some(p) = t.packed() {
+                p.lock().unwrap().reset_stats();
+            }
+        }
+    }
+
+    /// The first block read error of any packed table, if one happened (such
+    /// a table answers Draw for the affected blocks).
+    pub fn cache_error(&self) -> Option<String> {
+        self.tables.iter().filter_map(|t| t.packed()).find_map(|p| p.lock().unwrap().err.clone())
     }
 
     /// The table and the index of a position with three or four pieces, no

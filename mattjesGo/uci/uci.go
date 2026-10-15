@@ -425,7 +425,7 @@ func (e *Engine) maybeGenerate() bool {
 	if !ok || m.Pieces() <= 4 || e.board.Castling != 0 {
 		return false
 	}
-	if t := e.set.Find(m.Name()); t != nil && t.Values != nil {
+	if t := e.set.Find(m.Name()); t != nil && t.Available() {
 		return false
 	}
 	if m.Pieces() == 5 && !e.generate5 || m.Pieces() == 6 && !e.generate6 {

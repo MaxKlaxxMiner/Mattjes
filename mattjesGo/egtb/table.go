@@ -93,7 +93,11 @@ type Table struct {
 	equalPrev []bool        // slot holds the same piece as the previous slot: squares are kept ascending
 	kk        *kkTable
 	Size      int
-	Values    []Value // nil until generated or loaded
+	Values    []Value // nil until generated or loaded as a whole (the base); a table beyond the base loads packed, see packed
+	// packed serves a table that stays compressed in its cache file (every
+	// material beyond the base once loaded): a block cache behind value().
+	// Values is nil then; the generator never uses such a table.
+	packed *blockStore
 	// Step is the resolution of the values in moves: 1 = exact distances,
 	// n = every value is the upper end of a bucket of n moves (Quantize), so
 	// a lookup only bounds the distance (Value.Bounds) and the search has to
@@ -389,19 +393,41 @@ func (s *Set) lookup(b *bitboard.Board) (t *Table, v Value, ok bool) {
 		return nil, Draw, true
 	}
 	t, flip, ok := s.findTable(b)
-	if !ok || t.Values == nil { // registered but not generated: no index for nothing (a search asks millions of times)
+	if !ok || !t.available() { // registered but not generated: no index for nothing (a search asks millions of times)
 		return nil, Draw, false
 	}
 	idx := t.indexOf(b, flip)
 	if idx < 0 { // adjacent kings, never reached from a legal position
 		return nil, Draw, false
 	}
-	return t, t.Values[idx], true
+	return t, t.value(idx), true
 }
 
+// value reads one entry: from the array, or from the block cache of a
+// packed table.
+func (t *Table) value(idx int) Value {
+	if t.Values != nil {
+		return t.Values[idx]
+	}
+	return t.packed.value(idx)
+}
+
+// available reports whether the table answers lookups: generated or loaded
+// as a whole (Values), or loaded packed.
+func (t *Table) available() bool { return t.Values != nil || t.packed != nil }
+
+// Available is available for other packages (the UCI decides with it
+// whether a table has to be generated).
+func (t *Table) Available() bool { return t.available() }
+
+// Packed reports whether the table stays compressed in its file.
+func (t *Table) Packed() bool { return t.packed != nil }
+
 // Quantize coarsens the values in memory to buckets of step moves (see
-// Value.Bounds); the file format experiment of docs/m5-endgame-tables.md.
-// Exact values cannot be recovered, so this is for loaded copies only.
+// Value.Bounds): what the cache files beyond the base hold
+// (docs/m5-endgame-tables.md). Exact values cannot be recovered, so the
+// table can no longer serve the generator as a dependency. A packed table is
+// already quantised in its file.
 func (t *Table) Quantize(step int) {
 	if step <= 1 || t.Values == nil {
 		return

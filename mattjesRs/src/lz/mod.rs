@@ -269,3 +269,153 @@ pub fn unpack(buf: &[u8], workers: usize) -> Result<Vec<u8>, String> {
     unpack_into(&mut dst, buf, workers)?;
     Ok(dst)
 }
+
+// --- indexed container (2026-10-16): the same 16-byte header, then
+// block_count+1 offsets u64 of the compressed blocks relative to the first
+// block (the last one is the total compressed size), then the blocks back
+// to back. A block decodes alone, so a reader serves any raw position by
+// reading one compressed block (`Index::read_block`), or everything at once
+// (`Index::unpack_all`). Byte-identical to mattjesGo/lz.
+
+/// Compresses data in independent blocks of `block_size` bytes, in parallel,
+/// and writes the indexed container to w: only the compressed blocks live in
+/// memory.
+pub fn pack_indexed_to<W: std::io::Write>(w: &mut W, data: &[u8], block_size: usize, workers: usize) -> std::io::Result<()> {
+    if block_size == 0 {
+        return Err(std::io::Error::other("lz: bad block size"));
+    }
+    let n = data.len().div_ceil(block_size);
+    let blocks: Vec<std::sync::Mutex<Vec<u8>>> = (0..n).map(|_| std::sync::Mutex::new(Vec::new())).collect();
+    parallel_for(n, workers, &|i| {
+        let end = ((i + 1) * block_size).min(data.len());
+        *blocks[i].lock().unwrap() = compress_block(&data[i * block_size..end], DEPTH);
+    });
+    w.write_all(&(data.len() as u64).to_le_bytes())?;
+    w.write_all(&(block_size as u32).to_le_bytes())?;
+    w.write_all(&(n as u32).to_le_bytes())?;
+    let mut off = 0u64;
+    for b in &blocks {
+        w.write_all(&off.to_le_bytes())?;
+        off += b.lock().unwrap().len() as u64;
+    }
+    w.write_all(&off.to_le_bytes())?;
+    for b in &blocks {
+        w.write_all(&b.lock().unwrap())?;
+    }
+    Ok(())
+}
+
+/// Fills buf from the file at offset off (the platform's positional read).
+pub fn read_exact_at(f: &std::fs::File, mut buf: &mut [u8], mut off: u64) -> std::io::Result<()> {
+    while !buf.is_empty() {
+        #[cfg(unix)]
+        let n = std::os::unix::fs::FileExt::read_at(f, buf, off)?;
+        #[cfg(windows)]
+        let n = std::os::windows::fs::FileExt::seek_read(f, buf, off)?;
+        if n == 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "lz: short read"));
+        }
+        buf = &mut buf[n..];
+        off += n as u64;
+    }
+    Ok(())
+}
+
+/// The table of contents of an indexed container that starts at some offset
+/// of a file: enough to read and decode single blocks.
+pub struct Index {
+    pub raw_len: usize,
+    pub block_size: usize,
+    /// blocks()+1 entries, relative to data_start.
+    offsets: Vec<u64>,
+    /// File offset of the first compressed block.
+    data_start: u64,
+    /// The largest compressed block: the scratch size `read_block` needs.
+    max_packed: usize,
+}
+
+impl Index {
+    /// Reads the header and the offsets of the indexed container at base; the
+    /// blocks stay in the file.
+    pub fn read(f: &std::fs::File, base: u64) -> std::io::Result<Index> {
+        let bad = |m: &str| std::io::Error::other(format!("lz: {}", m));
+        let mut header = [0u8; HEADER_BYTES];
+        read_exact_at(f, &mut header, base)?;
+        let raw_len = u64::from_le_bytes(header[..8].try_into().unwrap()) as usize;
+        let block_size = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
+        let n = u32::from_le_bytes(header[12..16].try_into().unwrap()) as usize;
+        if block_size == 0 || n != raw_len.div_ceil(block_size) {
+            return Err(bad("bad header"));
+        }
+        let mut buf = vec![0u8; 8 * (n + 1)];
+        read_exact_at(f, &mut buf, base + HEADER_BYTES as u64)?;
+        let mut offsets = Vec::with_capacity(n + 1);
+        let mut max_packed = 0usize;
+        for i in 0..=n {
+            let o = u64::from_le_bytes(buf[8 * i..8 * i + 8].try_into().unwrap());
+            if i > 0 {
+                let prev = offsets[i - 1];
+                if o < prev {
+                    return Err(bad("bad offsets"));
+                }
+                max_packed = max_packed.max((o - prev) as usize);
+            }
+            offsets.push(o);
+        }
+        Ok(Index { raw_len, block_size, offsets, data_start: base + HEADER_BYTES as u64 + buf.len() as u64, max_packed })
+    }
+
+    pub fn blocks(&self) -> usize {
+        self.offsets.len() - 1
+    }
+
+    /// The size of the largest compressed block (the scratch buffer `read_block` needs).
+    pub fn max_packed(&self) -> usize {
+        self.max_packed
+    }
+
+    /// The total size of the compressed blocks.
+    pub fn packed_len(&self) -> u64 {
+        self.offsets[self.blocks()]
+    }
+
+    /// The raw length of block i (only the last block can be shorter than block_size).
+    pub fn block_len(&self, i: usize) -> usize {
+        self.block_size.min(self.raw_len - i * self.block_size)
+    }
+
+    /// Reads block i from the file and decodes it into dst (at least
+    /// block_len(i) bytes) using scratch (at least max_packed bytes).
+    pub fn read_block(&self, f: &std::fs::File, i: usize, scratch: &mut [u8], dst: &mut [u8]) -> std::io::Result<()> {
+        let (a, b) = (self.offsets[i], self.offsets[i + 1]);
+        let src = &mut scratch[..(b - a) as usize];
+        read_exact_at(f, src, self.data_start + a)?;
+        decompress_block(&mut dst[..self.block_len(i)], src).map_err(std::io::Error::other)
+    }
+
+    /// Reads every block and decodes the whole container into dst (exactly
+    /// raw_len bytes), blocks in parallel.
+    pub fn unpack_all(&self, f: &std::fs::File, dst: &mut [u8], workers: usize) -> std::io::Result<()> {
+        if dst.len() != self.raw_len {
+            return Err(std::io::Error::other("lz: bad length"));
+        }
+        let mut packed = vec![0u8; self.packed_len() as usize];
+        read_exact_at(f, &mut packed, self.data_start)?;
+        let n = self.blocks();
+        let parts: Vec<std::sync::Mutex<&mut [u8]>> = dst.chunks_mut(self.block_size).map(std::sync::Mutex::new).collect();
+        let errors: Vec<std::sync::Mutex<Option<String>>> = (0..n).map(|_| std::sync::Mutex::new(None)).collect();
+        parallel_for(n, workers, &|i| {
+            let mut part = parts[i].lock().unwrap();
+            let src = &packed[self.offsets[i] as usize..self.offsets[i + 1] as usize];
+            if let Err(e) = decompress_block(&mut part, src) {
+                *errors[i].lock().unwrap() = Some(e);
+            }
+        });
+        for e in errors {
+            if let Some(e) = e.into_inner().unwrap() {
+                return Err(std::io::Error::other(e));
+            }
+        }
+        Ok(())
+    }
+}

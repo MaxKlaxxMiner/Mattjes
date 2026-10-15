@@ -520,6 +520,14 @@ func (e *Engine) finishSearch(r searchEnd) {
 	if r.note != "" {
 		e.send("info string search: %s", r.note)
 	}
+	// the block cache of the packed tables (every material beyond the base)
+	if hits, misses, distinct, blocks := e.set.CacheStats(); hits+misses > 0 {
+		e.send("info string egtb: block cache %d hits, %d misses, %d of %d blocks touched", hits, misses, distinct, blocks)
+		e.set.ResetCacheStats()
+	}
+	if err := e.set.CacheError(); err != nil {
+		e.send("info string %v", err)
+	}
 	if !e.infinite {
 		e.send("bestmove %s", e.pendingBest)
 	}

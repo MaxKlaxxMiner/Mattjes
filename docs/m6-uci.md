@@ -148,7 +148,11 @@ KQ-KBN Matt in 39 ebenso. Beim Laden steht `info string egtb: loaded ... (step 8
 the search resolves exact distances)`; die Variante endet an solchen Tabellen.
 Eine Hintergrund-Erzeugung mit `EgtbWriteCache` quantisiert die Tabelle beim
 Schreiben, die Antwort danach kommt deshalb aus der Suche; ohne Schreiben bleibt
-die erzeugte Tabelle im RAM exakt.
+die erzeugte Tabelle im RAM exakt. Seit 2026-10-16 bleiben geladene Tabellen ab
+fünf Steinen gepackt in der Datei und werden Block für Block beim ersten Zugriff
+entpackt (Format v3, `docs/m5-endgame-tables.md`, "Blockformat"); nach jeder
+Suche steht `info string egtb: block cache N hits, M misses, B of T blocks
+touched`, Go und Rust zählen gleich.
 
 **Wann gesucht wird:** Zuerst antwortet die Tabellenstufe wie bisher. Sie gilt als
 abschließend, wenn es keine Züge gibt oder alle Züge bekannt sind (dann ist das

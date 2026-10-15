@@ -120,28 +120,18 @@ func (s *Set) Generate(t *Table, workers int, progress Progress) Stats {
 func (s *Set) GenerateControlled(t *Table, workers int, ctrl *Control, progress Progress) Stats {
 	for _, d := range t.Mat.Dependencies() {
 		dt := s.AddMaterial(d) // beyond the base this registers the dependency on the fly
-		// the levels need the exact distances of the children: a quantised
-		// table (loaded earlier, or a cache file beyond the base, which is
-		// always quantised) is regenerated in memory instead
-		if dt.Values != nil && !dt.Exact() {
+		// the levels need the exact distances of the children as an array: a
+		// quantised or packed table (loaded earlier, or a cache file beyond
+		// the base, which is always both) is regenerated in memory instead
+		if dt.available() && (!dt.Exact() || dt.Values == nil) {
 			if progress != nil {
-				progress(fmt.Sprintf("egtb: dependency %s is quantised (step %d), generating it exactly", dt.Mat.Name(), dt.Step))
+				progress(fmt.Sprintf("egtb: dependency %s is quantised (step %d) or packed, generating it exactly", dt.Mat.Name(), dt.Step))
 			}
 			clearTables([]*Table{dt})
 		}
-		if dt.Values == nil {
-			path := s.TablePath(dt)
-			if err := s.LoadTable(dt, path); err == nil && dt.Exact() {
-				if progress != nil {
-					progress("egtb: loaded dependency " + path)
-				}
-			} else {
-				if err == nil {
-					clearTables([]*Table{dt}) // quantised file: not usable here
-				}
-				if st := s.GenerateControlled(dt, workers, ctrl, progress); st.Aborted {
-					return st
-				}
+		if !dt.available() {
+			if st := s.GenerateControlled(dt, workers, ctrl, progress); st.Aborted {
+				return st
 			}
 		}
 	}
