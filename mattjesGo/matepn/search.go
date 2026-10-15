@@ -107,7 +107,7 @@ type Searcher struct {
 	nodes, leaves, ttHits, finalHits uint64
 }
 
-func (s *Searcher) probeOracle(b *bitboard.Board) (mateab.Verdict, int) {
+func (s *Searcher) probeOracle(b *bitboard.Board) (mateab.Verdict, int, int) {
 	s.scratch = *b
 	return s.oracle.Probe(&s.scratch)
 }
@@ -222,18 +222,19 @@ func (s *Searcher) checkStop() {
 // a mating move is always a check). Attacker nodes have odd depth.
 func (s *Searcher) terminal(b *bitboard.Board, buf *chess.MoveBuffer, depth int) (pn, dn uint32, n int, ok bool) {
 	attacker := depth%2 == 1
-	v, plies := s.probeOracle(b)
+	v, lo, hi := s.probeOracle(b)
 	switch {
 	case v == mateab.Draw, attacker && v == mateab.Loss, !attacker && v == mateab.Win:
 		return Inf, 0, 0, true
 	case attacker && v == mateab.Win, !attacker && v == mateab.Loss:
-		if plies > 0 && plies > depth {
+		if lo > depth {
 			return Inf, 0, 0, true // the mate exists but is too long for this depth
 		}
-		if plies > 0 {
+		if hi <= depth {
 			return 0, Inf, 0, true
 		}
-		// distance unknown: the search has to find it (not the case with endgame tables)
+		// the bounds straddle the depth (quantised table, or distance unknown):
+		// the search has to resolve it, every child carries bounds again
 	}
 	if attacker && depth == 1 {
 		n = b.GenChecks(buf)
@@ -490,9 +491,9 @@ func (s *Searcher) proofLength(b *bitboard.Board, depth int, memo map[tt.Key]int
 		return l
 	}
 	attacker := depth%2 == 1
-	if v, plies := s.probeOracle(b); plies > 0 && ((attacker && v == mateab.Win) || (!attacker && v == mateab.Loss)) {
-		memo[k] = plies // the oracle (endgame table) ended the line
-		return plies
+	if v, _, hi := s.probeOracle(b); hi <= depth && ((attacker && v == mateab.Win) || (!attacker && v == mateab.Loss)) {
+		memo[k] = hi // the oracle (endgame table) ended the line, as in terminal
+		return hi
 	}
 	var buf chess.MoveBuffer
 	n := b.GenMoves(&buf)

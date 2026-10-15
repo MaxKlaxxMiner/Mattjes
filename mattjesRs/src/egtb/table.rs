@@ -58,6 +58,37 @@ impl Value {
             0
         }
     }
+
+    /// The interval of plies the true distance lies in when the value comes
+    /// from a table with the given step (moves per bucket, see `quantize`): an
+    /// exact table (step 1) gives lo == hi, a quantised table the whole
+    /// bucket. Draws and mates in 0 give (0, 0).
+    pub fn bounds(self, step: u32) -> (u32, u32) {
+        if step <= 1 || self == Value::DRAW || self.0 == LOSS_BASE {
+            let p = self.plies();
+            return (p, p);
+        }
+        if self.is_win() {
+            let v = self.0 as u32;
+            return (2 * (v + 1).saturating_sub(step).max(1) - 1, 2 * v - 1);
+        }
+        let m = (self.0 - LOSS_BASE) as u32;
+        (2 * (m + 1).saturating_sub(step).max(1), 2 * m)
+    }
+
+    /// Rounds the value up to the next multiple of `step` moves ("mate in at
+    /// most 8" instead of the exact count), the upper end of its bucket.
+    /// Draws and mates in 0 stay; wins and losses stay apart.
+    pub fn quantize(self, step: u32) -> Value {
+        if step <= 1 || self == Value::DRAW || self.0 == LOSS_BASE {
+            return self;
+        }
+        let top = (LOSS_BASE - 1) as u32;
+        if self.is_win() {
+            return Value(((self.0 as u32).div_ceil(step) * step).min(top) as u8);
+        }
+        Value(LOSS_BASE + (((self.0 - LOSS_BASE) as u32).div_ceil(step) * step).min(top) as u8)
+    }
 }
 
 impl fmt::Display for Value {
@@ -98,6 +129,12 @@ pub struct Table {
     /// Dead and illegal entries were overwritten with their predecessor for
     /// compression ("don't care"); the values no longer hash to raw_checksum.
     filled: std::sync::atomic::AtomicBool,
+    /// The resolution of the values in moves: 1 = exact distances, n = every
+    /// value is the upper end of a bucket of n moves (`quantize`), so a lookup
+    /// only bounds the distance (`Value::bounds`) and the search has to
+    /// resolve the rest. The generator always produces exact values. Atomic
+    /// like `filled`, because `save_table` quantises through a shared reference.
+    step: std::sync::atomic::AtomicU32,
 }
 
 impl Table {
@@ -121,7 +158,36 @@ impl Table {
             raw_checksum: std::sync::atomic::AtomicU64::new(0),
             invalid: Mutex::new(None),
             filled: std::sync::atomic::AtomicBool::new(false),
+            step: std::sync::atomic::AtomicU32::new(1),
         }
+    }
+
+    /// Coarsens the values in memory to buckets of `step` moves (see
+    /// `Value::bounds`): what the cache files beyond the base hold
+    /// (docs/m5-endgame-tables.md). Exact values cannot be recovered, so the
+    /// table can no longer serve the generator as a dependency.
+    pub fn quantize(&self, step: u32) {
+        if step <= 1 || self.values.is_empty() {
+            return;
+        }
+        for v in &self.values {
+            v.store(Value(v.load(Ordering::Relaxed)).quantize(step).0, Ordering::Relaxed);
+        }
+        self.set_step(step);
+    }
+
+    /// The resolution of the values in moves (1 = exact).
+    pub fn step(&self) -> u32 {
+        self.step.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn set_step(&self, step: u32) {
+        self.step.store(step.max(1), Ordering::Relaxed);
+    }
+
+    /// Whether the values are exact distances (step 1).
+    pub fn is_exact(&self) -> bool {
+        self.step() <= 1
     }
 
     /// Hands the generator's bitset of dead and illegal indices to the table.
@@ -175,6 +241,7 @@ impl Table {
         self.raw_checksum.store(0, Ordering::Relaxed);
         *self.invalid.lock().unwrap() = None;
         self.set_filled(false);
+        self.set_step(1);
     }
 
     #[inline(always)]
@@ -350,6 +417,7 @@ impl Set {
                 nt.values = t.bytes().iter().map(|&b| AtomicU8::new(b)).collect();
                 nt.raw_checksum.store(t.raw_checksum.load(Ordering::Relaxed), Ordering::Relaxed);
                 nt.set_filled(t.is_filled());
+                nt.set_step(t.step());
             }
         }
         n
@@ -368,6 +436,7 @@ impl Set {
                 t.values = std::mem::take(&mut ft.values);
                 t.raw_checksum.store(ft.raw_checksum.load(Ordering::Relaxed), Ordering::Relaxed);
                 t.set_filled(ft.is_filled());
+                t.set_step(ft.step());
                 *t.invalid.lock().unwrap() = ft.invalid.lock().unwrap().take();
             }
         }
@@ -422,9 +491,22 @@ impl Set {
     /// table that is not computed yet. King against king is a draw without a
     /// table.
     pub fn lookup(&self, b: &Board) -> Option<Value> {
+        self.lookup_table(b).map(|(_, v)| v)
+    }
+
+    /// `lookup` with the interval of plies the distance lies in
+    /// (`Value::bounds` with the table's step): lo == hi for exact tables.
+    pub fn lookup_bounds(&self, b: &Board) -> Option<(Value, u32, u32)> {
+        let (t, v) = self.lookup_table(b)?;
+        let (lo, hi) = v.bounds(t.map_or(1, |t| t.step()));
+        Some((v, lo, hi))
+    }
+
+    /// The value and its table (`None` for king against king).
+    fn lookup_table(&self, b: &Board) -> Option<(Option<&Table>, Value)> {
         let occ = b.by_color[0] | b.by_color[1];
         if occ.count_ones() == 2 && b.castling == 0 {
-            return Some(Value::DRAW);
+            return Some((None, Value::DRAW));
         }
         let (t, flip) = self.find_table(b)?;
         if !t.is_generated() {
@@ -434,7 +516,7 @@ impl Set {
         if idx < 0 {
             return None; // adjacent kings, never reached from a legal position
         }
-        Some(t.value(idx as usize))
+        Some((Some(t), t.value(idx as usize)))
     }
 
     /// The table and the index of a position with three or four pieces, no

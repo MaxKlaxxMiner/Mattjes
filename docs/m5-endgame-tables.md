@@ -488,7 +488,9 @@ Erkenntnisse:
 
 **Umgesetzt (2026-10-07):** Package `lz` in Go und Rust (das LZ des Autors: LZ4-
 Blockformat, Hash-Ketten Tiefe 256, Lazy Matching, 4-MB-Blöcke parallel, Längen 64 Bit
-für Sechs-Steiner). Dateiformat: 4 Byte Kennung `MEGT`, 8 Byte Roh-Prüfsumme (die
+für Sechs-Steiner). Dateiformat (v1; seit 2026-10-15 v2 mit Kennung `MEG2`,
+Schrittweiten-Byte und 16-Byte-Kopf, Abschnitt "Quantisierte Werte"): 4 Byte
+Kennung `MEGT`, 8 Byte Roh-Prüfsumme (die
 Konstante aus dem Code, über die Werte mit 128ern, damit bleiben `measure.log` und alle
 Konstanten gültig), dann der LZ-Container. Vor dem Packen werden ungültige Einträge
 durch den Vorgängerwert ersetzt ("ungültig = egal"); die Suche fragt sie nie ab,
@@ -512,6 +514,210 @@ schneller als die Erzeugung mit 83 min). Bauernlos 13,5 GiB → 2,25 GiB (6,0×)
 30,5 GiB → 7,17 GiB (4,3×); Spanne 2,1× (KBNKQ, KBNKP) bis 252× (KNNKB). Die Erwartung
 "Faktor 2 bis 4" war zu vorsichtig, weil die vielen remis- oder gewinnlastigen Tabellen
 stärker packen als die beiden Stichproben. Je Material in der Anforderungstabelle oben.
+
+### Vergleich mit Standardpackern und Gaviota (2026-10-13)
+
+Anlass: die Frage, ob ein Wechsel zum Nalimov-Format kleinere Dateien brächte.
+Antwort: Der Unterschied liegt nicht im Index, sondern im Packer. Messung an den
+Rohwerten der Basis (35 Materialien, 181,5 MB, tote Einträge gefüllt wie in der
+Datei; Werkzeug im Scratchpad, nicht im Repo):
+
+| Packer | Größe | Faktor |
+|---|---|---|
+| `lz` (LZ4-Blockformat, 4-MB-Blöcke, keine Entropiestufe) | 39,4 MB | 4,6× |
+| gzip −9 | 29,3 MB | 6,2× |
+| zstd −19 | 19,4 MB | 9,4× |
+| xz −6 | 16,2 MB | 11,2× |
+| zstd −19 in unabhängigen 64-KB-Blöcken | 24,2 MB | 7,5× |
+| zstd −19 in 16-KB-Blöcken | 27,2 MB | 6,7× |
+| 16-KB-Blöcke mit trainiertem 128-KB-Wörterbuch | 28,3 MB | 6,4× |
+
+gzip findet kaum bessere Matches als `lz`, hängt aber Huffman an und gewinnt damit
+ein Viertel; zstd verdoppelt den Faktor. Ein Wörterbuch bringt nichts, die
+Redundanz liegt zwischen benachbarten 64-Byte-Zeilen, nicht in wiederkehrenden
+Mustern über die Datei. Unabhängige Blöcke für wahlfreien Zugriff kosten 25 %
+(64 KB) bis 40 % (16 KB) gegenüber dem Ganzen.
+
+**Gaviota** (DTM, offenes Format, LZMA in Blöcken, Schema `cp4`), dieselben 35
+Materialien als `.gtb.cp4`: 27,4 MB gegen unsere 39,4 MB, also 30 % kleiner und
+genau dort, wo zstd mit 64-KB-Blöcken landet. Je Material (Byte):
+
+| Material | roh | `lz` | Gaviota | | Material | roh | `lz` | Gaviota |
+|---|---|---|---|---|---|---|---|---|
+| KQK | 59.136 | 14.962 | 9.443 | | KQKR | 3.784.704 | 1.666.919 | 1.231.824 |
+| KBK | 59.136 | 262 | 2.021 | | KQKQ | 3.784.704 | 600.444 | 617.561 |
+| KBNK | 3.784.704 | 1.200.492 | 857.067 | | KBKB | 3.784.704 | 15.092 | 149.440 |
+| KRRK | 3.784.704 | 436.135 | 227.504 | | KNNK | 3.784.704 | 15.216 | 56.090 |
+| KQPK | 11.096.064 | 1.936.199 | 1.849.665 | | KRKP | 11.096.064 | 4.031.424 | 2.444.308 |
+| KBPK | 11.096.064 | 3.455.513 | 2.087.822 | | KNPK | 11.096.064 | 3.674.763 | 1.954.563 |
+| KPKP | 8.322.048 | 2.791.865 | 1.606.640 | | Summe | 181.516.608 | 39.396.266 | 27.391.150 |
+
+Lesart: Auf dichten DTM-Tabellen (KBNK, KQKR, KRRK) und vor allem auf den
+Bauern-Tabellen (KRKP, KNPK, KBPK, KPKP) liegt Gaviota 30 bis 45 % vorn, das ist
+die Entropiestufe. Auf dünnen und toten Tabellen (KBK, KBKB, KNNK) sind wir um
+Faktor 4 bis 10 kleiner, weil die Vorgänger-Füllung plus LZ fast nichts übrig
+lässt und Gaviota pro Block Festkosten hat; KQKQ ist gleichauf. Die Information
+ist dieselbe (xz auf unseren Rohwerten ergibt 16,2 MB, ein solides 7-Zip-Archiv der
+Gaviota-Dateien laut Forum rund 16 MB).
+
+**Einordnung Nalimov:** DTM wie wir, 3 bis 5 Steine 7,6 GB in 290 Dateien (eine
+pro Material und Seite), 8-KB-Blöcke mit Kadatch-Kompressor samt Entropiestufe,
+Index mit derselben Königspaar-Symmetrie und ausgesparten besetzten Feldern (unter
+10 % gegenüber unserem Index, die Füllung der toten Einträge holt das meiste
+zurück). Format tot (von Syzygy abgelöst), Generator nie veröffentlicht, Prober
+ohne klare Lizenz: kein Wechsel. Der Weg für unsere Dateien ist stattdessen eine
+Entropiestufe in `lz` (Huffman über Literale, Längen, Distanzen, eigener Code,
+damit Go und Rust byteidentisch bleiben; Erwartung Faktor 7 bis 9 statt 4,6) und
+Blöcke von 32 bis 64 KB mit Blockindex, damit kalte Tabellen per `mmap` gepackt
+bleiben und nur angefasste Blöcke entpackt werden. Hochgerechnet lägen die 110
+Fünf-Steiner dann bei 4 bis 5 GB statt 10,2 GB.
+
+### Quantisierte Werte (2026-10-15)
+
+Frage des Autors: Was bringt es, die DTM-Werte gröber zu speichern ("Matt in
+höchstens 8 Zügen" statt der exakten Zahl), bis hin zu reinem WDL, und die exakte
+Distanz der Suche zu überlassen? Messung an denselben Rohwerten der Basis
+(181,5 MB), Zugzahl auf Vielfache von 2, 4, 8 aufgerundet (`q2`, `q4`, `q8`),
+Zweierpotenz-Eimer 1, 2, 4, 8, 16, 32, 64, 127 (`log`) und nur Gewinn/Remis/Verlust
+(`wdl`); Gewinne und Verluste bleiben getrennt:
+
+| Schema | Symbole | `lz` | zstd −19 | xz −6 | zstd 64-KB-Blöcke |
+|---|---|---|---|---|---|
+| exakt | 87 | 39,4 MB (4,6×) | 19,4 MB (9,4×) | 16,2 MB (11,2×) | 24,2 MB (7,5×) |
+| `q2` | 45 | 28,9 MB (6,3×) | 12,8 MB (14,2×) | 11,0 MB (16,4×) | |
+| `q4` | 24 | 20,8 MB (8,7×) | 8,2 MB (22,1×) | 7,4 MB (24,4×) | 11,0 MB (16,4×) |
+| `q8` | 14 | 14,9 MB (12,2×) | 5,3 MB (34,4×) | 5,0 MB (35,9×) | 7,4 MB (24,4×) |
+| `log` | 15 | 18,3 MB (9,9×) | 6,5 MB (28,1×) | 6,1 MB (29,6×) | |
+| `wdl` | 3 | 7,5 MB (24,1×) | 1,8 MB (102×) | 1,9 MB (94×) | 3,1 MB (58×) |
+
+Jede Halbierung der Auflösung spart etwa Faktor 1,5; `q4` mit unserem `lz`
+(20,8 MB) entspricht exakt mit zstd (19,4 MB), die Quantisierung um 4 ist also so
+viel wert wie die Entropiestufe, und beides zusammen Faktor 2,4. WDL ist um Faktor
+11 kleiner als exakt, hochgerechnet auf die Fünf-Steiner rund 0,5 GB, die
+Größenordnung der Syzygy-WDL (387 MB für 3 bis 5 Steine).
+
+**Was die Suche dafür braucht:** Das Orakel liefert statt einer Distanz ein
+Intervall `[lo, hi]` in Halbzügen (exakt: `lo = hi`; `q4`: Fenster von 8
+Halbzügen; WDL: `lo = 1`, `hi = ∞`). Regel am Knoten mit Resttiefe d: Kind mit
+`hi ≤ d − 1` ist bewiesen, Kind mit `lo > d − 1` widerlegt, dazwischen wird das
+Kind expandiert, wobei jedes Enkelkind wieder Schranken trägt. Die Suche löst also
+nur das Band auf, in dem der Eimer nicht entscheidet, höchstens Fensterbreite tief
+(bei `q4` ein "Matt in 4" mit perfektem Orakel außerhalb, Millisekunden); bei WDL
+ist das Band der ganze Raum und man ist wieder bei der Suche von heute (KRR-KN
+70 s). Der Generator bleibt unverändert (die Ebenen-Iteration braucht die exakten
+Werte, quantisiert wird beim Schreiben, Roh-Prüfsumme und `Verify` gelten vor der
+Quantisierung). Zwei Fallen: Aufrunden ist Pflicht (die obere Schranke ist die
+Garantie, die untere folgt aus der Eimergrenze davor), und eine quantisierte
+Tabelle lässt sich nicht mehr direkt "abspielen" (innerhalb eines Eimers kann die
+Linie kreisen, das Problem von WDL ohne DTZ), die Variante muss die Suche liefern.
+Deshalb: Basis exakt lassen (37 MB), Auflösung pro Material wählbar, und das
+Intervall-Orakel ist derselbe Umbau wie für Syzygy-WDL und das Beweisziel
+"Gewinn".
+
+**Dasselbe an KRRKN** (Fünf-Steiner, 242,2 MB roh, 78,8 Mio. legale von 242 Mio.
+Indizes, Datei heute 39,0 MB), zusätzlich mit unabhängigen Blöcken, wie sie ein
+Format braucht, das nicht komplett entpackt im RAM liegt:
+
+| Schema | Symbole | `lz` | zstd −19 | xz −6 | zstd 64-KB-Blöcke | zstd 16-KB-Blöcke |
+|---|---|---|---|---|---|---|
+| exakt | 82 | 39,0 MB (6,2×) | 20,7 MB (11,7×) | 18,2 MB (13,3×) | 23,9 MB (10,1×) | 26,1 MB (9,3×) |
+| `q2` | 42 | 28,6 MB (8,5×) | 14,2 MB (17,1×) | 12,6 MB (19,2×) | 17,3 MB (14,0×) | 19,2 MB (12,6×) |
+| `q4` | 22 | 20,8 MB (11,7×) | 9,1 MB (26,7×) | 8,2 MB (29,5×) | 11,9 MB (20,4×) | 13,6 MB (17,8×) |
+| `q8` | 12 | 14,6 MB (16,6×) | 5,8 MB (41,9×) | 5,5 MB (44,4×) | 8,2 MB (29,7×) | 9,4 MB (25,8×) |
+| `log` | 15 | 20,4 MB (11,9×) | 9,0 MB (26,9×) | 8,1 MB (29,7×) | 11,4 MB (21,2×) | 13,1 MB (18,4×) |
+| `wdl` | 3 | 5,0 MB (48×) | 1,3 MB (188×) | 1,4 MB (178×) | 2,3 MB (103×) | 3,0 MB (80×) |
+
+Gleiches Bild wie auf der Basis: Halbierung der Auflösung spart Faktor 1,4 bis
+1,5, `q4` mit `lz` = exakt mit zstd. Die Blockkosten wachsen mit der Dünnheit:
+64-KB-Blöcke kosten bei exakt 15 %, bei `q4` 31 %, bei `q8` 41 %, bei WDL 80 %
+gegenüber dem Ganzen (16 KB: 26 / 50 / 63 / 134 %), weil ein Block Festkosten hat
+und bei wenigen Symbolen kaum noch Inhalt. 64 KB ist für dünne Tabellen die untere
+Grenze, 32 bis 64 KB der Arbeitsbereich. Entpacken eines 64-KB-Blocks (zstd −19,
+Stichprobe 32 MB vom Tabellenanfang): 2,7 GB/s, also rund 25 µs, 16-KB-Blöcke
+1,9 GB/s (8,5 µs). Nebenbefund: zstd −1 packt mit 1,1 GB/s auf 13,8× gegen 16,2×
+bei −19, schnelles Packen kostet fast nichts.
+
+**Plan für Tabellen, die nicht komplett im RAM liegen (ab fünf, spätestens
+sechs Steinen):**
+
+- Dateiformat mit Blöcken fester Rohgröße (32 oder 64 KB) und einem Blockindex
+  (Offset je Block, 8 Byte, bei KRRKBN 15,5 GB / 64 KB = 237 Tsd. Einträge =
+  1,9 MB) im Kopf; die Datei wird per `mmap` eingeblendet oder blockweise
+  gelesen, nie als Ganzes.
+- `Table` bekommt zwei Betriebsarten hinter einem Zugriff: entpackt (`Values` als
+  Array, wie heute: Basis, Wurzelmaterial, alles was der Generator gerade braucht)
+  und gepackt (Blockcache, LRU mit fester Byte-Grenze, Entpacken bei Miss). Der
+  Index einer Abfrage liefert Blocknummer und Offset; Kinder eines Knotens, die
+  den letzten Stein ziehen, liegen in derselben 64-Byte-Zeile, Königszüge
+  springen um 64³ Byte und mehr, treffen also andere Blöcke.
+- Kosten pro Miss: Block lesen (Seitencache) plus 25 µs entpacken; damit die
+  Suche nicht leidet, muss die Trefferquote hoch sein. Erwartung aus der Lokalität
+  der Suche (sie bleibt lange in einer Region des Raums) ist gut, gemessen wird
+  sie an KRR-KN mit kleinem Blockcache gegen die entpackte Tabelle.
+- Reihenfolge: zuerst das Intervall-Orakel (Suche), dann das Blockformat mit
+  Entropiestufe in `lz` (byteidentisch in Go und Rust), dann die Quantisierung als
+  Schreiboption je Material, zuletzt der Blockcache in `Lookup`.
+
+**Empfehlung zur Auflösung (aus der Benchmark-Zeitleiste, `test-positions.md`):**
+Die Suche braucht zum Auflösen eines Eimers eine Teilsuche von etwa
+Fensterbreite Tiefe, und die Zeitleiste von KRR-KN sagt, was eine Tiefe kostet:
+8 Halbzüge 0,3 s, 12 Halbzüge 7 s, 16 Halbzüge 70 s (alle zwölf Wurzelzüge, ohne
+Orakel im Material, also eine obere Schranke für die Eimer-Auflösung). Jede
+Verdopplung der Eimerbreite spart Faktor 1,4 bis 1,5 Datei und kostet Faktor 30
+bis 200 Auflösungszeit. Das Knie liegt bei **Vielfachen von 4 Zügen (`q4`,
+Fenster 8 Halbzüge)**: Datei halbiert (`lz` 20,8 statt 39,0 MB, mit zstd 9,1),
+Auflösung unter 0,3 s im schlechtesten Fall. `q8` (Fenster 16) würde bis zu einer
+Minute pro Antwort kosten, `q2` spart nur Faktor 1,4. Zweierpotenz-Eimer taugen
+nicht, weil lange Matts ein Fenster von 32 Halbzügen bekämen. Basis exakt, WDL nur
+dort, wo keine Distanz gebraucht wird (Rolle der Syzygy-Dateien). Quantisiert wird
+nur die Datei: live erzeugte Tabellen sind im RAM exakt.
+
+**Gemessen (2026-10-15, Intervall-Orakel, Schritt 6 in `docs/m4-mate-search.md`;**
+Rust `matepn`, Hash 256, Arbeitsrechner, Tabelle im RAM quantisiert, alle Werte
+exakt wie mit der exakten Tabelle):
+
+| Schrittweite | Fenster | KRR-KN Schwarz am Zug (12 Werte) | nach Nh2 (27 Werte) | KQ-KBN (Matt in 39, 77 Halbzüge) |
+|---|---|---|---|---|
+| 4 | 8 Halbzüge | 288 Besuche, 1 ms | 441 Besuche, 1 ms | 1.844 Besuche, 1 ms |
+| 8 | 16 Halbzüge | 65.123 Besuche, 0,28 s | 66.896 Besuche, 0,29 s | 59.013 Besuche, 0,26 s |
+| 16 | 32 Halbzüge | 14,4 Mio. Besuche, 67 s | 3,1 Mio. Besuche, 14 s | |
+
+Ohne Tabelle: 70 s bzw. 450 s. Die obere Schranke aus der Zeitleiste (0,3 s für
+Schrittweite 4) war um drei Größenordnungen zu pessimistisch; jede Verdopplung
+der Schrittweite kostet rund Faktor 200 Auflösungszeit, unabhängig von der
+Mattlänge (KQ-KBN mit 77 Halbzügen ist nicht teurer als KRR-KN mit 17).
+
+**Entscheidung des Autors (2026-10-15): Schrittweite 8 fest eingebaut, keine
+Option.** `egtb.FileStep = 8` (`FILE_STEP`), Dateiformat v2: Kennung `MEG2`, ein
+Schrittweiten-Byte, drei Nullbytes, 8 Byte Roh-Prüfsumme der exakten Werte,
+dann der `lz`-Container (16-Byte-Kopf; alte `MEGT`-Dateien werden als "nicht
+lesbar" abgewiesen und neu erzeugt). Regeln:
+
+- `SaveTable` quantisiert die Tabelle **in place** (kein 15-GB-Zwischenpuffer
+  für Sechs-Steiner) und schreibt sie; danach ist sie im RAM, was ein Neuladen
+  ergibt. Die Basis (`Save`) bleibt exakt, `Load` weist eine quantisierte Basis
+  ab.
+- Der Generator braucht exakte Kinder: `GenerateControlled` nimmt eine
+  Abhängigkeit nur aus dem Cache, wenn sie exakt ist (nie der Fall ab fünf
+  Steinen), sonst rechnet er sie im RAM exakt nach (ohne sie zu schreiben), also
+  für einen Sechs-Steiner alle Fünf-Steiner-Abhängigkeiten je 20 bis 60 s.
+- `egtb-measure` prüft die Teststellungen gegen den Eimer (`lo ≤ 2N − 1 ≤ hi`),
+  verifiziert vor dem Schreiben (eine geladene Tabelle kann nicht verifiziert
+  werden, nur Konsistenz der Eimer wäre möglich) und schreibt erst danach.
+- Die UCI-Tabellenstufe meldet quantisierte Werte nicht (`eval` nur bei
+  `lo == hi`), die Suche löst sie auf; nach einer Hintergrund-Erzeugung mit
+  `EgtbWriteCache` kommt die Antwort deshalb nach rund 0,3 s aus der Suche
+  statt sofort. `extendPV` endet an quantisierten Tabellen.
+
+Ergebnis: `5-KRRKN.bin` 14,6 MB statt 39,0 MB, `5-KBNKQ.bin` 47,1 MB statt
+114,6 MB; Go und Rust schreiben byteidentische Dateien (KRRKN md5
+`adcca7a9bcd82aadc843c685af1d7524`, Roh-Prüfsumme `443a1b3b48954ec3` unverändert),
+Vorwärts-Verifikation vor dem Schreiben 0 Abweichungen, UCI-Ausgabe beider
+Binaries zeilenidentisch (KRR-KN 65.123 Besuche, KQ-KBN 59.013). Offen bleibt die
+Frage, was Schrittweite 8 kostet, wenn eine größere Suche (Sechs-Steiner-Wurzel)
+per Schlag in das Band einer quantisierten Abhängigkeit fällt: dort kostet jeder
+Eintritt bis zu 60 Tsd. Besuche statt 300 bis 1.800 bei Schrittweite 4; die
+Konstante ist die einzige Stelle, die Dateien müssten neu erzeugt werden.
 
 ## Offen
 

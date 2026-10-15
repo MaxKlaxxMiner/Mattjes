@@ -145,7 +145,9 @@ fn experiments() {
     // tests_mate::matelist_solve("KQ-KBN", 0, 200, 400_000_000); // 387 M positions at ply 16, aborted at ply 17 after 960 s, 42 GB peak; the space is 700-750 M
 
     // --- milestone 5, measurement series: five- and six-piece tables (time, size, checksum), cache dir mattjes-egtb-cache/ ---
-    tests_egtb::egtb_load_or_generate(12); // makes sure the four-piece base exists (15 s once, then 0.2 s); larger materials via "egtb-measure <name>"
+    // tests_egtb::egtb_load_or_generate(12); // makes sure the four-piece base exists (15 s once, then 0.2 s); larger materials via "egtb-measure <name>"
+    // --- interval oracle (docs/m5-endgame-tables.md, quantised cache files): KRR-KN with 5-KRRKN.bin (buckets of 8 moves) = the search resolves the 16-ply window; without the file 87,503 visits (Go = Rust) ---
+    tests_pn::matepn_solve_fen("KRR-KN after Nh2", "8/8/4k3/8/8/8/RK5n/2R5 w - - 2 2", 7, 256, "sat", "mEft");
     // tests_egtb::egtb_measure(&["KQKBN"], 12, true); // generated in 45 s, checksum 7b54498535f836cb, byte-identical to Go
     // tests_pn::matepn_solve(12, 256, "sat", "mEfi"); // iterative deepening: the shortest mate, cost of all depths
 }

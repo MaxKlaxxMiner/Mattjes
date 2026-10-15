@@ -220,16 +220,19 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
     /// Attacker nodes have odd depth.
     fn terminal(&self, b: &Board, buf: &mut MoveBuffer, depth: usize) -> (Option<(u32, u32)>, usize) {
         let attacker = depth % 2 == 1;
-        let (v, plies) = self.oracle.probe(b);
+        let (v, lo, hi) = self.oracle.probe(b);
         match v {
             Verdict::Draw => return (Some((INF, 0)), 0),
             Verdict::Loss if attacker => return (Some((INF, 0)), 0),
             Verdict::Win if !attacker => return (Some((INF, 0)), 0),
-            Verdict::Win | Verdict::Loss if plies > 0 => {
-                // the mate exists; too long for this depth = disproven here
-                return (Some(if plies as usize > depth { (INF, 0) } else { (0, INF) }), 0);
+            Verdict::Win | Verdict::Loss if lo as usize > depth => {
+                return (Some((INF, 0)), 0); // the mate exists but is too long for this depth
             }
-            _ => {} // unknown, or a win/loss without distance: search
+            Verdict::Win | Verdict::Loss if hi as usize <= depth => return (Some((0, INF)), 0),
+            // unknown, or bounds that straddle the depth (quantised table,
+            // distance unknown): the search has to resolve it, every child
+            // carries bounds again
+            _ => {}
         }
         let n = if attacker && depth == 1 { b.gen_checks(buf) } else { b.gen_moves(buf) };
         if n == 0 {
@@ -427,10 +430,10 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
             return l;
         }
         let attacker = depth % 2 == 1;
-        let (v, plies) = self.oracle.probe(b);
-        if plies > 0 && ((attacker && v == Verdict::Win) || (!attacker && v == Verdict::Loss)) {
-            memo.insert(k, plies as i32); // the oracle (endgame table) ended the line
-            return plies as i32;
+        let (v, _, hi) = self.oracle.probe(b);
+        if hi as usize <= depth && ((attacker && v == Verdict::Win) || (!attacker && v == Verdict::Loss)) {
+            memo.insert(k, hi as i32); // the oracle (endgame table) ended the line, as in terminal
+            return hi as i32;
         }
         let mut buf = new_buffer();
         let n = b.gen_moves(&mut buf);

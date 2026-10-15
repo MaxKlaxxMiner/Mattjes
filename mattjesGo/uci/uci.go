@@ -73,7 +73,8 @@ type Engine struct {
 	// a "go infinite" holds the best move back until "stop"
 	infinite    bool
 	pendingBest string
-	tableBest   bool // pendingBest has a table value (a search without result keeps it)
+	tableBest   bool       // pendingBest has a table value (a search without result keeps it)
+	rootTable   []rootMove // the root moves the table stage knows exactly, handed to the search's root driver
 	job         *job
 	jobDone     chan *egtb.Set
 	// the running search, if any
@@ -383,10 +384,17 @@ func (e *Engine) search() bool {
 	if !moves[0].known {
 		e.send("info string no endgame table for this material (%d pieces)", pieceCount(&e.board))
 	}
+	// one depth for the whole block (the longest line), as the search's
+	// blocks have it: GUIs order MultiPV lines by depth or drop the ones that
+	// look older, so a draw with its one-move line must not say depth 1
+	depth := 1
+	for i := 0; i < len(moves) && i < e.multiPV; i++ {
+		depth = max(depth, len(moves[i].pv))
+	}
 	for i := 0; i < len(moves) && i < e.multiPV; i++ {
 		r := moves[i]
 		if !r.known {
-			e.send("info depth 1 multipv %d score cp 0 pv %s", i+1, r.move.UCI())
+			e.send("info depth %d multipv %d score cp 0 pv %s", depth, i+1, r.move.UCI())
 			continue
 		}
 		var sb strings.Builder
@@ -394,10 +402,19 @@ func (e *Engine) search() bool {
 			sb.WriteByte(' ')
 			sb.WriteString(m.UCI())
 		}
-		e.send("info depth %d multipv %d score %s pv%s", len(r.pv), i+1, score(r.value), sb.String())
+		e.send("info depth %d multipv %d score %s pv%s", depth, i+1, score(r.value), sb.String())
 	}
 	e.pendingBest, e.tableBest = moves[0].move.UCI(), moves[0].known
-	return allKnown || moves[0].known && moves[0].value.IsWin()
+	e.rootTable = e.rootTable[:0]
+	for _, r := range moves {
+		if r.known {
+			e.rootTable = append(e.rootTable, r)
+		}
+	}
+	// settled only when every move is known: a known win alone proves
+	// nothing about the other moves (a quiet move could mate faster), the
+	// root driver checks them with the table values as its starting point
+	return allKnown
 }
 
 // maybeGenerate starts (or resumes) the background generation of the root
@@ -578,7 +595,13 @@ func (e *Engine) loadTable(m egtb.Material) {
 		e.send("info string %s: %v", path, err)
 		return
 	}
-	e.send("info string egtb: loaded %s", path)
+	if t.Exact() {
+		e.send("info string egtb: loaded %s", path)
+	} else {
+		// cache files beyond the base hold buckets of egtb.FileStep moves:
+		// the table stage does not report them, the search resolves them
+		e.send("info string egtb: loaded %s (step %d, the search resolves exact distances)", path, t.Step)
+	}
 	e.flush()
 }
 
@@ -609,10 +632,13 @@ func (e *Engine) loadDependencies(b *bitboard.Board) {
 
 // eval values a position from the side to move's view: from the table, or,
 // for positions the tables leave out (an en passant right), from its children
-// up to depth plies deep. ok is false when no table covers it.
+// up to depth plies deep. ok is false when no table covers it, or when the
+// table only bounds the distance (quantised): the table stage reports exact
+// values only, such positions go to the search, which has the bounds as its
+// oracle.
 func (e *Engine) eval(b *bitboard.Board, depth int) (egtb.Value, bool) {
-	if v, ok := e.set.Lookup(b); ok {
-		return v, true
+	if v, lo, hi, ok := e.set.LookupBounds(b); ok {
+		return v, lo == hi
 	}
 	var buf chess.MoveBuffer
 	n := b.GenMoves(&buf)

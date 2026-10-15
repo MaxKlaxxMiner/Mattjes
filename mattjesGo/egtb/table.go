@@ -44,6 +44,35 @@ func (v Value) Plies() int {
 	return 0
 }
 
+// Bounds is the interval of plies the true distance lies in when the value
+// comes from a table with the given step (moves per bucket, see Quantize):
+// an exact table (step 1) gives lo == hi, a quantised table the whole bucket.
+// Draws and mates in 0 give 0, 0.
+func (v Value) Bounds(step int) (lo, hi int) {
+	if step <= 1 || v == Draw || v == lossBase {
+		p := v.Plies()
+		return p, p
+	}
+	if v.IsWin() {
+		return 2*max(1, int(v)-step+1) - 1, 2*int(v) - 1
+	}
+	m := int(v) - lossBase
+	return 2 * max(1, m-step+1), 2 * m
+}
+
+// Quantize rounds a value up to the next multiple of step moves ("mate in at
+// most 8" instead of the exact count), the upper end of its bucket. Draws and
+// mates in 0 stay; wins and losses stay apart.
+func Quantize(v Value, step int) Value {
+	if step <= 1 || v == Draw || v == lossBase {
+		return v
+	}
+	if v.IsWin() {
+		return Value(min((int(v)+step-1)/step*step, lossBase-1))
+	}
+	return Value(lossBase + min((int(v)-lossBase+step-1)/step*step, lossBase-1))
+}
+
 func (v Value) String() string {
 	switch {
 	case v == Draw:
@@ -65,6 +94,11 @@ type Table struct {
 	kk        *kkTable
 	Size      int
 	Values    []Value // nil until generated or loaded
+	// Step is the resolution of the values in moves: 1 = exact distances,
+	// n = every value is the upper end of a bucket of n moves (Quantize), so
+	// a lookup only bounds the distance (Value.Bounds) and the search has to
+	// resolve the rest. The generator always produces exact values.
+	Step int
 	// RawChecksum is the checksum of the values as generated (dead and illegal
 	// entries as 0); set after generation or read from the cache file header.
 	// Checksum constants in the code refer to this.
@@ -78,7 +112,7 @@ type Table struct {
 }
 
 func newTable(m Material) *Table {
-	t := &Table{Mat: m, slots: m.slots()}
+	t := &Table{Mat: m, slots: m.slots(), Step: 1}
 	for i, p := range t.slots {
 		t.equalPrev = append(t.equalPrev, i > 0 && t.slots[i-1] == p)
 	}
@@ -221,7 +255,7 @@ func (s *Set) Fork() *Set {
 		if t.Values != nil {
 			nt.Values = append([]Value(nil), t.Values...)
 			nt.RawChecksum = t.RawChecksum
-			nt.filled = t.filled
+			nt.filled, nt.Step = t.filled, t.Step
 		}
 	}
 	return n
@@ -236,7 +270,7 @@ func (s *Set) Adopt(from *Set) {
 		}
 		t := s.AddMaterial(ft.Mat)
 		if t.Values == nil {
-			t.Values, t.RawChecksum, t.filled, t.invalid = ft.Values, ft.RawChecksum, ft.filled, ft.invalid
+			t.Values, t.RawChecksum, t.filled, t.invalid, t.Step = ft.Values, ft.RawChecksum, ft.filled, ft.invalid, ft.Step
 			ft.Values, ft.invalid = nil, nil
 		}
 	}
@@ -329,20 +363,57 @@ func (s *Set) TotalSize() int {
 // plays one more ply) or a table that is not computed yet. King against king
 // is a draw without a table.
 func (s *Set) Lookup(b *bitboard.Board) (v Value, ok bool) {
+	_, v, ok = s.lookup(b)
+	return v, ok
+}
+
+// LookupBounds is Lookup with the interval of plies the distance lies in
+// (Value.Bounds with the table's Step): lo == hi for exact tables.
+func (s *Set) LookupBounds(b *bitboard.Board) (v Value, lo, hi int, ok bool) {
+	t, v, ok := s.lookup(b)
+	if !ok {
+		return v, 0, 0, false
+	}
+	step := 1
+	if t != nil {
+		step = t.Step
+	}
+	lo, hi = v.Bounds(step)
+	return v, lo, hi, true
+}
+
+// lookup finds the value and its table (nil for king against king).
+func (s *Set) lookup(b *bitboard.Board) (t *Table, v Value, ok bool) {
 	occ := b.ByColor[0] | b.ByColor[1]
 	if bits.OnesCount64(occ) == 2 && b.Castling == 0 {
-		return Draw, true
+		return nil, Draw, true
 	}
 	t, flip, ok := s.findTable(b)
 	if !ok || t.Values == nil { // registered but not generated: no index for nothing (a search asks millions of times)
-		return Draw, false
+		return nil, Draw, false
 	}
 	idx := t.indexOf(b, flip)
 	if idx < 0 { // adjacent kings, never reached from a legal position
-		return Draw, false
+		return nil, Draw, false
 	}
-	return t.Values[idx], true
+	return t, t.Values[idx], true
 }
+
+// Quantize coarsens the values in memory to buckets of step moves (see
+// Value.Bounds); the file format experiment of docs/m5-endgame-tables.md.
+// Exact values cannot be recovered, so this is for loaded copies only.
+func (t *Table) Quantize(step int) {
+	if step <= 1 || t.Values == nil {
+		return
+	}
+	for i, v := range t.Values {
+		t.Values[i] = Quantize(v, step)
+	}
+	t.Step = step
+}
+
+// Exact reports whether the values are exact distances (Step 1).
+func (t *Table) Exact() bool { return t.Step <= 1 }
 
 // Locate finds the table and the index of a position with three or four
 // pieces, no castling rights and no en passant square. idx is -1 for adjacent

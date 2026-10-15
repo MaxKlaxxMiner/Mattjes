@@ -16,31 +16,45 @@ use crate::tt::{self, TransTable};
 /// options as letters: m = mobility initialisation, l = lazy mobility (1/1
 /// leaves, the move count when a node is entered; overrides m), e/E/x/X =
 /// 1+epsilon thresholds with epsilon 1/8, 1/2, 1, 2, f = depth-free final entries,
-/// t = endgame tables as oracle, i = iterative deepening (the shortest mate;
-/// otherwise a single search at the known depth 2*mate_in-1, the yardstick run).
+/// t = endgame tables as oracle (cached tables of the positions' own materials
+/// included; beyond the base they hold buckets of `FILE_STEP` moves, the search
+/// resolves the exact distance from the bounds), i = iterative deepening (the
+/// shortest mate; otherwise a single search at the known depth 2*mate_in-1,
+/// the yardstick run).
 pub fn matepn_solve(max_mate_in: u32, size_mb: usize, codec: &str, options: &str) {
-    run_matepn(&|p| p.mate_in <= max_mate_in, size_mb, codec, options);
+    run_matepn(MATE_POSITIONS, &|p| p.mate_in <= max_mate_in, size_mb, codec, options);
 }
 
 pub fn matepn_solve_named(name: &str, size_mb: usize, codec: &str, options: &str) {
-    run_matepn(&|p| p.name == name, size_mb, codec, options);
+    run_matepn(MATE_POSITIONS, &|p| p.name == name, size_mb, codec, options);
 }
 
-fn run_matepn(selected: &dyn Fn(&MatePosition) -> bool, size_mb: usize, codec: &str, options: &str) {
+/// Runs a single position that is not in `MATE_POSITIONS` (the regression list
+/// must not change), such as the five-piece KRR-KN of test-positions.md with
+/// its cached table.
+pub fn matepn_solve_fen(name: &'static str, fen: &'static str, mate_in: u32, size_mb: usize, codec: &str, options: &str) {
+    let positions = [MatePosition { name, fen, mate_in, proof_positions: 0, note: "" }];
+    run_matepn(&positions, &|_| true, size_mb, codec, options);
+}
+
+fn run_matepn(positions: &[MatePosition], selected: &dyn Fn(&MatePosition) -> bool, size_mb: usize, codec: &str, options: &str) {
     let table = tt::Table::new(size_mb);
     let bits = table.value_bits();
     let tables = options.contains('t');
-    let set = if tables { Some(tests_egtb::egtb_load_or_generate(12)) } else { None };
+    let mut set = if tables { Some(tests_egtb::egtb_load_or_generate(12)) } else { None };
+    if let Some(set) = set.as_mut() {
+        tests_egtb::egtb_load_for_positions(set, positions, selected);
+    }
     match (codec, &set) {
-        ("sat", None) => run(table, matepn::Saturating { bits }, mateab::Material, selected, options),
-        ("float", None) => run(table, matepn::Float { bits }, mateab::Material, selected, options),
-        ("sat", Some(set)) => run(table, matepn::Saturating { bits }, mateab::Tables { set }, selected, options),
-        ("float", Some(set)) => run(table, matepn::Float { bits }, mateab::Tables { set }, selected, options),
+        ("sat", None) => run(table, matepn::Saturating { bits }, mateab::Material, positions, selected, options),
+        ("float", None) => run(table, matepn::Float { bits }, mateab::Material, positions, selected, options),
+        ("sat", Some(set)) => run(table, matepn::Saturating { bits }, mateab::Tables { set }, positions, selected, options),
+        ("float", Some(set)) => run(table, matepn::Float { bits }, mateab::Tables { set }, positions, selected, options),
         _ => panic!("codec sat or float"),
     }
 }
 
-fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, oracle: O, selected: &dyn Fn(&MatePosition) -> bool, options: &str) {
+fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, oracle: O, positions: &[MatePosition], selected: &dyn Fn(&MatePosition) -> bool, options: &str) {
     let has = |o: char| options.contains(o);
     let (lazy, final_entries, tables, iterative, mated) = (has('l'), has('f'), has('t'), has('i'), has('M'));
     let mobility = has('m') && !lazy;
@@ -73,7 +87,7 @@ fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, 
     let mut total_nodes = 0u64;
     let mut total_time = Duration::ZERO;
     let mut table = Some(table);
-    for (i, p) in MATE_POSITIONS.iter().enumerate() {
+    for (i, p) in positions.iter().enumerate() {
         if !selected(p) {
             continue;
         }

@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use crate::bitboard::Board;
-use crate::chess::{Piece, Pos, MATE_POSITIONS};
+use crate::chess::{MatePosition, Piece, Pos, MATE_POSITIONS};
 use crate::egtb::{self, Set};
 use crate::tests_hash::group;
 
@@ -206,6 +206,27 @@ pub fn egtb_load_or_generate(workers: usize) -> Set {
     set
 }
 
+/// Adds the cached tables of the selected test positions' own materials beyond
+/// the base (the file must exist, nothing is generated). Those files hold
+/// buckets of `FILE_STEP` moves, so the searches run against bounds and resolve
+/// the exact distance themselves.
+pub fn egtb_load_for_positions(set: &mut Set, positions: &[MatePosition], selected: &dyn Fn(&MatePosition) -> bool) {
+    for p in positions.iter().filter(|p| selected(p)) {
+        let b = Board::from_fen(p.fen).expect("valid FEN");
+        let Some(m) = egtb::Material::of_board(&b) else { continue };
+        if m.pieces() <= 4 || set.find(&m.name()).is_some() {
+            continue;
+        }
+        let ti = set.add_material(m);
+        let path = set.table_path(&set.tables[ti]);
+        if let Err(e) = set.load_table(ti, &path) {
+            println!("egtb: {} not loaded ({}), the search runs without it", path.display(), e);
+            continue;
+        }
+        println!("egtb: loaded {}, step {}", path.display(), set.tables[ti].step());
+    }
+}
+
 /// Generates (or loads) tables beyond the four-piece base, one material per
 /// name like "KQKBN", and reports what the docs table needs: the raw position
 /// count before symmetry, the index space, generation time per level and in
@@ -229,7 +250,23 @@ pub fn egtb_measure(names: &[&str], workers: usize, verify: bool) {
         let size = set.tables[ti].size;
         println!("=== {}: {} pieces, {} raw positions without symmetry, {} indices = {} MB ===", m.name(), m.pieces(), group(m.raw_positions()), group(size as u64), size >> 20);
         let start = Instant::now();
-        let (ti, st, loaded) = set.load_or_generate_table(m.clone(), workers, &mut progress);
+        // load, or generate now and write after the checks below (the file is
+        // quantised, the verification needs the exact values)
+        let path = set.table_path(&set.tables[ti]);
+        let mut st = egtb::Stats::default();
+        let loaded = match set.load_table(ti, &path) {
+            Ok(()) => {
+                progress(&format!("egtb: loaded {} ({} MB, step {})", path.display(), size >> 20, set.tables[ti].step()));
+                true
+            }
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    progress(&format!("egtb: {}", e));
+                }
+                st = set.generate(ti, workers, &mut progress);
+                false
+            }
+        };
         let elapsed = start.elapsed();
         let t = &set.tables[ti];
         let sum = t.raw_checksum();
@@ -266,28 +303,44 @@ pub fn egtb_measure(names: &[&str], workers: usize, verify: bool) {
             }
             println!("    checksum {:016x} {}  (record as (\"{}\", 0x{:016x}),)", sum, verdict, m.name(), sum);
         }
-        let path = set.table_path(t);
-        if let Ok(info) = std::fs::metadata(&path) {
-            println!("    file {}: {} MB", path.display(), info.len() >> 20);
-        }
-        // reference positions of this material: the table must give exactly 2N-1
+        // reference positions of this material: the table must give exactly
+        // 2N-1 (a loaded, quantised table: its bucket must contain 2N-1)
         for p in MATE_POSITIONS {
             let b = Board::from_fen(p.fen).expect("valid FEN");
             match set.locate(&b) {
                 Some((lt, _)) if std::ptr::eq(lt, t) => {}
                 _ => continue,
             }
-            let v = set.lookup(&b).unwrap_or(egtb::Value::DRAW);
+            let (v, lo, hi) = set.lookup_bounds(&b).unwrap_or((egtb::Value::DRAW, 0, 0));
             let want = 2 * p.mate_in - 1;
-            let verdict = if v.is_win() && v.plies() == want { "OK".to_string() } else { format!("MISMATCH, expected win in {}", want) };
+            let verdict = if !v.is_win() || want < lo || want > hi {
+                format!("MISMATCH, expected win in {}", want)
+            } else if lo != hi {
+                format!("OK (bucket {}..{} plies)", lo, hi)
+            } else {
+                "OK".to_string()
+            };
             println!("    test position {}: {}  {}", p.name, v, verdict);
         }
         let mut verified = "skipped".to_string();
-        if verify {
+        if verify && !t.is_exact() {
+            verified = "skipped (the loaded table is quantised, verify right after a generation)".to_string();
+            println!("    verify: {}", verified);
+        } else if verify {
             let start = Instant::now();
             let bad = set.verify(ti, workers, &|line| println!("{}", line));
             verified = format!("{} mismatches in {:.1} s", bad, start.elapsed().as_secs_f64());
             println!("    verify: {}", verified);
+        }
+        if !loaded {
+            match set.save_table(ti, &path) {
+                Ok(()) => progress(&format!("egtb: written to {}", path.display())),
+                Err(e) => progress(&format!("egtb: {}", e)),
+            }
+        }
+        let t = &set.tables[ti];
+        if let Ok(info) = std::fs::metadata(&path) {
+            println!("    file {}: {} MB (step {})", path.display(), info.len() >> 20, t.step());
         }
         if loaded {
             log(&format!("{} pieces={} indices={} loaded checksum={:016x} {} verify={}", m.name(), m.pieces(), size, sum, verdict, verified));

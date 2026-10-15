@@ -18,17 +18,30 @@ import (
 // tables up to four pieces in the order of All(); every larger material gets
 // its own file "<pieces>-<name>.bin" (never shipped, only generated locally).
 //
-// File format: 4 bytes magic "MEGT", 8 bytes raw checksum (the constant in the
-// code, over the values as generated, dead and illegal entries as 0), then the
-// lz container with the values. Before compression every dead or illegal
-// entry is replaced by its predecessor: those positions are never looked up,
-// so their content is free and the runs get longer.
+// File format (v2, 2026-10-15): 4 bytes magic "MEG2", 1 byte step (the
+// resolution of the values in moves, Table.Step: 1 = exact, n = buckets of n
+// moves), 3 bytes zero, 8 bytes raw checksum (the constant in the code, over
+// the exact values as generated, dead and illegal entries as 0), then the lz
+// container with the values. Before compression every dead or illegal entry
+// is replaced by its predecessor: those positions are never looked up, so
+// their content is free and the runs get longer. Tables beyond the base are
+// written quantised to FileStep (the search resolves the exact distance from
+// the bounds, docs/m5-endgame-tables.md); the base is always exact.
 const (
 	CacheDir     = "mattjes-egtb-cache"
 	BaseFileName = "4-all.bin"
-	magic        = "MEGT"
-	headerBytes  = 12
+	magic        = "MEG2"
+	headerBytes  = 16
 )
+
+// FileStep is the resolution in moves of every table beyond the base in the
+// cache files ("mate in at most 8 moves" instead of the exact count). It
+// halves the files twice over against exact values; the search resolves the
+// 16-ply window in about 0.3 s at the root (KRR-KN, KQ-KBN), step 4 would
+// take 1 ms and save one halving less. The base stays exact (37 MB), and the
+// generator needs exact dependencies, so a quantised cache file is never used
+// as one (GenerateControlled regenerates it in memory instead).
+const FileStep = 8
 
 // FileChecksum is the checksum of the complete base (a hash of the 35 table
 // checksums). It doubles as the regression test of the generator: a changed
@@ -170,11 +183,15 @@ func FormatBytes(b uint64) string {
 	return fmt.Sprintf("%d MB", b>>20)
 }
 
-// writeFile writes header + compressed values. The tables are filled first.
-func writeFile(path string, tables []*Table, rawChecksum uint64, workers int) error {
+// writeFile writes header + compressed values. The tables are filled first;
+// step is the resolution they all share (recorded in the header).
+func writeFile(path string, tables []*Table, rawChecksum uint64, step int, workers int) error {
 	for _, t := range tables {
 		if t.Values == nil {
 			return fmt.Errorf("egtb: table %s not generated", t.Mat.Name())
+		}
+		if t.Step != step {
+			return fmt.Errorf("egtb: table %s has step %d, the file needs %d", t.Mat.Name(), t.Step, step)
 		}
 		t.fill()
 	}
@@ -199,7 +216,8 @@ func writeFile(path string, tables []*Table, rawChecksum uint64, workers int) er
 	w := bufio.NewWriterSize(f, 1<<20)
 	var header [headerBytes]byte
 	copy(header[:], magic)
-	binary.LittleEndian.PutUint64(header[4:], rawChecksum)
+	header[4] = byte(step)
+	binary.LittleEndian.PutUint64(header[8:], rawChecksum)
 	if _, err := w.Write(header[:]); err != nil {
 		f.Close()
 		return err
@@ -225,7 +243,7 @@ func sumSize(tables []*Table) int {
 
 // readFile reads a cache file into the tables. Returns the raw checksum from
 // the header; the entries are filled (dead and illegal ones hold their
-// predecessor).
+// predecessor) and the tables carry the file's step.
 func readFile(path string, tables []*Table, workers int) (rawChecksum uint64, compressed bool, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -237,11 +255,13 @@ func readFile(path string, tables []*Table, workers int) (rawChecksum uint64, co
 		t.filled = false
 		t.RawChecksum = 0
 		t.invalid = nil
+		t.Step = 1
 	}
 	if len(data) < headerBytes || string(data[:4]) != magic {
-		return 0, false, fmt.Errorf("egtb: %s is not a cache file", path)
+		return 0, false, fmt.Errorf("egtb: %s is not a cache file (format %q, regenerate)", path, string(data[:min(4, len(data))]))
 	}
-	rawChecksum = binary.LittleEndian.Uint64(data[4:])
+	step := max(1, int(data[4]))
+	rawChecksum = binary.LittleEndian.Uint64(data[8:])
 	packed := data[headerBytes:]
 	if n, err := lz.RawLen(packed); err != nil || n != size {
 		return 0, true, fmt.Errorf("egtb: %s holds %d bytes, expected %d", path, n, size)
@@ -265,6 +285,7 @@ func readFile(path string, tables []*Table, workers int) (rawChecksum uint64, co
 	}
 	for _, t := range tables {
 		t.filled = true
+		t.Step = step
 	}
 	return rawChecksum, true, nil
 }
@@ -275,6 +296,7 @@ func clearTables(tables []*Table) {
 		t.filled = false
 		t.RawChecksum = 0
 		t.invalid = nil
+		t.Step = 1
 	}
 }
 
@@ -282,9 +304,9 @@ func clearTables(tables []*Table) {
 // files (independent 4 MB blocks).
 var IOWorkers = 8
 
-// Save writes the base tables to path (compressed).
+// Save writes the base tables to path (compressed, always exact).
 func (s *Set) Save(path string) error {
-	return writeFile(path, s.Base(), s.Checksum(), IOWorkers)
+	return writeFile(path, s.Base(), s.Checksum(), 1, IOWorkers)
 }
 
 // Load reads the base tables from path and checks size and checksum.
@@ -293,6 +315,10 @@ func (s *Set) Load(path string) error {
 	if err != nil {
 		clearTables(s.Base())
 		return err
+	}
+	if !s.Base()[0].Exact() {
+		clearTables(s.Base())
+		return fmt.Errorf("egtb: %s is quantised (step %d), the base must be exact", path, s.Base()[0].Step)
 	}
 	// the header carries the combined checksum of the generator run; the
 	// single table checksums cannot be recomputed from filled values, so the
@@ -307,12 +333,21 @@ func (s *Set) Load(path string) error {
 	return nil
 }
 
-// SaveTable writes one table (a material beyond the base) to path (compressed).
+// SaveTable writes one table (a material beyond the base) to path
+// (compressed). The table is quantised to FileStep **in place** first (no
+// copy of 15 GB for a six-piece table): afterwards it is what a reload gives,
+// the search resolves its bounds, and it can no longer serve the generator as
+// a dependency. The header keeps the checksum of the exact values. Verify
+// before saving.
 func (s *Set) SaveTable(t *Table, path string) error {
 	if t.Values == nil {
 		return fmt.Errorf("egtb: table %s not generated", t.Mat.Name())
 	}
-	return writeFile(path, []*Table{t}, t.rawChecksum(), IOWorkers)
+	sum := t.rawChecksum() // of the exact values, before quantising
+	if t.Exact() {
+		t.Quantize(FileStep)
+	}
+	return writeFile(path, []*Table{t}, sum, t.Step, IOWorkers)
 }
 
 // LoadTable reads one table from path and checks size and, when recorded,

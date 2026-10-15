@@ -3,12 +3,16 @@
 //! `Material::all()`) and one file per larger material ("<pieces>-<name>.bin",
 //! never shipped, only generated locally).
 //!
-//! File format: 4 bytes magic "MEGT", 8 bytes raw checksum (the constant in the
-//! code, over the values as generated, dead and illegal entries as 0), then the
-//! lz container with the values. Before compression every dead or illegal
-//! entry is replaced by its predecessor: those positions are never looked up,
-//! so their content is free and the runs get longer. Go and Rust must produce
-//! byte-identical files.
+//! File format (v2, 2026-10-15): 4 bytes magic "MEG2", 1 byte step (the
+//! resolution of the values in moves, `Table::step`: 1 = exact, n = buckets of
+//! n moves), 3 bytes zero, 8 bytes raw checksum (the constant in the code, over
+//! the exact values as generated, dead and illegal entries as 0), then the lz
+//! container with the values. Before compression every dead or illegal entry
+//! is replaced by its predecessor: those positions are never looked up, so
+//! their content is free and the runs get longer. Tables beyond the base are
+//! written quantised to `FILE_STEP` (the search resolves the exact distance
+//! from the bounds, docs/m5-endgame-tables.md); the base is always exact. Go
+//! and Rust must produce byte-identical files.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU8;
@@ -21,8 +25,17 @@ use crate::lz;
 
 pub const CACHE_DIR: &str = "mattjes-egtb-cache";
 pub const BASE_FILE_NAME: &str = "4-all.bin";
-const MAGIC: &[u8; 4] = b"MEGT";
-const HEADER_BYTES: usize = 12;
+const MAGIC: &[u8; 4] = b"MEG2";
+const HEADER_BYTES: usize = 16;
+
+/// The resolution in moves of every table beyond the base in the cache files
+/// ("mate in at most 8 moves" instead of the exact count). It halves the files
+/// twice over against exact values; the search resolves the 16-ply window in
+/// about 0.3 s at the root (KRR-KN, KQ-KBN), step 4 would take 1 ms and save
+/// one halving less. The base stays exact (37 MB), and the generator needs
+/// exact dependencies, so a quantised cache file is never used as one
+/// (`generate_controlled` regenerates it in memory instead).
+pub const FILE_STEP: u32 = 8;
 
 /// Threads used to compress and decompress cache files (independent 4 MB blocks).
 pub const IO_WORKERS: usize = 8;
@@ -123,10 +136,15 @@ fn io_err(msg: String) -> std::io::Error {
     std::io::Error::other(msg)
 }
 
-fn write_file(path: &Path, tables: &[&Table], raw_checksum: u64, workers: usize) -> std::io::Result<()> {
+/// Writes header + compressed values. The tables are filled first; `step` is
+/// the resolution they all share (recorded in the header).
+fn write_file(path: &Path, tables: &[&Table], raw_checksum: u64, step: u32, workers: usize) -> std::io::Result<()> {
     for t in tables {
         if !t.is_generated() {
             return Err(io_err(format!("egtb: table {} not generated", t.mat.name())));
+        }
+        if t.step() != step {
+            return Err(io_err(format!("egtb: table {} has step {}, the file needs {}", t.mat.name(), t.step(), step)));
         }
         t.fill();
     }
@@ -150,6 +168,7 @@ fn write_file(path: &Path, tables: &[&Table], raw_checksum: u64, workers: usize)
     let mut w = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
     use std::io::Write;
     w.write_all(MAGIC)?;
+    w.write_all(&[step as u8, 0, 0, 0])?;
     w.write_all(&raw_checksum.to_le_bytes())?;
     lz::pack_to(&mut w, raw, workers)?;
     w.flush()
@@ -157,7 +176,7 @@ fn write_file(path: &Path, tables: &[&Table], raw_checksum: u64, workers: usize)
 
 /// Reads a cache file into the tables. Returns the raw checksum from the
 /// header; the entries are filled (dead and illegal ones hold their
-/// predecessor).
+/// predecessor) and the tables carry the file's step.
 fn read_file(path: &Path, tables: &mut [&mut Table], workers: usize) -> std::io::Result<u64> {
     let data = std::fs::read(path)?;
     let size: usize = tables.iter().map(|t| t.size).sum();
@@ -166,9 +185,10 @@ fn read_file(path: &Path, tables: &mut [&mut Table], workers: usize) -> std::io:
         t.values = (0..t.size).map(|_| AtomicU8::new(0)).collect();
     }
     if data.len() < HEADER_BYTES || &data[..4] != MAGIC {
-        return Err(io_err(format!("egtb: {} is not a cache file", path.display())));
+        return Err(io_err(format!("egtb: {} is not a cache file (format {:?}, regenerate)", path.display(), String::from_utf8_lossy(&data[..data.len().min(4)]))));
     }
-    let raw_checksum = u64::from_le_bytes(data[4..12].try_into().unwrap());
+    let step = (data[4] as u32).max(1);
+    let raw_checksum = u64::from_le_bytes(data[8..16].try_into().unwrap());
     let packed = &data[HEADER_BYTES..];
     match lz::raw_len(packed) {
         Ok(n) if n == size => {}
@@ -189,6 +209,7 @@ fn read_file(path: &Path, tables: &mut [&mut Table], workers: usize) -> std::io:
     }
     for t in tables.iter_mut() {
         t.set_filled(true);
+        t.set_step(step);
     }
     Ok(raw_checksum)
 }
@@ -225,7 +246,7 @@ impl Set {
     /// Writes the base tables to path (compressed).
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let tables: Vec<&Table> = self.base().iter().collect();
-        write_file(path, &tables, self.checksum(), IO_WORKERS)
+        write_file(path, &tables, self.checksum(), 1, IO_WORKERS)
     }
 
     /// Reads the base tables from path and checks size and checksum.
@@ -242,6 +263,11 @@ impl Set {
                 return Err(e);
             }
         };
+        if !self.tables[0].is_exact() {
+            let step = self.tables[0].step();
+            self.clear_base();
+            return Err(io_err(format!("egtb: {} is quantised (step {}), the base must be exact", path.display(), step)));
+        }
         // the header carries the combined checksum of the generator run; the
         // single table checksums cannot be recomputed from filled values, so
         // the recorded constants stand in for them
@@ -255,13 +281,22 @@ impl Set {
         Ok(())
     }
 
-    /// Writes one table (a material beyond the base) to path (compressed).
+    /// Writes one table (a material beyond the base) to path (compressed). The
+    /// table is quantised to `FILE_STEP` **in place** first (no copy of 15 GB
+    /// for a six-piece table): afterwards it is what a reload gives, the search
+    /// resolves its bounds, and it can no longer serve the generator as a
+    /// dependency. The header keeps the checksum of the exact values. Verify
+    /// before saving.
     pub fn save_table(&self, ti: usize, path: &Path) -> std::io::Result<()> {
         let t = &self.tables[ti];
         if !t.is_generated() {
             return Err(io_err(format!("egtb: table {} not generated", t.mat.name())));
         }
-        write_file(path, &[t], t.raw_checksum(), IO_WORKERS)
+        let sum = t.raw_checksum(); // of the exact values, before quantising
+        if t.is_exact() {
+            t.quantize(FILE_STEP);
+        }
+        write_file(path, &[t], sum, t.step(), IO_WORKERS)
     }
 
     /// Reads one table from path and checks size and, when recorded, the checksum.

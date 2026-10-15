@@ -76,7 +76,7 @@ type Searcher struct {
 	scratch bitboard.Board
 }
 
-func (s *Searcher) probeOracle(b *bitboard.Board) (Verdict, int) {
+func (s *Searcher) probeOracle(b *bitboard.Board) (Verdict, int, int) {
 	s.scratch = *b
 	return s.oracle.Probe(&s.scratch)
 }
@@ -179,16 +179,17 @@ func (s *Searcher) attack(b *bitboard.Board, depth, ply int) int {
 	if s.aborted {
 		return NoMate
 	}
-	switch v, plies := s.probeOracle(b); {
+	switch v, lo, hi := s.probeOracle(b); {
 	case v == Draw || v == Loss:
 		return NoMate
-	case v == Win && plies > 0: // an endgame table knows the exact distance
+	case v == Win && lo > depth: // even the shortest possible mate is too long
 		s.oracleHits++
-		if plies > depth {
-			return NoMate
-		}
+		return NoMate
+	case v == Win && hi <= depth: // the table's distance fits (exact or a bucket)
+		s.oracleHits++
 		s.pvLen[ply] = 0
-		return plies
+		return hi
+		// a win whose bounds straddle the depth is searched like any position
 	}
 	var ttFrom, ttTo chess.Pos = -1, -1
 	if s.table != nil {
@@ -258,16 +259,16 @@ func (s *Searcher) defend(b *bitboard.Board, depth, ply int) int {
 		}
 		return NoMate // stalemate
 	}
-	switch v, plies := s.probeOracle(b); {
+	switch v, lo, hi := s.probeOracle(b); {
 	case v == Draw || v == Win:
 		return NoMate
-	case v == Loss && plies > 0: // the defender is mated in plies, known exactly
+	case v == Loss && lo > depth: // the defender holds out longer than the depth allows
 		s.oracleHits++
-		if plies > depth {
-			return NoMate
-		}
+		return NoMate
+	case v == Loss && hi <= depth: // mated within the depth (exact or a bucket)
+		s.oracleHits++
 		s.pvLen[ply] = 0
-		return plies
+		return hi
 	}
 	var ttFrom, ttTo chess.Pos = -1, -1
 	if s.table != nil {

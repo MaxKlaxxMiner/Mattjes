@@ -137,6 +137,8 @@ struct RootEntry {
     rm: RootMove,
     /// Nodes of the last unresolved depth, the ordering of the open moves.
     cost: u64,
+    /// The table knows the move draws: resolved without a proof, never searched.
+    draw: bool,
 }
 
 /// Prints the per-depth and progress lines of a running search; shared by
@@ -293,7 +295,16 @@ impl<W: Write + Send + 'static> Engine<W> {
                 s.store(true, Ordering::Relaxed);
             });
         }
-        let (root, algo, max_plies, multi_pv, mobility) = (self.board, self.algo.clone(), p.max_plies, self.multi_pv, self.mobility.clone());
+        let (root, algo, mut max_plies, multi_pv, mobility) = (self.board, self.algo.clone(), p.max_plies, self.multi_pv, self.mobility.clone());
+        let known = self.root_table.clone();
+        if multi_pv == 1 {
+            // one line wanted and the table knows a win in n plies: the open
+            // moves only have to be checked for something shorter, so the
+            // depth bound is n-2 (nothing to search for a known mate in one)
+            for k in known.iter().filter(|k| k.value.is_win()) {
+                max_plies = max_plies.min((k.value.plies() as usize).saturating_sub(2));
+            }
+        }
         let table = if algo == "matelist" { None } else { self.search_table(&algo) };
         let max_positions = (self.hash_mb << 20) / MATELIST_BYTES_PER_POSITION;
         let set = self.set.take().expect("tables are loaded before searching");
@@ -312,15 +323,15 @@ impl<W: Write + Send + 'static> Engine<W> {
                 let oracle = Tables { set: &set };
                 match (algo.as_str(), table) {
                     ("mateab", Some(SearchTable::Buckets(t))) => {
-                        let (c, t) = run_mateab(&root, max_plies, multi_pv, oracle, t, &stop, &rep);
+                        let (c, t) = run_mateab(&root, max_plies, multi_pv, oracle, t, &known, &stop, &rep);
                         (c, Some(SearchTable::Buckets(t)))
                     }
                     ("mateab", Some(SearchTable::Direct(t))) => {
-                        let (c, t) = run_mateab(&root, max_plies, multi_pv, oracle, t, &stop, &rep);
+                        let (c, t) = run_mateab(&root, max_plies, multi_pv, oracle, t, &known, &stop, &rep);
                         (c, Some(SearchTable::Direct(t)))
                     }
                     ("matepn", Some(SearchTable::Direct(t))) => {
-                        let (c, t) = run_matepn(&root, max_plies, multi_pv, oracle, t, &mobility, &stop, &rep);
+                        let (c, t) = run_matepn(&root, max_plies, multi_pv, oracle, t, &mobility, &known, &stop, &rep);
                         (c, Some(SearchTable::Direct(t)))
                     }
                     ("matelist", table) => (run_matelist(&root, max_plies, max_positions, &stop, &rep), table),
@@ -460,19 +471,36 @@ impl<W: Write + Send + 'static> Engine<W> {
 /// Drives the search per root move: depth by depth, every unresolved move's
 /// child position is solved as its own root with depth-1 plies (even depths:
 /// the opponent is mated, our mate; odd: the opponent mates, our loss). A
-/// move's first proof is its shortest mate. Reports every depth; ends when
-/// all moves are resolved, when the shortest win is known and only one line
-/// is wanted, at the depth bound or when stopped.
-fn run_root<W: Write + Send + 'static>(root: &Board, max_plies: usize, multi_pv: usize, rep: &Arc<Reporter<W>>, mut solve: impl FnMut(&Board, usize) -> ChildResult) -> Core {
+/// move's first proof is its shortest mate. Moves the table stage knows
+/// exactly (`known`) start resolved: wins and losses as proven with their
+/// table line, draws as settled; only the rest is searched. Reports every
+/// depth; ends when all moves are resolved, when the shortest win is known
+/// and only one line is wanted, at the depth bound or when stopped.
+fn run_root<W: Write + Send + 'static>(root: &Board, max_plies: usize, multi_pv: usize, rep: &Arc<Reporter<W>>, known: &[super::RootMove], mut solve: impl FnMut(&Board, usize) -> ChildResult) -> Core {
     let mut buf = new_buffer();
     let n = root.gen_moves(&mut buf);
-    let mut moves: Vec<RootEntry> = buf[..n].iter().map(|&m| RootEntry { rm: RootMove { mv: m, ..Default::default() }, cost: 0 }).collect();
+    let mut moves: Vec<RootEntry> = buf[..n]
+        .iter()
+        .map(|&m| {
+            let mut e = RootEntry { rm: RootMove { mv: m, ..Default::default() }, cost: 0, draw: false };
+            if let Some(k) = known.iter().find(|k| k.mv == m) {
+                if k.value.is_win() {
+                    (e.rm.proven, e.rm.mate_plies, e.rm.pv) = (true, k.value.plies() as i32, k.pv.clone());
+                } else if k.value.is_loss() {
+                    (e.rm.proven, e.rm.mate_plies, e.rm.pv) = (true, -(k.value.plies() as i32), k.pv.clone());
+                } else {
+                    e.draw = true;
+                }
+            }
+            e
+        })
+        .collect();
     let mut nodes = 0u64;
     let mut core = Core::default();
     for d in 1..=max_plies {
         rep.depth.store(d, Ordering::Relaxed);
         for e in moves.iter_mut() {
-            if e.rm.proven {
+            if e.rm.proven || e.draw {
                 continue;
             }
             let mut c = *root;
@@ -510,8 +538,11 @@ fn run_root<W: Write + Send + 'static>(root: &Board, max_plies: usize, multi_pv:
         core.plies = d;
         let list = order_root(&moves);
         rep.depth_lines(d, nodes, &list);
-        let all_done = moves.iter().all(|e| e.rm.proven);
-        if all_done || (multi_pv == 1 && list.first().is_some_and(|f| f.mate_plies > 0)) {
+        // one line wanted: a win proven within this depth is the shortest
+        // (anything shorter would have shown up earlier); a longer win the
+        // table knows does not end the check for something shorter
+        let all_done = moves.iter().all(|e| e.rm.proven || e.draw);
+        if all_done || (multi_pv == 1 && list.first().is_some_and(|f| f.mate_plies > 0 && f.mate_plies <= d as i32)) {
             break;
         }
     }
@@ -532,12 +563,22 @@ fn finish(mut core: Core, moves: &[RootEntry], nodes: u64) -> Core {
     core
 }
 
-/// Sorts the root moves best first: wins by the shortest, open moves by the
-/// nodes their last depth cost (the hardest to refute first), losses by the
-/// longest.
+/// Sorts the root moves best first: wins by the shortest, known draws, open
+/// moves by the nodes their last depth cost (the hardest to refute first),
+/// losses by the longest (as the table stage ranks them).
 fn order_root(moves: &[RootEntry]) -> Vec<RootMove> {
     let mut sorted = moves.to_vec();
-    let class = |e: &RootEntry| if e.rm.proven && e.rm.mate_plies > 0 { 0 } else if e.rm.proven { 2 } else { 1 };
+    let class = |e: &RootEntry| {
+        if e.rm.proven && e.rm.mate_plies > 0 {
+            0
+        } else if e.draw {
+            1
+        } else if e.rm.proven {
+            3
+        } else {
+            2
+        }
+    };
     sorted.sort_by(|a, b| {
         class(a).cmp(&class(b)).then_with(|| if a.rm.proven { a.rm.mate_plies.cmp(&b.rm.mate_plies) } else { b.cost.cmp(&a.cost) })
     });
@@ -546,13 +587,14 @@ fn order_root(moves: &[RootEntry]) -> Vec<RootMove> {
 
 /// Depth-first with iterative deepening (mateab); the bucket table keeps
 /// proven mates over refutations (a direct table below BUCKETS_FROM_MB).
-fn run_mateab<W: Write + Send + 'static, T: TransTable + 'static>(root: &Board, max_plies: usize, multi_pv: usize, oracle: Tables<'_>, table: T, stop: &Arc<AtomicBool>, rep: &Arc<Reporter<W>>) -> (Core, T) {
+#[allow(clippy::too_many_arguments)]
+fn run_mateab<W: Write + Send + 'static, T: TransTable + 'static>(root: &Board, max_plies: usize, multi_pv: usize, oracle: Tables<'_>, table: T, known: &[super::RootMove], stop: &Arc<AtomicBool>, rep: &Arc<Reporter<W>>) -> (Core, T) {
     let mut s = mateab::Searcher::new(oracle, Some(table));
     s.stop = Some(stop.clone());
     s.progress_every = PROGRESS_EVERY;
     let r2 = rep.clone();
     s.progress = Some(Box::new(move |nodes, _| r2.progress(nodes)));
-    let core = run_root(root, max_plies, multi_pv, rep, |c, plies| {
+    let core = run_root(root, max_plies, multi_pv, rep, known, |c, plies| {
         let r = s.solve_depth(c, plies as u32);
         ChildResult { proven: r.mate_plies != 0, length: r.mate_plies.abs(), bound: false, pv: r.pv, nodes: r.nodes, aborted: r.aborted }
     });
@@ -563,7 +605,7 @@ fn run_mateab<W: Write + Send + 'static, T: TransTable + 'static>(root: &Board, 
 /// the leaf initialisation follows the MatePnMobility option), direct-mapped
 /// table.
 #[allow(clippy::too_many_arguments)]
-fn run_matepn<W: Write + Send + 'static, T: TransTable + 'static>(root: &Board, max_plies: usize, multi_pv: usize, oracle: Tables<'_>, table: T, mobility: &str, stop: &Arc<AtomicBool>, rep: &Arc<Reporter<W>>) -> (Core, T) {
+fn run_matepn<W: Write + Send + 'static, T: TransTable + 'static>(root: &Board, max_plies: usize, multi_pv: usize, oracle: Tables<'_>, table: T, mobility: &str, known: &[super::RootMove], stop: &Arc<AtomicBool>, rep: &Arc<Reporter<W>>) -> (Core, T) {
     let bits = table.value_bits();
     let mut s = matepn::Searcher::new(oracle, table, matepn::Saturating { bits }, mobility == "on");
     s.lazy_mobility = mobility == "lazy";
@@ -573,7 +615,7 @@ fn run_matepn<W: Write + Send + 'static, T: TransTable + 'static>(root: &Board, 
     s.progress_every = PROGRESS_EVERY;
     let r2 = rep.clone();
     s.progress = Some(Box::new(move |nodes, _| r2.progress(nodes)));
-    let core = run_root(root, max_plies, multi_pv, rep, |c, plies| {
+    let core = run_root(root, max_plies, multi_pv, rep, known, |c, plies| {
         let r = s.solve(c, plies);
         // proven with mate_plies 0: the proof tree lost entries, the depth is
         // an upper bound of the length

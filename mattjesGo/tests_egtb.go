@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -165,6 +166,33 @@ func egtbLoadOrGenerate(workers int) *egtb.Set {
 	return set
 }
 
+// egtbLoadForPositions adds the cached tables of the selected test positions'
+// own materials beyond the base (the file must exist, nothing is generated).
+// Those files hold buckets of egtb.FileStep moves, so the searches run against
+// bounds and resolve the exact distance themselves.
+func egtbLoadForPositions(set *egtb.Set, positions []chess.MatePosition, selected func(p chess.MatePosition) bool) {
+	for _, p := range positions {
+		if !selected(p) {
+			continue
+		}
+		b, err := bitboard.FromFEN(p.FEN)
+		if err != nil {
+			panic(err)
+		}
+		m, ok := egtb.MaterialOf(&b)
+		if !ok || m.Pieces() <= 4 || set.Find(m.Name()) != nil {
+			continue
+		}
+		t := set.AddMaterial(m)
+		path := set.TablePath(t)
+		if err := set.LoadTable(t, path); err != nil {
+			fmt.Printf("egtb: %s not loaded (%v), the search runs without it\n", path, err)
+			continue
+		}
+		fmt.Printf("egtb: loaded %s, step %d\n", path, t.Step)
+	}
+}
+
 // egtbProbe looks positions up in the tables and follows the optimal line:
 // the winner picks a child lost in n-1, the loser a child won in the longest
 // n-1 (captures and promotions cross into smaller tables). Positions with an
@@ -259,7 +287,20 @@ func egtbMeasure(names []string, workers int, verify bool) {
 		var before runtime.MemStats
 		runtime.ReadMemStats(&before)
 		start := time.Now()
-		_, st, loaded := set.LoadOrGenerateTable(m, workers, progress)
+		// load, or generate now and write after the checks below (the file is
+		// quantised, the verification needs the exact values)
+		var st egtb.Stats
+		path := set.TablePath(t)
+		err = set.LoadTable(t, path)
+		loaded := err == nil
+		if loaded {
+			progress(fmt.Sprintf("egtb: loaded %s (%d MB, step %d)", path, t.Size>>20, t.Step))
+		} else {
+			if !errors.Is(err, os.ErrNotExist) {
+				progress("egtb: " + err.Error())
+			}
+			st = set.Generate(t, workers, progress)
+		}
 		elapsed := time.Since(start)
 		var after runtime.MemStats
 		runtime.ReadMemStats(&after)
@@ -295,10 +336,8 @@ func egtbMeasure(names []string, workers int, verify bool) {
 			}
 			fmt.Printf("    checksum %016x %s  (record as \"%s\": 0x%016x)\n", sum, verdict, m.Name(), sum)
 		}
-		if info, err := os.Stat(set.TablePath(t)); err == nil {
-			fmt.Printf("    file %s: %d MB\n", set.TablePath(t), info.Size()>>20)
-		}
-		// reference positions of this material: the table must give exactly 2N-1
+		// reference positions of this material: the table must give exactly
+		// 2N-1 (a loaded, quantised table: its bucket must contain 2N-1)
 		for _, p := range chess.MatePositions {
 			b, err := bitboard.FromFEN(p.FEN)
 			if err != nil {
@@ -307,19 +346,34 @@ func egtbMeasure(names []string, workers int, verify bool) {
 			if lt, _, ok := set.Locate(&b); !ok || lt != t {
 				continue
 			}
-			v, _ := set.Lookup(&b)
+			v, lo, hi, _ := set.LookupBounds(&b)
 			verdict := "OK"
-			if !v.IsWin() || v.Plies() != 2*p.MateIn-1 {
-				verdict = fmt.Sprintf("MISMATCH, expected win in %d", 2*p.MateIn-1)
+			if want := 2*p.MateIn - 1; !v.IsWin() || want < lo || want > hi {
+				verdict = fmt.Sprintf("MISMATCH, expected win in %d", want)
+			} else if lo != hi {
+				verdict = fmt.Sprintf("OK (bucket %d..%d plies)", lo, hi)
 			}
 			fmt.Printf("    test position %s: %s  %s\n", p.Name, v, verdict)
 		}
 		verified := "skipped"
-		if verify {
+		if verify && !t.Exact() {
+			verified = "skipped (the loaded table is quantised, verify right after a generation)"
+			fmt.Printf("    verify: %s\n", verified)
+		} else if verify {
 			start = time.Now()
 			bad := set.Verify(t, workers, progress)
 			verified = fmt.Sprintf("%d mismatches in %.1f s", bad, time.Since(start).Seconds())
 			fmt.Printf("    verify: %s\n", verified)
+		}
+		if !loaded {
+			if err := set.SaveTable(t, path); err != nil {
+				progress("egtb: " + err.Error())
+			} else {
+				progress("egtb: written to " + path)
+			}
+		}
+		if info, err := os.Stat(path); err == nil {
+			fmt.Printf("    file %s: %d MB (step %d)\n", path, info.Size()>>20, t.Step)
 		}
 		if loaded {
 			logLine(fmt.Sprintf("%s pieces=%d indices=%d loaded checksum=%016x %s verify=%s", m.Name(), m.Pieces(), t.Size, sum, verdict, verified))

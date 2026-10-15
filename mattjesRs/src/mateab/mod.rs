@@ -243,17 +243,19 @@ impl<O: Oracle, T: TransTable> Searcher<O, T> {
             return NO_MATE;
         }
         match self.oracle.probe(b) {
-            (Verdict::Draw | Verdict::Loss, _) => return NO_MATE,
-            (Verdict::Win, plies) if plies > 0 => {
-                // an endgame table knows the exact distance
+            (Verdict::Draw | Verdict::Loss, _, _) => return NO_MATE,
+            (Verdict::Win, lo, _) if lo > depth => {
+                // even the shortest possible mate is too long
                 self.oracle_hits += 1;
-                if plies > depth {
-                    return NO_MATE;
-                }
-                self.pv_len[ply] = 0;
-                return plies as i32;
+                return NO_MATE;
             }
-            _ => {}
+            (Verdict::Win, _, hi) if hi <= depth => {
+                // the table's distance fits (exact or a bucket)
+                self.oracle_hits += 1;
+                self.pv_len[ply] = 0;
+                return hi as i32;
+            }
+            _ => {} // a win whose bounds straddle the depth is searched like any position
         }
         let (tt_from, tt_to) = match self.probe(b, depth, ply) {
             Err(r) => return r,
@@ -312,15 +314,17 @@ impl<O: Oracle, T: TransTable> Searcher<O, T> {
             return NO_MATE; // stalemate
         }
         match self.oracle.probe(b) {
-            (Verdict::Draw | Verdict::Win, _) => return NO_MATE,
-            (Verdict::Loss, plies) if plies > 0 => {
-                // the defender is mated in plies, known exactly
+            (Verdict::Draw | Verdict::Win, _, _) => return NO_MATE,
+            (Verdict::Loss, lo, _) if lo > depth => {
+                // the defender holds out longer than the depth allows
                 self.oracle_hits += 1;
-                if plies > depth {
-                    return NO_MATE;
-                }
+                return NO_MATE;
+            }
+            (Verdict::Loss, _, hi) if hi <= depth => {
+                // mated within the depth (exact or a bucket)
+                self.oracle_hits += 1;
                 self.pv_len[ply] = 0;
-                return plies as i32;
+                return hi as i32;
             }
             _ => {}
         }

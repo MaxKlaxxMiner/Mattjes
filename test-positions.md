@@ -102,6 +102,12 @@ Zeit und Besuche bis zu den Werten je Tiefe; nach Tiefe 21 von Hand gestoppt, di
 
 `mateab` findet das erste Matt schneller (0,3 µs je Knoten gegen 4 µs je Besuch),
 `matepn` holt mit jeder weiteren Tiefe auf und liegt ab Tiefe 19 vorn.
+
+Mit `5-KRRKN.bin` im Cache (seit 2026-10-15 quantisiert auf Eimer von 8 Zügen,
+Format v2) löst `matepn` über das Intervall-Orakel alle zwölf Werte mit 65.123
+Besuchen in 0,28 s und alle 27 Werte nach Nh2 mit 71.697 Besuchen in 0,3 s auf,
+exakt wie die exakte Tabelle (Go und Rust zeilenidentisch; mit Eimern von 4 Zügen
+wären es 288 bzw. 1.174 Besuche in 1 ms, `docs/m5-endgame-tables.md`).
 Messgröße für Mechanik-Änderungen: die Zeit bis Tiefe 15 bei gleichen 5.528.849
 Besuchen (`matepn`, Hash 256): Rust 23,1 s vor und 16,5 s nach Prefetch und
 Orakel-Abkürzung (2026-10-09), Go 31,3 s → 25,8 s. Bei Hash 16384 kostet ein

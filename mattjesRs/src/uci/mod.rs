@@ -83,6 +83,8 @@ pub struct Engine<W: Write + Send + 'static> {
     pending_best: String,
     /// `pending_best` has a table value (a search without result keeps it).
     table_best: bool,
+    /// The root moves the table stage knows exactly, handed to the search's root driver.
+    root_table: Vec<RootMove>,
     job: Option<Job>,
     tx: mpsc::Sender<Event>,
     // the running search, if any
@@ -126,6 +128,7 @@ pub fn run<R: Read + Send + 'static, W: Write + Send + 'static>(input: R, out: W
         infinite: false,
         pending_best: String::new(),
         table_best: false,
+        root_table: Vec::new(),
         job: None,
         tx: tx.clone(),
         searching: false,
@@ -174,6 +177,7 @@ pub fn run<R: Read + Send + 'static, W: Write + Send + 'static>(input: R, out: W
 }
 
 /// One root move with its value from the side to move's view.
+#[derive(Clone)]
 struct RootMove {
     mv: Move,
     value: Value,
@@ -401,9 +405,10 @@ impl<W: Write + Send + 'static> Engine<W> {
     /// valued, sorted (shortest win, draw, unknown, longest loss) and the first
     /// MultiPV lines are printed with their complete lines to mate. The best
     /// move is kept in `pending_best`; the caller decides when to send it.
-    /// Returns whether the tables settle the position: no moves, a known win,
-    /// or every move known. Otherwise a mate may hide behind the unknown moves
-    /// and the search is asked.
+    /// Returns whether the tables settle the position: no moves, or every
+    /// move known. Otherwise the search is asked, with the known moves as the
+    /// root driver's starting point (a known win alone proves nothing about
+    /// the other moves: a quiet move could mate faster).
     fn search(&mut self) -> bool {
         let mut buf = new_buffer();
         let n = self.board.gen_moves(&mut buf);
@@ -438,17 +443,22 @@ impl<W: Write + Send + 'static> Engine<W> {
         if !moves[0].known {
             self.send(&format!("info string no endgame table for this material ({} pieces)", piece_count(&root)));
         }
+        // one depth for the whole block (the longest line), as the search's
+        // blocks have it: GUIs order MultiPV lines by depth or drop the ones
+        // that look older, so a draw with its one-move line must not say depth 1
+        let depth = moves.iter().take(self.multi_pv).map(|r| r.pv.len()).max().unwrap_or(1).max(1);
         for (i, r) in moves.iter().enumerate().take(self.multi_pv) {
             if !r.known {
-                self.send(&format!("info depth 1 multipv {} score cp 0 pv {}", i + 1, r.mv.uci()));
+                self.send(&format!("info depth {} multipv {} score cp 0 pv {}", depth, i + 1, r.mv.uci()));
                 continue;
             }
             let pv: Vec<String> = r.pv.iter().map(|m| m.uci()).collect();
-            self.send(&format!("info depth {} multipv {} score {} pv {}", r.pv.len(), i + 1, score(r.value), pv.join(" ")));
+            self.send(&format!("info depth {} multipv {} score {} pv {}", depth, i + 1, score(r.value), pv.join(" ")));
         }
         self.pending_best = moves[0].mv.uci();
         self.table_best = moves[0].known;
-        all_known || moves[0].known && moves[0].value.is_win()
+        self.root_table = moves.iter().filter(|r| r.known).cloned().collect();
+        all_known
     }
 
     /// Starts (or resumes) the background generation of the root material's
@@ -596,7 +606,14 @@ impl<W: Write + Send + 'static> Engine<W> {
         match set.load_table(ti, &path) {
             Ok(()) => {
                 let mut o = self.out.lock().unwrap();
-                let _ = writeln!(o, "info string egtb: loaded {}", path.display());
+                if set.tables[ti].is_exact() {
+                    let _ = writeln!(o, "info string egtb: loaded {}", path.display());
+                } else {
+                    // cache files beyond the base hold buckets of FILE_STEP
+                    // moves: the table stage does not report them, the search
+                    // resolves them
+                    let _ = writeln!(o, "info string egtb: loaded {} (step {}, the search resolves exact distances)", path.display(), set.tables[ti].step());
+                }
                 let _ = o.flush();
             }
             Err(e) => self.send(&format!("info string {}: {}", path.display(), e)),
@@ -630,8 +647,11 @@ impl<W: Write + Send + 'static> Engine<W> {
     /// positions the tables leave out (an en passant right), from its children
     /// up to `depth` plies deep. None when no table covers it.
     fn eval(&self, b: &Board, depth: u32) -> Option<Value> {
-        if let Some(v) = self.set().lookup(b) {
-            return Some(v);
+        if let Some((v, lo, hi)) = self.set().lookup_bounds(b) {
+            // a table that only bounds the distance (quantised) does not count:
+            // the table stage reports exact values only, such positions go to
+            // the search, which has the bounds as its oracle
+            return if lo == hi { Some(v) } else { None };
         }
         let mut buf = new_buffer();
         let n = b.gen_moves(&mut buf);

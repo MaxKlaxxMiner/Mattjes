@@ -624,3 +624,92 @@ Damit ist das Messexperiment abgeschlossen: Option und Testbank-Buchstabe
 bleiben als Schalter für spätere Vergleiche, die Suche läuft weiter mit
 Mobilität. Nächster `matepn`-Schritt: Ersetzung nach Wert (Beweise und
 Endeinträge nie verdrängen), danach das Beweisziel "Gewinn".
+
+## Schritt 6: Intervall-Orakel (2026-10-15)
+
+Anlass: quantisierte Endspieltabellen (`docs/m5-endgame-tables.md`, Abschnitt
+"Quantisierte Werte"), die statt der exakten Distanz nur noch "Matt in höchstens
+8 Zügen" speichern und damit halb so groß sind. Damit die Suche solche Werte
+nutzen kann, liefert das Orakel jetzt ein **Intervall** statt einer Zahl:
+`Probe(b) (Verdict, lo, hi)`, die wahre Distanz in Halbzügen liegt in
+`[lo, hi]`. Exakte Tabellen geben `lo == hi`, eine Tabelle mit Schrittweite 4
+das Fenster ihres Eimers (acht Halbzüge), eine WDL-Tabelle ohne Distanz
+`1..Unbounded`. Die Regel in beiden Suchen (`mateab` `attack`/`defend`,
+`matepn` `terminal`) am Knoten mit Resttiefe d:
+
+- `hi ≤ d`: bewiesen, der Knoten endet (wie bisher der exakte Treffer),
+- `lo > d`: widerlegt, auch wenn die Stellung an sich gewonnen ist,
+- dazwischen: der Knoten wird expandiert wie jede andere Stellung; jedes Kind
+  trägt wieder Schranken, also endet die Teilsuche spätestens dort, wo der
+  nächste Eimer die Resttiefe entscheidet. Die Suche löst genau das Band auf,
+  in dem der Eimer nichts sagt, und das ist höchstens so tief wie das Fenster
+  breit.
+
+Der Beweisbaum (`proofLength`) nimmt `hi`, wo das Orakel die Linie beendet hat,
+unter derselben Bedingung `hi ≤ d`. Die Korrektheit der Mattzahl hängt nicht am
+Wert eines Treffers, sondern an der Tiefe des ersten Beweises: ein Beweis bei
+Tiefe d heißt "Matt in ≤ d", und bei d − 2 gab es keinen, also ist d exakt. Das
+gilt für den UCI-Wurzeltreiber genauso wie für die iterative Vertiefung der
+Testbank.
+
+Die Tabellenstufe des UCI (`eval`) zählt eine quantisierte Tabelle **nicht** als
+bekannt (`LookupBounds`, nur `lo == hi` gilt), sonst würde sie Eimergrenzen als
+`score mate N` melden; solche Wurzeln gehen in die Suche, die die Schranken als
+Orakel hat. Folge: Die Variante endet am Orakelblatt, `extendPV` verlängert nur
+durch exakte Tabellen (eine quantisierte Tabelle lässt sich nicht abspielen,
+innerhalb eines Eimers könnte die Linie kreisen).
+
+**Messung** mit `5-KRRKN.bin`, im RAM quantisiert (Go und Rust, Arbeitsrechner,
+Hash 256, Werte alle exakt wie mit der exakten Tabelle, beide Binaries
+zeilenidentisch):
+
+| Stellung | ohne Tabelle (`matepn`, Hash 16384) | Schrittweite 4, `matepn` | Schrittweite 8, `matepn` | Schrittweite 4, `mateab` |
+|---|---|---|---|---|
+| KRR-KN Schwarz am Zug, zwölf Werte | 70,5 s, 17,8 Mio. Besuche | 288 Besuche, 1 ms | 65.123 Besuche, 0,28 s | 3.532 Knoten |
+| nach Nh2, Weiß am Zug, 27 Werte | 450 s bis M11, 107 Mio. | 1.174 Besuche, 15 ms | 71.697 Besuche, 0,3 s | |
+| KQ-KBN, Matt in 39 (77 Halbzüge) | ungelöst | 1.844 Besuche, 1 ms | 59.013 Besuche, 0,26 s | |
+
+Die Teilsuche im Fenster kostet wenig: Die Schranken entscheiden fast jedes Kind
+sofort, nur die Kette entlang der echten Distanz wird betreten. Die obere
+Schranke aus der Zeitleiste (0,3 s für acht Halbzüge) war um drei
+Größenordnungen zu pessimistisch; eine Verdopplung des Fensters kostet rund
+Faktor 200 (Schrittweite 16: 14 bis 67 s), unabhängig von der Mattlänge.
+**Der Autor hat Schrittweite 8 gewählt** und fest ins Dateiformat gelegt
+(`egtb.FileStep`, Format v2 in `docs/m5-endgame-tables.md`): Cache-Dateien ab
+fünf Steinen halten Eimer von acht Zügen, die Basis bleibt exakt, es gibt keine
+Option. Die Antwort an der Wurzel kommt dann nach rund 0,3 s aus der Suche
+statt sofort aus der Tabelle.
+
+**Wurzeltreiber und Tabellenwissen (2026-10-16).** Zwei Befunde an der
+Stellung `8/8/4k3/8/8/8/R7/K1R2n2 w` (Rxf1 führt in den Vier-Steiner, Matt in
+7 laut Basis): Die Tabellenstufe galt als abschließend, sobald der beste Zug
+ein bekannter Tabellengewinn war, und hat die anderen Züge nie angesehen. Das
+beweist nur "Rxf1 gewinnt", nicht "nichts ist kürzer"; ein stiller Zug mit
+schnellerem Matt wäre übersehen worden (hier zufällig nicht: die Suche
+widerlegt Matt in 6 mit 5.348 Besuchen). Und ein Wurzelzug, den die Tabelle als
+Remis kennt (nach Nh2 der Zug Rf1 mit Sxf1 in KR-KN), wurde von der Suche nie
+bewiesen, also lief der Treiber bis zur Tiefenschranke 127 weiter. Beides
+behoben:
+
+- Die Tabellenstufe ist nur noch abschließend, wenn **alle** Züge bekannt
+  sind (oder es keine gibt).
+- `runRoot` bekommt die exakt bekannten Wurzelzüge mit (`Engine.rootTable`):
+  Gewinne und Verluste starten als bewiesen mit Wert und Variante aus der
+  Tabelle, Remis als erledigt (`rootEntry.draw`, nie gesucht, in der Liste
+  hinter den Gewinnen vor den offenen Zügen); gesucht werden nur unbekannte und
+  quantisierte Züge, die Schleife endet, wenn alle erledigt sind.
+- Bei MultiPV 1 reicht die Kürzer-Prüfung: Kennt die Tabelle ein Matt in n
+  Halbzügen, wird nur bis n − 2 gesucht; ein bei Tiefe d bewiesener Gewinn
+  beendet die Schleife nur, wenn er in d passt (sonst bräche der bekannte
+  längere Gewinn sie sofort ab). Beispiel oben: Tiefen 1 bis 11 mit 7.968
+  Besuchen, dann steht Rxf1 mit exaktem Wert; mit MultiPV 32 werden alle 26
+  Züge aufgelöst (24 Gewinne bis Matt in 12, zwei Tabellen-Remis), 84 Tsd.
+  Besuche, Schleife endet bei Tiefe 23 statt 127. Nach Nh2 ebenso: 27 Züge,
+  Rf1 als Remis zuletzt, Ende bei Tiefe 23. Go und Rust zeilenidentisch.
+
+Testbank: `matepnSolveFEN` nimmt eine Stellung außerhalb der Regressionsliste
+(`chess.MatePositions` bleibt unverändert, damit die Zahlen aus Schritt 5 stehen
+bleiben); mit `t` lädt `egtbLoadForPositions` die Cache-Dateien der Materialien
+der gewählten Stellungen (quantisiert, die Suche löst auf). Während der Messung
+gab es kurz eine UCI-Option `EgtbQuantize` und einen Buchstaben `q`; beide sind
+mit der Entscheidung für die feste Schrittweite wieder entfallen.

@@ -8,35 +8,45 @@ use crate::egtb;
 pub enum Verdict {
     Unknown,
     Draw,
-    /// The side to move mates; the distance in plies is given when known, else 0.
+    /// The side to move mates.
     Win,
-    /// The side to move gets mated; distance as above.
+    /// The side to move gets mated.
     Loss,
 }
 
-/// Answers terminal questions the search cannot answer by itself. The material
-/// check is the first implementation; endgame tables (milestone 5) plug in here
-/// without touching the search.
+/// The upper bound of a win or loss whose distance the oracle does not know at
+/// all (a WDL table): lo is 1, hi is `UNBOUNDED`.
+pub const UNBOUNDED: u32 = 1 << 20;
+
+/// Answers terminal questions the search cannot answer by itself. For `Win` and
+/// `Loss` the true distance in plies lies in `[lo, hi]`: an exact endgame table
+/// gives lo == hi, a quantised one its bucket, a WDL table 1..UNBOUNDED. The
+/// search treats a position as proven when hi fits into the remaining depth, as
+/// refuted when lo exceeds it, and expands it otherwise, so coarse tables cost
+/// search instead of being wrong. The material check is the first
+/// implementation; endgame tables (milestone 5) plug in here without touching
+/// the search.
 pub trait Oracle {
-    fn probe(&self, b: &Board) -> (Verdict, u32);
+    fn probe(&self, b: &Board) -> (Verdict, u32, u32);
 }
 
-/// Answers from the endgame tables (milestone 5) for every position with up
-/// to four pieces, including the exact distance, and falls back to the
-/// material check for everything else. Positions with an en passant right are
-/// not in the tables; the search simply continues there.
+/// Answers from the endgame tables (milestone 5) for every position with up to
+/// four pieces (and every larger material that is loaded), with the distance as
+/// exactly as the table stores it, and falls back to the material check for
+/// everything else. Positions with an en passant right are not in the tables;
+/// the search simply continues there.
 #[derive(Clone, Copy)]
 pub struct Tables<'a> {
     pub set: &'a egtb::Set,
 }
 
 impl Oracle for Tables<'_> {
-    fn probe(&self, b: &Board) -> (Verdict, u32) {
-        match self.set.lookup(b) {
-            Some(v) if v.is_win() => (Verdict::Win, v.plies()),
-            Some(v) if v.is_loss() => (Verdict::Loss, v.plies()),
-            Some(egtb::Value::DRAW) => (Verdict::Draw, 0),
-            Some(_) => (Verdict::Unknown, 0), // invalid position, cannot happen for legal input
+    fn probe(&self, b: &Board) -> (Verdict, u32, u32) {
+        match self.set.lookup_bounds(b) {
+            Some((v, lo, hi)) if v.is_win() => (Verdict::Win, lo, hi),
+            Some((v, lo, hi)) if v.is_loss() => (Verdict::Loss, lo, hi),
+            Some((egtb::Value::DRAW, _, _)) => (Verdict::Draw, 0, 0),
+            Some(_) => (Verdict::Unknown, 0, 0), // invalid position, cannot happen for legal input
             None => Material.probe(b),
         }
     }
@@ -54,7 +64,7 @@ const LIGHT_SQUARES: u64 = 0xAA55AA55AA55AA55;
 pub struct Material;
 
 impl Oracle for Material {
-    fn probe(&self, b: &Board) -> (Verdict, u32) {
+    fn probe(&self, b: &Board) -> (Verdict, u32, u32) {
         let heavy = b.piece_bb(Piece::WHITE_PAWN)
             | b.piece_bb(Piece::BLACK_PAWN)
             | b.piece_bb(Piece::WHITE_ROOK)
@@ -62,15 +72,15 @@ impl Oracle for Material {
             | b.piece_bb(Piece::WHITE_QUEEN)
             | b.piece_bb(Piece::BLACK_QUEEN);
         if heavy != 0 {
-            return (Verdict::Unknown, 0);
+            return (Verdict::Unknown, 0, 0);
         }
         let knights = b.piece_bb(Piece::WHITE_KNIGHT) | b.piece_bb(Piece::BLACK_KNIGHT);
         let bishops = b.piece_bb(Piece::WHITE_BISHOP) | b.piece_bb(Piece::BLACK_BISHOP);
         match (knights | bishops).count_ones() {
-            0 | 1 => (Verdict::Draw, 0),
+            0 | 1 => (Verdict::Draw, 0, 0),
             // two bishops on the same colour, necessarily one per side
-            2 if knights == 0 && (bishops & LIGHT_SQUARES == 0 || bishops & !LIGHT_SQUARES == 0) => (Verdict::Draw, 0),
-            _ => (Verdict::Unknown, 0),
+            2 if knights == 0 && (bishops & LIGHT_SQUARES == 0 || bishops & !LIGHT_SQUARES == 0) => (Verdict::Draw, 0, 0),
+            _ => (Verdict::Unknown, 0, 0),
         }
     }
 }

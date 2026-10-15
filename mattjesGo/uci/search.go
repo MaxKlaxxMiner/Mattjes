@@ -248,6 +248,17 @@ func (e *Engine) startSearch(p goParams) {
 		e.timer = time.AfterFunc(p.budget, func() { stop.Store(true) })
 	}
 	root, algo, maxPlies, multiPV, mobility := e.board, e.algo, p.maxPlies, e.multiPV, e.mobility
+	known := append([]rootMove(nil), e.rootTable...)
+	if multiPV == 1 {
+		// one line wanted and the table knows a win in n plies: the open
+		// moves only have to be checked for something shorter, so the depth
+		// bound is n-2 (nothing to search for a known mate in one)
+		for _, k := range known {
+			if k.value.IsWin() {
+				maxPlies = min(maxPlies, k.value.Plies()-2)
+			}
+		}
+	}
 	oracle := mateab.Tables{Set: e.set}
 	var direct *tt.Table
 	var abTable mateab.Table
@@ -270,7 +281,7 @@ func (e *Engine) startSearch(p goParams) {
 		case "mateab":
 			s := mateab.New(oracle, abTable)
 			s.Stop, s.ProgressEvery, s.Progress = stop, progressEvery, rep.progress
-			r = runRoot(&root, maxPlies, multiPV, rep, func(c *bitboard.Board, plies int) childResult {
+			r = runRoot(&root, maxPlies, multiPV, rep, known, func(c *bitboard.Board, plies int) childResult {
 				cr := s.SolveDepth(c, plies)
 				return childResult{proven: cr.MatePlies != 0, length: max(cr.MatePlies, -cr.MatePlies), pv: cr.PV, nodes: cr.Nodes, aborted: cr.Aborted}
 			})
@@ -278,7 +289,7 @@ func (e *Engine) startSearch(p goParams) {
 			s := matepn.New(oracle, direct, matepn.Saturating{Bits: direct.ValueBits()}, mobility == "on")
 			s.LazyMobility = mobility == "lazy"
 			s.Epsilon, s.Final, s.Stop, s.ProgressEvery, s.Progress = 4, true, stop, progressEvery, rep.progress
-			r = runRoot(&root, maxPlies, multiPV, rep, func(c *bitboard.Board, plies int) childResult {
+			r = runRoot(&root, maxPlies, multiPV, rep, known, func(c *bitboard.Board, plies int) childResult {
 				cr := s.Solve(c, plies)
 				// proven with MatePlies 0: the proof tree lost entries, the
 				// depth is an upper bound of the length
@@ -311,20 +322,36 @@ type childResult struct {
 type rootEntry struct {
 	rm   chess.RootMove
 	cost uint64 // nodes of the last unresolved depth, the ordering of the open moves
+	draw bool   // the table knows the move draws: resolved without a proof, never searched
 }
 
 // runRoot drives the search per root move: depth by depth, every unresolved
 // move's child position is solved as its own root with depth-1 plies (even
 // depths: the opponent is mated, our mate; odd: the opponent mates, our
-// loss). A move's first proof is its shortest mate. Reports every depth;
-// ends when all moves are resolved, when the shortest win is known and only
-// one line is wanted, at the depth bound or when stopped.
-func runRoot(root *bitboard.Board, maxPlies, multiPV int, rep *reporter, solve func(c *bitboard.Board, plies int) childResult) searchEnd {
+// loss). A move's first proof is its shortest mate. Moves the table stage
+// knows exactly (known) start resolved: wins and losses as proven with their
+// table line, draws as settled; only the rest is searched. Reports every
+// depth; ends when all moves are resolved, when the shortest win is known
+// and only one line is wanted, at the depth bound or when stopped.
+func runRoot(root *bitboard.Board, maxPlies, multiPV int, rep *reporter, known []rootMove, solve func(c *bitboard.Board, plies int) childResult) searchEnd {
 	var buf chess.MoveBuffer
 	n := root.GenMoves(&buf)
 	moves := make([]rootEntry, n)
 	for i := range moves {
 		moves[i].rm.Move = buf[i]
+		for _, k := range known {
+			if k.move != buf[i] {
+				continue
+			}
+			switch {
+			case k.value.IsWin():
+				moves[i].rm.Proven, moves[i].rm.MatePlies, moves[i].rm.PV = true, k.value.Plies(), k.pv
+			case k.value.IsLoss():
+				moves[i].rm.Proven, moves[i].rm.MatePlies, moves[i].rm.PV = true, -k.value.Plies(), k.pv
+			default:
+				moves[i].draw = true
+			}
+		}
 	}
 	var nodes uint64
 	end := searchEnd{}
@@ -332,7 +359,7 @@ func runRoot(root *bitboard.Board, maxPlies, multiPV int, rep *reporter, solve f
 		rep.depth = d
 		for i := range moves {
 			m := &moves[i]
-			if m.rm.Proven {
+			if m.rm.Proven || m.draw {
 				continue
 			}
 			c := *root
@@ -376,9 +403,12 @@ func runRoot(root *bitboard.Board, maxPlies, multiPV int, rep *reporter, solve f
 		rep.depthLines(d, nodes, list)
 		allDone := true
 		for _, m := range moves {
-			allDone = allDone && m.rm.Proven
+			allDone = allDone && (m.rm.Proven || m.draw)
 		}
-		if allDone || (multiPV == 1 && len(list) > 0 && list[0].MatePlies > 0) {
+		// one line wanted: a win proven within this depth is the shortest
+		// (anything shorter would have shown up earlier); a longer win the
+		// table knows does not end the check for something shorter
+		if allDone || (multiPV == 1 && len(list) > 0 && list[0].MatePlies > 0 && list[0].MatePlies <= d) {
 			break
 		}
 	}
@@ -404,14 +434,17 @@ func (end searchEnd) finish(moves []rootEntry, nodes uint64) searchEnd {
 // losses by the longest.
 func orderRoot(moves []rootEntry) []chess.RootMove {
 	sorted := append([]rootEntry(nil), moves...)
+	// wins, known draws, open moves, losses (as the table stage ranks them)
 	class := func(m rootEntry) int {
 		switch {
 		case m.rm.Proven && m.rm.MatePlies > 0:
 			return 0
+		case m.draw:
+			return 1
 		case m.rm.Proven:
-			return 2
+			return 3
 		}
-		return 1
+		return 2
 	}
 	sort.SliceStable(sorted, func(i, j int) bool {
 		a, b := sorted[i], sorted[j]

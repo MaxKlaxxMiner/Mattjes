@@ -26,16 +26,26 @@ import (
 // Options is a set of letters: m = mobility initialisation, l = lazy mobility
 // (1/1 leaves, the move count when a node is entered; overrides m), e/E/x/X =
 // 1+epsilon thresholds with epsilon 1/8, 1/2, 1, 2, f = depth-free final
-// entries, t = endgame tables as oracle, i = iterative deepening.
+// entries, t = endgame tables as oracle (cached tables of the positions' own
+// materials included; beyond the base they hold buckets of egtb.FileStep
+// moves, the search resolves the exact distance from the bounds), i =
+// iterative deepening.
 func matepnSolve(maxMateIn int, sizeMB int, codec string, options string) {
-	runMatepn(func(p chess.MatePosition) bool { return p.MateIn <= maxMateIn }, sizeMB, codec, options)
+	runMatepn(chess.MatePositions, func(p chess.MatePosition) bool { return p.MateIn <= maxMateIn }, sizeMB, codec, options)
 }
 
 func matepnSolveNamed(name string, sizeMB int, codec string, options string) {
-	runMatepn(func(p chess.MatePosition) bool { return p.Name == name }, sizeMB, codec, options)
+	runMatepn(chess.MatePositions, func(p chess.MatePosition) bool { return p.Name == name }, sizeMB, codec, options)
 }
 
-func runMatepn(selected func(p chess.MatePosition) bool, sizeMB int, codecName string, options string) {
+// matepnSolveFEN runs a single position that is not in chess.MatePositions
+// (the regression list must not change), such as the five-piece KRR-KN of
+// test-positions.md with its cached table.
+func matepnSolveFEN(name, fen string, mateIn int, sizeMB int, codec string, options string) {
+	runMatepn([]chess.MatePosition{{Name: name, FEN: fen, MateIn: mateIn}}, func(chess.MatePosition) bool { return true }, sizeMB, codec, options)
+}
+
+func runMatepn(positions []chess.MatePosition, selected func(p chess.MatePosition) bool, sizeMB int, codecName string, options string) {
 	has := func(o byte) bool { return strings.IndexByte(options, o) >= 0 }
 	lazy, final, tables, iterative, mated := has('l'), has('f'), has('t'), has('i'), has('M')
 	mobility := has('m') && !lazy
@@ -68,7 +78,9 @@ func runMatepn(selected func(p chess.MatePosition) bool, sizeMB int, codecName s
 	var oracle mateab.Oracle = mateab.Material{}
 	title := "material oracle"
 	if tables {
-		oracle = mateab.Tables{Set: egtbLoadOrGenerate(12)}
+		set := egtbLoadOrGenerate(12)
+		egtbLoadForPositions(set, positions, selected)
+		oracle = mateab.Tables{Set: set}
 		title = "endgame tables"
 	}
 	mode := "single depth 2N-1"
@@ -79,7 +91,7 @@ func runMatepn(selected func(p chess.MatePosition) bool, sizeMB int, codecName s
 	ok := true
 	var totalNodes uint64
 	var totalTime time.Duration
-	for i, p := range chess.MatePositions {
+	for i, p := range positions {
 		if !selected(p) {
 			continue
 		}

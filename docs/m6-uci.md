@@ -36,8 +36,11 @@ info depth 61 multipv 2 score mate 31 pv a2b4 d4c5 ...
 bestmove a1b2
 ```
 
-`depth` ist die Länge der Variante in Halbzügen, `score mate N` die Zugzahl aus DTM,
-negativ aus Sicht des Verlierers. Remis gibt `score cp 0` ohne Variante.
+`depth` ist die Länge der längsten Variante des Blocks in Halbzügen, für alle
+MultiPV-Zeilen dieselbe (seit 2026-10-16; vorher je Zeile die eigene Länge, und GUIs
+verwarfen die Remiszüge mit Tiefe 1 als veraltet, etwa Nc3, Be4 und Bd3 in KBN-K),
+`score mate N` die Zugzahl aus DTM, negativ aus Sicht des Verlierers. Remis gibt
+`score cp 0` ohne Variante.
 
 **Was die Tabellen nicht abdecken:** Stellungen mit En-passant-Recht liegen nicht in
 den Tabellen; `eval` bewertet sie einen Halbzug tiefer aus den Enkeln (Matt und Patt
@@ -135,12 +138,32 @@ Zwei neue Optionen:
 | `Hash` | MB für die Transposition Table der Suche (Vorgabe 256, Minimum 32, weil `mateab` 21 Value-Bits braucht); bei `matelist` das Stellungsbudget (128 Byte pro Stellung) |
 | `MatePnMobility` | Combo `on` (Vorgabe), `off`, `lazy` (seit 2026-10-13): wie `matepn` frische Blätter initialisiert, `on` = Zuganzahl per Orakel und Generator pro Blatt, `off` = 1/1, `lazy` = 1/1 und beim Betreten die eigene Zuganzahl als erste Schätzung, die bei gerissener Schwelle ohne Enkel-Expansion zurückkehrt; Messexperiment aus `docs/handout-matepn-mobility.md` |
 
+**Quantisierte Cache-Tabellen (2026-10-15):** Cache-Dateien ab fünf Steinen halten
+Eimer von acht Zügen statt exakter Distanzen (`egtb.FileStep`, Format v2,
+`docs/m5-endgame-tables.md`, Abschnitt "Quantisierte Werte"; keine Option, die
+Basis bleibt exakt). Die Tabellenstufe meldet solche Werte nicht (`eval` nur bei
+exakter Distanz), die Suche löst sie über das Intervall-Orakel auf (Schritt 6 in
+`docs/m4-mate-search.md`): KRR-KN alle zwölf Werte nach rund 0,3 s statt sofort,
+KQ-KBN Matt in 39 ebenso. Beim Laden steht `info string egtb: loaded ... (step 8,
+the search resolves exact distances)`; die Variante endet an solchen Tabellen.
+Eine Hintergrund-Erzeugung mit `EgtbWriteCache` quantisiert die Tabelle beim
+Schreiben, die Antwort danach kommt deshalb aus der Suche; ohne Schreiben bleibt
+die erzeugte Tabelle im RAM exakt.
+
 **Wann gesucht wird:** Zuerst antwortet die Tabellenstufe wie bisher. Sie gilt als
-abschließend, wenn es keine Züge gibt, der beste Zug ein bekannter Gewinn ist oder alle
-Züge bekannt sind (dann ist das Ergebnis exakt, auch Remis und Verlust). Sonst steckt
-hinter einem unbekannten Zug vielleicht ein Matt, und die Suche läuft über der
-Stellung: `mateab` und `matepn` mit den Tabellen als Orakel (iterative Vertiefung über
-ungerade Halbzüge bis 127, also Matt in 64), `matelist` mit Aufzählung bis zum Budget.
+abschließend, wenn es keine Züge gibt oder alle Züge bekannt sind (dann ist das
+Ergebnis exakt, auch Remis und Verlust). Bis 2026-10-16 reichte auch ein bekannter
+Gewinn als bester Zug; das bewies aber nur den Gewinn, nicht, dass kein stiller Zug
+schneller mattsetzt (in `8/8/4k3/8/8/8/R7/K1R2n2 w` wurde neben Rxf1 kein anderer Zug
+angesehen). Sonst steckt hinter einem unbekannten Zug vielleicht ein kürzeres Matt,
+und die Suche läuft über der Stellung: `mateab` und `matepn` mit den Tabellen als
+Orakel (iterative Vertiefung über ungerade Halbzüge bis 127, also Matt in 64),
+`matelist` mit Aufzählung bis zum Budget. Der Wurzeltreiber bekommt die exakt
+bekannten Züge mit: Gewinne und Verluste starten als bewiesen mit Tabellenwert und
+-variante, Remis als erledigt und werden nie gesucht; die Schleife endet, wenn alle
+Züge erledigt sind. Bei MultiPV 1 wird bei einem bekannten Gewinn in n Halbzügen nur
+bis n − 2 nach etwas Kürzerem gesucht (Rxf1 oben: Tiefen 1 bis 11, 8 Tsd. Besuche,
+dann steht Matt in 7 exakt); mit MultiPV werden alle offenen Züge aufgelöst.
 Vorher lädt die Hauptschleife alle Cache-Dateien, die die Suche durch Schläge und
 Umwandlungen erreichen kann (`loadDependencies`, rekursiv über
 `Material.Dependencies`), denn der Such-Thread lädt nichts.
