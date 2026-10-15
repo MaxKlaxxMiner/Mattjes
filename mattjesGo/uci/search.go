@@ -150,6 +150,7 @@ type searchEnd struct {
 	elapsed   time.Duration
 	aborted   bool
 	note      string
+	answered  bool // the root driver resolved everything that was asked for (every move, or the shortest win with MultiPV 1): a background generation of the root material is paused, nothing would use it now
 }
 
 // reporter prints the per-depth and progress lines of a running search.
@@ -410,6 +411,7 @@ func runRoot(root *bitboard.Board, maxPlies, multiPV int, rep *reporter, known [
 		// (anything shorter would have shown up earlier); a longer win the
 		// table knows does not end the check for something shorter
 		if allDone || (multiPV == 1 && len(list) > 0 && list[0].MatePlies > 0 && list[0].MatePlies <= d) {
+			end.answered = true // nothing left to search for: a background generation is not needed any more
 			break
 		}
 	}
@@ -489,6 +491,13 @@ func (e *Engine) finishSearch(r searchEnd) {
 	if e.restart {
 		return // stopped for a repeat with new tables (finishJob): the partial result is not reported
 	}
+	if r.answered && e.job != nil && !e.job.ctrl.Paused() {
+		// the search resolved everything on its own: the table being
+		// generated has nothing left to answer here, the next go with this
+		// material resumes the job (a stop would have paused it anyway)
+		e.job.ctrl.Pause()
+		e.send("info string egtb: generation of %s paused, the search answered the position; the next go with this material resumes it", e.job.mat.Name())
+	}
 	ms := r.elapsed.Milliseconds()
 	if r.matePlies != 0 && len(r.root) > 0 {
 		// the first MultiPV root moves: proven ones with their lines continued
@@ -531,6 +540,16 @@ func (e *Engine) finishSearch(r searchEnd) {
 	}
 	if err := e.set.CacheError(); err != nil {
 		e.send("info string %v", err)
+	}
+	// the tables the search asked for and did not have: the demand that
+	// decides which table to generate next
+	if missing := e.set.MissingTables(3); len(missing) > 0 {
+		parts := make([]string, len(missing))
+		for i, m := range missing {
+			parts[i] = fmt.Sprintf("%s (%s probes)", m.Mat.Name(), egtb.Group(int(m.Probes)))
+		}
+		e.send("info string egtb: no table for %s", strings.Join(parts, ", "))
+		e.set.ResetMissing()
 	}
 	if !e.infinite {
 		e.send("bestmove %s", e.pendingBest)

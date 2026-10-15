@@ -433,6 +433,11 @@ pub struct Set {
     /// Holds the cache files (the base file and one per larger material);
     /// next to the binary unless changed.
     pub cache_dir: std::path::PathBuf,
+    /// Counts the lookups of materials without a table (up to MAX_PIECES
+    /// pieces), by canonical signature: the demand a search creates for
+    /// tables that could be generated (`missing_tables`). A mutex, because
+    /// lookups take a shared reference (one search thread, uncontended).
+    missing: Mutex<std::collections::HashMap<super::Signature, u64>>,
 }
 
 impl Set {
@@ -477,7 +482,7 @@ impl Set {
 
     /// Allocates the base tables without values; `generate_all` or `load` fills them.
     pub fn new() -> Set {
-        let mut s = Set { tables: Vec::new(), base_count: 0, by_sig: vec![-1; SIGNATURE_SPACE], cache_dir: super::persist::default_cache_dir() };
+        let mut s = Set { tables: Vec::new(), base_count: 0, by_sig: vec![-1; SIGNATURE_SPACE], cache_dir: super::persist::default_cache_dir(), missing: Mutex::new(std::collections::HashMap::new()) };
         for m in Material::all() {
             s.add_material(m);
         }
@@ -542,7 +547,10 @@ impl Set {
         }
         let (t, flip) = self.find_table(b)?;
         if !t.is_available() {
-            return None; // registered but not generated: no index for nothing (a search asks millions of times)
+            // registered but not generated: no index for nothing (a search
+            // asks millions of times), but counted as demand
+            *self.missing.lock().unwrap().entry(t.mat.signature()).or_insert(0) += 1;
+            return None;
         }
         let idx = t.index_of(b, flip);
         if idx < 0 {
@@ -582,6 +590,43 @@ impl Set {
         self.tables.iter().filter_map(|t| t.packed()).find_map(|p| p.lock().unwrap().err.clone())
     }
 
+    /// The materials without a table that lookups asked for since the last
+    /// reset, most asked first, at most n (0: all). That is the demand a
+    /// search creates: the table asked for most is the one worth generating
+    /// next (docs/m6-uci.md, "Erzeugung nach Bedarf").
+    pub fn missing_tables(&self, n: usize) -> Vec<(Material, u64)> {
+        let mut out: Vec<(Material, u64)> = self.missing.lock().unwrap().iter().filter(|(_, &p)| p > 0).map(|(&sig, &p)| (material_from_signature(sig), p)).collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name().cmp(&b.0.name())));
+        if n > 0 {
+            out.truncate(n);
+        }
+        out
+    }
+
+    /// Zeroes the counters of `missing_tables`.
+    pub fn reset_missing(&self) {
+        self.missing.lock().unwrap().clear();
+    }
+}
+
+/// Decodes the two-bit counts per type and colour (see `board_signature`)
+/// into a canonical material.
+fn material_from_signature(sig: super::Signature) -> Material {
+    let (mut w, mut bl) = (Vec::new(), Vec::new());
+    for p in [Piece::PAWN, Piece::KNIGHT, Piece::BISHOP, Piece::ROOK, Piece::QUEEN] {
+        let bit = super::type_bit(p);
+        for _ in 0..(sig >> bit) & 3 {
+            w.push(p);
+        }
+        for _ in 0..(sig >> (bit + 10)) & 3 {
+            bl.push(p);
+        }
+    }
+    Material::canonical(&w, &bl)
+}
+
+impl Set {
+
     /// The table and the index of a position with three or four pieces, no
     /// castling rights and no en passant square. The index is -1 for adjacent
     /// kings. `None` when no table covers the position.
@@ -609,6 +654,13 @@ impl Set {
             flip = true;
         }
         if ti < 0 {
+            // a material without a table: counted, so that the demand of a
+            // search can drive which table is generated next
+            // (`missing_tables`); four of a kind (the sentinel signature)
+            // never has a table
+            if sig as usize != SIGNATURE_SPACE - 1 {
+                *self.missing.lock().unwrap().entry(sig.min(flipped)).or_insert(0) += 1;
+            }
             return None;
         }
         Some((&self.tables[ti as usize], flip))

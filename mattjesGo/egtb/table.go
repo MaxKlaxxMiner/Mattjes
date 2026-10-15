@@ -230,11 +230,16 @@ type Set struct {
 	// CacheDir holds the cache files (BaseFileName and one file per larger
 	// material); next to the binary unless changed.
 	CacheDir string
+	// missing counts the lookups of materials without a table (up to
+	// MaxPieces pieces), by canonical signature: the demand a search creates
+	// for tables that could be generated (MissingTables). Written by the
+	// search thread only.
+	missing map[Signature]uint64
 }
 
 // NewSet allocates the base tables without values; Generate or Load fills them.
 func NewSet() *Set {
-	s := &Set{bySig: make([]int8, signatureSpace), CacheDir: DefaultCacheDir()}
+	s := &Set{bySig: make([]int8, signatureSpace), CacheDir: DefaultCacheDir(), missing: map[Signature]uint64{}}
 	for i := range s.bySig {
 		s.bySig[i] = -1
 	}
@@ -393,7 +398,11 @@ func (s *Set) lookup(b *bitboard.Board) (t *Table, v Value, ok bool) {
 		return nil, Draw, true
 	}
 	t, flip, ok := s.findTable(b)
-	if !ok || !t.available() { // registered but not generated: no index for nothing (a search asks millions of times)
+	if !ok {
+		return nil, Draw, false
+	}
+	if !t.available() { // registered but not generated: no index for nothing (a search asks millions of times), but counted as demand
+		s.missing[t.Mat.signature()]++
 		return nil, Draw, false
 	}
 	idx := t.indexOf(b, flip)
@@ -469,6 +478,12 @@ func (s *Set) findTable(b *bitboard.Board) (t *Table, flip bool, ok bool) {
 		flip = true
 	}
 	if ti < 0 {
+		// a material without a table: counted, so that the demand of a
+		// search can drive which table is generated next (MissingTables);
+		// four of a kind (the sentinel signature) never has a table
+		if sig != signatureSpace-1 {
+			s.missing[min(sig, flipped)]++
+		}
 		return nil, false, false
 	}
 	return s.Tables[ti], flip, true

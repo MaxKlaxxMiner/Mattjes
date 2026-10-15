@@ -104,6 +104,10 @@ pub struct SearchEnd {
     pub elapsed: Duration,
     pub aborted: bool,
     pub note: String,
+    /// The root driver resolved everything that was asked for (every move,
+    /// or the shortest win with MultiPV 1): a background generation of the
+    /// root material is paused, nothing would use it now.
+    pub answered: bool,
 }
 
 /// The algorithm-independent part of a search result.
@@ -115,6 +119,8 @@ struct Core {
     nodes: u64,
     aborted: bool,
     note: String,
+    /// The root driver resolved everything that was asked for (see `SearchEnd::answered`).
+    answered: bool,
 }
 
 /// One root move's answer at one depth from the searchers: `proven` = the
@@ -350,6 +356,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                 elapsed: rep.start.elapsed(),
                 aborted: core.aborted || stop.load(Ordering::Relaxed),
                 note: core.note,
+                answered: core.answered,
             };
             let _ = search_tx.send(end);
             let _ = tx.send(Event::Searched);
@@ -391,6 +398,19 @@ impl<W: Write + Send + 'static> Engine<W> {
         if self.restart {
             return; // stopped for a repeat with new tables (finish_job): the partial result is not reported
         }
+        if r.answered {
+            if let Some(j) = &self.job {
+                if !j.ctrl.paused() {
+                    // the search resolved everything on its own: the table
+                    // being generated has nothing left to answer here, the
+                    // next go with this material resumes the job (a stop
+                    // would have paused it anyway)
+                    j.ctrl.pause();
+                    let name = j.mat.name();
+                    self.send(&format!("info string egtb: generation of {} paused, the search answered the position; the next go with this material resumes it", name));
+                }
+            }
+        }
         let ms = r.elapsed.as_millis() as u64;
         if r.mate_plies != 0 && !r.root.is_empty() {
             // the first MultiPV root moves: proven ones with their lines continued
@@ -431,6 +451,14 @@ impl<W: Write + Send + 'static> Engine<W> {
         }
         if let Some(e) = self.set().cache_error() {
             self.send(&format!("info string {}", e));
+        }
+        // the tables the search asked for and did not have: the demand that
+        // decides which table to generate next
+        let missing = self.set().missing_tables(3);
+        if !missing.is_empty() {
+            let parts: Vec<String> = missing.iter().map(|(m, p)| format!("{} ({} probes)", m.name(), egtb::group(*p as usize))).collect();
+            self.send(&format!("info string egtb: no table for {}", parts.join(", ")));
+            self.set().reset_missing();
         }
         if !self.infinite {
             let best = self.pending_best.clone();
@@ -557,6 +585,7 @@ fn run_root<W: Write + Send + 'static>(root: &Board, max_plies: usize, multi_pv:
         // table knows does not end the check for something shorter
         let all_done = moves.iter().all(|e| e.rm.proven || e.draw);
         if all_done || (multi_pv == 1 && list.first().is_some_and(|f| f.mate_plies > 0 && f.mate_plies <= d as i32)) {
+            core.answered = true; // nothing left to search for: a background generation is not needed any more
             break;
         }
     }

@@ -183,8 +183,11 @@ func (e *Engine) command(words []string) bool {
 		settled := e.search()
 		// a missing table of the root material is generated in the background
 		// beside the search (every "go", not only infinite); when it is ready,
-		// finishJob answers again with it
-		e.maybeGenerate()
+		// finishJob answers again with it. A position the tables settle needs
+		// none (a paused job stays paused)
+		if !settled {
+			e.maybeGenerate()
+		}
 		if !settled && e.algo != "none" {
 			e.startSearch(p)
 			return true

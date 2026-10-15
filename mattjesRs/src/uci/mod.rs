@@ -245,8 +245,11 @@ impl<W: Write + Send + 'static> Engine<W> {
                 let settled = self.search();
                 // a missing table of the root material is generated in the
                 // background beside the search (every "go", not only infinite);
-                // when it is ready, finish_job answers again with it
-                self.maybe_generate();
+                // when it is ready, finish_job answers again with it. A position
+                // the tables settle needs none (a paused job stays paused)
+                if !settled {
+                    self.maybe_generate();
+                }
                 if !settled && self.algo != "none" {
                     self.start_search(p);
                     return true;

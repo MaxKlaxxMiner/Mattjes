@@ -94,6 +94,30 @@ Workern, die Suche kam nebenher bis Tiefe 15), Go nach 30,6 s; Suche allein 70 s
 Erzeugung allein mit zwölf Workern 20 s. Mit `EgtbWriteCache` kommt die Tabelle
 quantisiert an und die neu gestartete Suche löst die Eimer in rund 0,3 s auf.
 
+Zwei Bremsen, damit nicht gerechnet wird, was niemand braucht (Hinweis des Autors an
+KQQ-KN, `7k/5n2/8/8/8/8/Q4Q2/K7 w`): Beantwortet die Tabellenstufe die Stellung
+abschließend, startet keine Erzeugung. Und löst die Suche von selbst alles auf, was
+gefragt war (alle Züge, oder bei MultiPV 1 das kürzeste Matt), wird eine laufende
+Erzeugung **pausiert** (`searchEnd.answered`): `info string egtb: generation of KQQKN
+paused, the search answered the position; the next go with this material resumes it`.
+Bei KQQ-KN steht das nach 80 ms statt nach einer Minute Rechnen auf fünf Kernen; das
+nächste `go` im selben Material setzt fort, ein anderes Material verwirft den Job.
+
+**Erzeugung nach Bedarf (vorbereitet 2026-10-16):** Erzeugt wird bisher nur das
+Wurzelmaterial. Welche Tabellen eine Suche darüber hinaus bräuchte, sagt seit heute ein
+Zähler: `Set.Lookup` zählt jede Anfrage an ein Material bis sechs Steine ohne Tabelle
+(nicht registriert oder registriert und nicht erzeugt), und nach jeder Suche steht
+`info string egtb: no table for KRRKBN (15,700,667 probes), KRRKB (4,659,497 probes),
+KBNKR (2,996,298 probes)` mit den drei meistgefragten (`Set.MissingTables`, Go = Rust).
+Erreichbarkeit war das falsche Kriterium: Vom Bauern-Test
+(`5k2/5P1P/4P3/pP6/P6q/3P2P1/2P5/K7 w`, zwölf Steine) aus wären rund 70 der 110
+Fünf-Steiner erreichbar, die Suche fragt aber in zehn Sekunden **keine einzige**
+Stellung mit sechs oder weniger Steinen an, das Matt in 6 liegt elf Halbzüge tief und
+sieben Schläge entfernt. KQ-KBN ohne Datei fragt 21,5 Mio. Mal nach KBNKQ, die
+Sechs-Steiner-Wurzel KRR-KBN nach KRRKBN, KRRKB und KBNKR. Der nächste Schritt nimmt
+diese Liste als Auftrag: das meistgefragte fehlende Material erzeugen, sobald die
+Option es erlaubt.
+
 ```
 info string egtb: generating KBBBK (231 MB table, about 346 MB RAM), stop pauses it
 info string egtb: generation of KBBBK paused, the next go infinite resumes it
