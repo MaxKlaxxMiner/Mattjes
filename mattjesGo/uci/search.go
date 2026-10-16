@@ -159,11 +159,13 @@ type reporter struct {
 	start   time.Time
 	last    time.Time
 	multiPV int
-	// the root move under examination (set by the root driver) and the nodes
-	// of the finished root moves, for the progress lines
-	current chess.Move
-	base    uint64
-	depth   int
+	// the root move under examination (set by the root driver, with its
+	// number in the move list) and the nodes of the finished root moves, for
+	// the progress lines
+	current   chess.Move
+	currentNo int
+	base      uint64
+	depth     int
 }
 
 // rootScore renders a root move's score: a proven mate by its length
@@ -220,10 +222,15 @@ func (r *reporter) progress(nodes uint64) {
 	r.last = time.Now()
 	cur := ""
 	if r.current != (chess.Move{}) {
-		cur = " currmove " + r.current.UCI()
+		cur = fmt.Sprintf(" currmove %s currmovenumber %d", r.current.UCI(), r.currentNo)
 	}
 	r.e.send("info depth %d%s %s", r.depth, cur, r.counters(r.base+nodes))
 	r.e.flush()
+	// and a knock for the main loop: time to look at the demand for tables
+	select {
+	case r.e.demandTick <- struct{}{}:
+	default:
+	}
 }
 
 // text reports a status line of a phase-based search, at most every few seconds.
@@ -374,7 +381,7 @@ func runRoot(root *bitboard.Board, maxPlies, multiPV int, rep *reporter, known [
 					res.proven = true
 				}
 			} else {
-				rep.current, rep.base = m.rm.Move, nodes
+				rep.current, rep.currentNo, rep.base = m.rm.Move, i+1, nodes
 				res = solve(&c, d-1)
 			}
 			nodes += res.nodes
@@ -549,8 +556,11 @@ func (e *Engine) finishSearch(r searchEnd) {
 			parts[i] = fmt.Sprintf("%s (%s probes)", m.Mat.Name(), egtb.Group(int(m.Probes)))
 		}
 		e.send("info string egtb: no table for %s", strings.Join(parts, ", "))
-		e.set.ResetMissing()
 	}
+	// a generation the demand of this search did not start is not started
+	// now either: after a stop the engine is quiet, and the counts stay
+	// until ucinewgame, so the next go on the same position starts it at once
+	e.spare = nil
 	if !e.infinite {
 		e.send("bestmove %s", e.pendingBest)
 	}

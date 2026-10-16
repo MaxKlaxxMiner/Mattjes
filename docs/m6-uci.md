@@ -103,24 +103,42 @@ paused, the search answered the position; the next go with this material resumes
 Bei KQQ-KN steht das nach 80 ms statt nach einer Minute Rechnen auf fünf Kernen; das
 nächste `go` im selben Material setzt fort, ein anderes Material verwirft den Job.
 
-**Erzeugung nach Bedarf (vorbereitet 2026-10-16):** Erzeugt wird bisher nur das
-Wurzelmaterial. Welche Tabellen eine Suche darüber hinaus bräuchte, sagt seit heute ein
+**Erzeugung nach Bedarf (2026-10-16):** Welche Tabellen eine Suche bräuchte, sagt ein
 Zähler: `Set.Lookup` zählt jede Anfrage an ein Material bis sechs Steine ohne Tabelle
 (nicht registriert oder registriert und nicht erzeugt), und nach jeder Suche steht
 `info string egtb: no table for KRRKBN (15,700,667 probes), KRRKB (4,659,497 probes),
-KBNKR (2,996,298 probes)` mit den drei meistgefragten (`Set.MissingTables`, Go = Rust).
-Erreichbarkeit war das falsche Kriterium: Vom Bauern-Test
+KBNKR (2,996,298 probes)` mit den drei meistgefragten (`Set.MissingTables`; die Zähler
+laufen bis `ucinewgame` weiter, ein gestartetes Material fällt heraus). Erreichbarkeit
+wäre das falsche Kriterium gewesen: Vom Bauern-Test
 (`5k2/5P1P/4P3/pP6/P6q/3P2P1/2P5/K7 w`, zwölf Steine) aus wären rund 70 der 110
 Fünf-Steiner erreichbar, die Suche fragt aber in zehn Sekunden **keine einzige**
 Stellung mit sechs oder weniger Steinen an, das Matt in 6 liegt elf Halbzüge tief und
-sieben Schläge entfernt. KQ-KBN ohne Datei fragt 21,5 Mio. Mal nach KBNKQ, die
-Sechs-Steiner-Wurzel KRR-KBN nach KRRKBN, KRRKB und KBNKR. Der nächste Schritt nimmt
-diese Liste als Auftrag: das meistgefragte fehlende Material erzeugen, sobald die
-Option es erlaubt.
+sieben Schläge entfernt. Die Liste ist der Auftrag (`generationTarget`): Ist das
+Wurzelmaterial nicht erzeugbar (mehr als sechs Steine, oder sechs ohne
+`EgtbGenerate6`), wird das meistgefragte fehlende Material genommen, das die Optionen
+erlauben. Entschieden wird bei jedem `go` (mit dem Bedarf der vorigen Suche auf
+derselben Stellung), **während der Suche** und nach jeder fertigen Tabelle (dann das
+nächste). Während der Suche geht das so: Kennt die Engine beim `go` noch keinen Bedarf,
+legt sie vor dem Start eine Kopie des Sets zurück (`spare`, 173 MB plus exakte
+RAM-Tabellen, denn der Such-Thread besitzt das Set danach, in Rust wörtlich), der
+Reporter klopft mit jeder Fortschrittszeile alle fünf Sekunden bei der Hauptschleife an
+(`demandTick`, Rust `Event::Tick`), die liest die Zähler (in Go unter einem Mutex, in
+Rust über einen `Arc` auf die Zählertabelle, `demand_handle`) und startet den Job auf
+der Kopie. Nach einem `stop` startet nichts mehr: Die Engine ist dann still, ein
+laufender Job pausiert wie bisher, der Bedarf bleibt bis `ucinewgame` stehen und
+startet beim nächsten `go` sofort. Nach einer Suche, die von der Zeit beendet wurde,
+läuft ein laufender Job weiter, aber auch dann startet kein neuer. Beispiel KRRN-KN
+(`8/8/4k3/8/8/8/R7/K1RN1n2 w`, sechs Steine, nur `EgtbGenerate5`, `go movetime
+40000`, Rust): nach 5 s `the search asked 6,494,526 times for KRRNK, generating it`,
+nach 30 s `KRRNK ready`, die Suche startet mit der Restzeit neu und sofort beginnt
+KRNKN (9,6 Mio. Anfragen); Go dasselbe mit anderen Zahlen. `go infinite` mit `stop`
+nach 12 s: KRRNK startet nach 5 s, `stop` pausiert ihn, danach kommt nichts mehr. Go
+und Rust melden dieselben Materialien in derselben Reihenfolge, die Zahlen hängen bei
+Zeitläufen vom Tempo ab; eine Tabelle, die inzwischen da ist, fällt aus der Liste.
 
 ```
 info string egtb: generating KBBBK (231 MB table, about 346 MB RAM), stop pauses it
-info string egtb: generation of KBBBK paused, the next go infinite resumes it
+info string egtb: generation of KBBBK paused, the next go resumes it
 bestmove a1a2
 info string egtb: generation of KBBBK resumed
 info string egtb: KBBBK  242221056 indices,   28017470 legal,    21487 mates
@@ -252,8 +270,10 @@ alle Züge bewiesen, bei MultiPV 1 der erste bewiesene Gewinn (kürzester), Tief
 oder `stop`. `matelist` braucht den Treiber nicht, sein Graph kennt jeden Wurzelzug
 exakt. Die Experimente (`Solve`/`SolveShortest` mit Schalter `Mated`, Testbank-Buchstabe
 `M`) bleiben die alte Wurzelsuche, damit die Knotenzahlen vergleichbar bleiben. Innerhalb einer langen Tiefe alle fünf Sekunden (`progressInterval`) `info depth
-17 currmove e3h6 nodes 2418594 nps 212941 time 11358` mit dem Wurzelzug, der gerade
-untersucht wird (die Suche bietet die Zeile alle 65.536 Knoten an, `ProgressEvery`;
+17 currmove e3h6 currmovenumber 10 nodes 2418594 nps 212941 time 11358` mit dem
+Wurzelzug, der gerade untersucht wird, und seiner Nummer in der Zugliste (seit
+2026-10-16, wie bei Stockfish; die Suche bietet die Zeile alle 65.536 Knoten an,
+`ProgressEvery`;
 die eigene Vorgabe der Searcher von 2^22 bzw. 2^26 wäre bei 200.000 Knoten pro Sekunde
 minutenweit auseinander). Das gefundene Matt kommt als `info depth 11 score mate 6
 nodes 7800 nps 236363 time 33 pv g3h4 f8g7 h7h8q ...`. `score mate N` gibt es erst mit dem Beweis:

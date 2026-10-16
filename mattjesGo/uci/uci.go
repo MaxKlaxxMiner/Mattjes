@@ -73,11 +73,13 @@ type Engine struct {
 	// a "go infinite" holds the best move back until "stop"
 	infinite    bool
 	pendingBest string
-	tableBest   bool       // pendingBest has a table value (a search without result keeps it)
-	rootTable   []rootMove // the root moves the table stage knows exactly, handed to the search's root driver
-	lastGo      goParams   // the parameters of the last "go": a search is repeated with them when a generation finishes beside it
-	deadline    time.Time  // when the running timed search ends (the repeat gets the rest)
-	restart     bool       // the running search is stopped to be repeated: no result lines, no bestmove
+	tableBest   bool          // pendingBest has a table value (a search without result keeps it)
+	rootTable   []rootMove    // the root moves the table stage knows exactly, handed to the search's root driver
+	lastGo      goParams      // the parameters of the last "go": a search is repeated with them when a generation finishes beside it
+	spare       *egtb.Set     // a fork taken before a search for a generation that the search's demand starts meanwhile (nil = none wanted)
+	demandTick  chan struct{} // the search's reporter knocks every few seconds: time to look at the demand for tables
+	deadline    time.Time     // when the running timed search ends (the repeat gets the rest)
+	restart     bool          // the running search is stopped to be repeated: no result lines, no bestmove
 	job         *job
 	jobDone     chan *egtb.Set
 	// the running search, if any
@@ -98,7 +100,7 @@ type job struct {
 // reported to the GUI (the Go and Rust binaries differ).
 func Run(in io.Reader, out io.Writer, name string, workers int) {
 	e := &Engine{out: bufio.NewWriter(out), board: bitboard.New(), multiPV: 1, workers: workers, name: name, cacheDir: egtb.DefaultCacheDir(),
-		algo: defaultAlgo, hashMB: defaultHashMB, mobility: defaultMobility, jobDone: make(chan *egtb.Set, 1), searchDone: make(chan searchEnd, 1)}
+		algo: defaultAlgo, hashMB: defaultHashMB, mobility: defaultMobility, jobDone: make(chan *egtb.Set, 1), searchDone: make(chan searchEnd, 1), demandTick: make(chan struct{}, 1)}
 	e.send("%s", About)
 	e.flush()
 	lines := make(chan string)
@@ -127,6 +129,8 @@ func Run(in io.Reader, out io.Writer, name string, workers int) {
 			e.finishJob(set)
 		case r := <-e.searchDone:
 			e.finishSearch(r)
+		case <-e.demandTick:
+			e.onDemandTick()
 		}
 		e.flush()
 	}
@@ -172,6 +176,9 @@ func (e *Engine) command(words []string) bool {
 		e.setOption(words[1:])
 	case "ucinewgame":
 		e.clearTables()
+		if e.set != nil {
+			e.set.ResetMissing() // the demand for tables belongs to the old game
+		}
 	case "position":
 		e.position(words[1:])
 	case "go":
@@ -185,8 +192,12 @@ func (e *Engine) command(words []string) bool {
 		// beside the search (every "go", not only infinite); when it is ready,
 		// finishJob answers again with it. A position the tables settle needs
 		// none (a paused job stays paused)
-		if !settled {
-			e.maybeGenerate()
+		e.spare = nil
+		if !settled && !e.maybeGenerate() && (e.generate5 || e.generate6) && pieceCount(&e.board) > 4 {
+			// nothing to generate yet: the search's demand may name a table
+			// meanwhile (onDemandTick), and that job needs a copy of the set
+			// taken while the main loop still owns it
+			e.spare = e.set.Fork()
 		}
 		if !settled && e.algo != "none" {
 			e.startSearch(p)
@@ -198,7 +209,7 @@ func (e *Engine) command(words []string) bool {
 	case "stop":
 		if e.job != nil && !e.job.ctrl.Paused() {
 			e.job.ctrl.Pause()
-			e.send("info string egtb: generation of %s paused, the next go infinite resumes it", e.job.mat.Name())
+			e.send("info string egtb: generation of %s paused, the next go resumes it", e.job.mat.Name())
 		}
 		e.stopSearch()
 		if e.infinite {
@@ -430,15 +441,9 @@ func (e *Engine) search() bool {
 // the search with backgroundWorkers threads and finishJob answers again when
 // it is ready. Returns whether a generation is running afterwards.
 func (e *Engine) maybeGenerate() bool {
-	m, ok := egtb.MaterialOf(&e.board)
-	if !ok || m.Pieces() <= 4 || e.board.Castling != 0 {
-		return false
-	}
-	if t := e.set.Find(m.Name()); t != nil && t.Available() {
-		return false
-	}
-	if m.Pieces() == 5 && !e.generate5 || m.Pieces() == 6 && !e.generate6 {
-		return false // the option is off: the search runs instead, quietly
+	m, ok := e.generationTarget()
+	if !ok {
+		return false // nothing missing that the options allow: the search runs alone, quietly
 	}
 	if e.job != nil {
 		if e.job.mat.Name() == m.Name() {
@@ -455,8 +460,57 @@ func (e *Engine) maybeGenerate() bool {
 	return e.startJob(m)
 }
 
+// generationTarget picks the material worth generating: the root material
+// when its table is missing and the options allow its piece count, else the
+// material without a table the searches asked for most (Set.MissingTables,
+// "Erzeugung nach Bedarf" in docs/m6-uci.md: a six-piece root without
+// EgtbGenerate6 still gets the five-piece tables its captures lead into).
+func (e *Engine) generationTarget() (egtb.Material, bool) {
+	missing := func(m egtb.Material) bool {
+		if m.Pieces() <= 4 || !(m.Pieces() == 5 && e.generate5 || m.Pieces() == 6 && e.generate6) {
+			return false
+		}
+		t := e.set.Find(m.Name())
+		return t == nil || !t.Available()
+	}
+	if m, ok := egtb.MaterialOf(&e.board); ok && e.board.Castling == 0 && missing(m) {
+		return m, true
+	}
+	for _, mt := range e.set.MissingTables(0) {
+		if missing(mt.Mat) {
+			e.send("info string egtb: the search asked %s times for %s, generating it", egtb.Group(int(mt.Probes)), mt.Mat.Name())
+			return mt.Mat, true
+		}
+	}
+	return egtb.Material{}, false
+}
+
+// onDemandTick runs in the main loop every few seconds of a search (the
+// reporter knocks): when no generation runs and a spare copy of the set is
+// at hand, the material the search asked for most, within the options'
+// piece limits, is generated beside it ("Erzeugung nach Bedarf").
+func (e *Engine) onDemandTick() {
+	if !e.searching || e.restart || e.job != nil || e.spare == nil {
+		return
+	}
+	for _, mt := range e.set.MissingTables(0) {
+		if mt.Mat.Pieces() == 5 && e.generate5 || mt.Mat.Pieces() == 6 && e.generate6 {
+			e.send("info string egtb: the search asked %s times for %s, generating it", egtb.Group(int(mt.Probes)), mt.Mat.Name())
+			e.startJobFrom(mt.Mat, e.spare)
+			e.spare = nil
+			return
+		}
+	}
+}
+
 func (e *Engine) startJob(m egtb.Material) bool {
-	set := e.set.Fork()
+	return e.startJobFrom(m, e.set.Fork())
+}
+
+// startJobFrom generates m in the background on set, a fork of the loaded
+// tables (taken by the caller while the main loop owned them).
+func (e *Engine) startJobFrom(m egtb.Material, set *egtb.Set) bool {
+	e.set.ForgetMissing(m) // decided: the next demand decision looks at the rest
 	t := set.AddMaterial(m)
 	need, measured := set.EstimateBytes(t)
 	how := "estimated"
@@ -551,6 +605,9 @@ func (e *Engine) finishJob(set *egtb.Set) {
 	if !again {
 		return
 	}
+	// the next table the searches asked for, if any, starts right away (the
+	// restarted search pauses it when the new table answers everything)
+	e.maybeGenerate()
 	if !e.search() && e.algo != "none" {
 		p := e.lastGo
 		if !p.infinite && p.budget > 0 {

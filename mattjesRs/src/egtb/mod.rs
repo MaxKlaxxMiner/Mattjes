@@ -26,7 +26,7 @@ pub use index::{KK_PAWNLESS, KK_PAWNS};
 #[allow(unused_imports)]
 pub use persist::{checksum, default_cache_dir, default_path, recorded_checksum, BASE_FILE_NAME, CACHE_DIR, FILE_CHECKSUM, IO_WORKERS, TABLE_CHECKSUMS};
 #[allow(unused_imports)]
-pub use table::{Set, Table, Value, MAX_PIECES, MAX_PLIES};
+pub use table::{missing_tables_of, Set, Table, Value, MAX_PIECES, MAX_PLIES};
 
 use crate::bitboard::Board;
 use crate::chess::Piece;

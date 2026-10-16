@@ -3,6 +3,7 @@ package egtb
 import (
 	"fmt"
 	"math/bits"
+	"sync"
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
@@ -233,8 +234,10 @@ type Set struct {
 	// missing counts the lookups of materials without a table (up to
 	// MaxPieces pieces), by canonical signature: the demand a search creates
 	// for tables that could be generated (MissingTables). Written by the
-	// search thread only.
-	missing map[Signature]uint64
+	// search thread, read by the main loop while the search runs, hence the
+	// mutex (taken on misses only).
+	missing   map[Signature]uint64
+	missingMu sync.Mutex
 }
 
 // NewSet allocates the base tables without values; Generate or Load fills them.
@@ -402,7 +405,7 @@ func (s *Set) lookup(b *bitboard.Board) (t *Table, v Value, ok bool) {
 		return nil, Draw, false
 	}
 	if !t.available() { // registered but not generated: no index for nothing (a search asks millions of times), but counted as demand
-		s.missing[t.Mat.signature()]++
+		s.countMissing(t.Mat.signature())
 		return nil, Draw, false
 	}
 	idx := t.indexOf(b, flip)
@@ -482,7 +485,7 @@ func (s *Set) findTable(b *bitboard.Board) (t *Table, flip bool, ok bool) {
 		// search can drive which table is generated next (MissingTables);
 		// four of a kind (the sentinel signature) never has a table
 		if sig != signatureSpace-1 {
-			s.missing[min(sig, flipped)]++
+			s.countMissing(min(sig, flipped))
 		}
 		return nil, false, false
 	}

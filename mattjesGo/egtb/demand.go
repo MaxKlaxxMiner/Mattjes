@@ -19,11 +19,18 @@ type MissingTable struct {
 // generating next (docs/m6-uci.md, "Erzeugung nach Bedarf").
 func (s *Set) MissingTables(n int) []MissingTable {
 	var out []MissingTable
+	s.missingMu.Lock()
 	for sig, probes := range s.missing {
+		m := materialFromSignature(sig)
+		if t := s.Find(m.Name()); t != nil && t.available() {
+			delete(s.missing, sig) // asked for before the table arrived: no demand any more
+			continue
+		}
 		if probes > 0 {
-			out = append(out, MissingTable{Mat: materialFromSignature(sig), Probes: probes})
+			out = append(out, MissingTable{Mat: m, Probes: probes})
 		}
 	}
+	s.missingMu.Unlock()
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Probes != out[j].Probes {
 			return out[i].Probes > out[j].Probes
@@ -38,7 +45,24 @@ func (s *Set) MissingTables(n int) []MissingTable {
 
 // ResetMissing zeroes the counters of MissingTables.
 func (s *Set) ResetMissing() {
+	s.missingMu.Lock()
 	clear(s.missing)
+	s.missingMu.Unlock()
+}
+
+// ForgetMissing drops one material from MissingTables (its generation was
+// decided), so that the next decision looks at the rest.
+func (s *Set) ForgetMissing(m Material) {
+	s.missingMu.Lock()
+	delete(s.missing, m.signature())
+	s.missingMu.Unlock()
+}
+
+// countMissing is one lookup of a material without a table.
+func (s *Set) countMissing(sig Signature) {
+	s.missingMu.Lock()
+	s.missing[sig]++
+	s.missingMu.Unlock()
 }
 
 // materialFromSignature decodes the two-bit counts per type and colour (see

@@ -15,7 +15,7 @@
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::{compact, Engine, Event, PROGRESS_INTERVAL};
@@ -157,9 +157,12 @@ struct Reporter<W: Write + Send + 'static> {
     start: Instant,
     last: Mutex<Instant>,
     multi_pv: usize,
-    current: Mutex<Option<Move>>,
+    /// The root move under examination and its number in the move list.
+    current: Mutex<Option<(Move, usize)>>,
     base: AtomicU64,
     depth: AtomicUsize,
+    /// The main loop's event channel, for the demand knock.
+    tx: mpsc::Sender<super::Event>,
 }
 
 /// Renders a root move's score: a proven mate by its length (positive plies:
@@ -220,12 +223,16 @@ impl<W: Write + Send + 'static> Reporter<W> {
             }
             *last = Instant::now();
         }
-        let cur = self.current.lock().unwrap().map(|m| format!(" currmove {}", m.uci())).unwrap_or_default();
+        let cur = self.current.lock().unwrap().map(|(m, no)| format!(" currmove {} currmovenumber {}", m.uci(), no)).unwrap_or_default();
         let depth = self.depth.load(Ordering::Relaxed);
         let total = self.base.load(Ordering::Relaxed) + nodes;
-        let mut o = self.out.lock().unwrap();
-        let _ = writeln!(o, "info depth {}{} {}", depth, cur, self.counters(total));
-        let _ = o.flush();
+        {
+            let mut o = self.out.lock().unwrap();
+            let _ = writeln!(o, "info depth {}{} {}", depth, cur, self.counters(total));
+            let _ = o.flush();
+        }
+        // and a knock for the main loop: time to look at the demand for tables
+        let _ = self.tx.send(super::Event::Tick);
     }
 
     /// Reports a status line of a phase-based search, at most every few seconds.
@@ -316,6 +323,7 @@ impl<W: Write + Send + 'static> Engine<W> {
         let table = if algo == "matelist" { None } else { self.search_table(&algo) };
         let max_positions = (self.hash_mb << 20) / MATELIST_BYTES_PER_POSITION;
         let set = self.set.take().expect("tables are loaded before searching");
+        self.demand = Some(set.demand_handle()); // read by on_demand_tick while the search thread owns the set
         let (out, tx, search_tx) = (self.out.clone(), self.tx.clone(), self.search_tx.clone());
         std::thread::spawn(move || {
             let rep = Arc::new(Reporter {
@@ -326,6 +334,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                 current: Mutex::new(None),
                 base: AtomicU64::new(0),
                 depth: AtomicUsize::new(0),
+                tx: tx.clone(),
             });
             let (core, table) = {
                 let oracle = Tables { set: &set };
@@ -458,8 +467,12 @@ impl<W: Write + Send + 'static> Engine<W> {
         if !missing.is_empty() {
             let parts: Vec<String> = missing.iter().map(|(m, p)| format!("{} ({} probes)", m.name(), egtb::group(*p as usize))).collect();
             self.send(&format!("info string egtb: no table for {}", parts.join(", ")));
-            self.set().reset_missing();
         }
+        // a generation the demand of this search did not start is not started
+        // now either: after a stop the engine is quiet, and the counts stay
+        // until ucinewgame, so the next go on the same position starts it at once
+        self.spare = None;
+        self.demand = None;
         if !self.infinite {
             let best = self.pending_best.clone();
             self.send(&format!("bestmove {}", best));
@@ -541,7 +554,7 @@ fn run_root<W: Write + Send + 'static>(root: &Board, max_plies: usize, multi_pv:
     let mut core = Core::default();
     for d in 1..=max_plies {
         rep.depth.store(d, Ordering::Relaxed);
-        for e in moves.iter_mut() {
+        for (i, e) in moves.iter_mut().enumerate() {
             if e.rm.proven || e.draw {
                 continue;
             }
@@ -552,7 +565,7 @@ fn run_root<W: Write + Send + 'static>(root: &Board, max_plies: usize, multi_pv:
                 let mut cbuf = new_buffer();
                 ChildResult { proven: c.gen_moves(&mut cbuf) == 0 && c.in_check(), ..Default::default() }
             } else {
-                *rep.current.lock().unwrap() = Some(e.rm.mv);
+                *rep.current.lock().unwrap() = Some((e.rm.mv, i + 1));
                 rep.base.store(nodes, Ordering::Relaxed);
                 solve(&c, d - 1)
             };

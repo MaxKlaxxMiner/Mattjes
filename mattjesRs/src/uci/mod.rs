@@ -53,6 +53,9 @@ enum Event {
     Done(Set),
     /// The search thread has put its result into the search channel.
     Searched,
+    /// The search's reporter knocks every few seconds: time to look at the
+    /// demand for tables.
+    Tick,
 }
 
 /// The state between commands.
@@ -92,6 +95,11 @@ pub struct Engine<W: Write + Send + 'static> {
     deadline: Option<Instant>,
     /// The running search is stopped to be repeated: no result lines, no bestmove.
     restart: bool,
+    /// A fork taken before a search for a generation that the search's demand
+    /// starts meanwhile (None = none wanted).
+    spare: Option<Set>,
+    /// The demand counters of the set away in the search thread.
+    demand: Option<Arc<Mutex<std::collections::HashMap<egtb::Signature, u64>>>>,
     job: Option<Job>,
     tx: mpsc::Sender<Event>,
     // the running search, if any
@@ -139,6 +147,8 @@ pub fn run<R: Read + Send + 'static, W: Write + Send + 'static>(input: R, out: W
         last_go: GoParams { infinite: false, max_plies: MAX_SEARCH_PLIES, budget: None },
         deadline: None,
         restart: false,
+        spare: None,
+        demand: None,
         job: None,
         tx: tx.clone(),
         searching: false,
@@ -174,6 +184,7 @@ pub fn run<R: Read + Send + 'static, W: Write + Send + 'static>(input: R, out: W
                     e.finish_search(r);
                 }
             }
+            Event::Tick => e.on_demand_tick(),
         }
         e.flush();
     }
@@ -234,7 +245,12 @@ impl<W: Write + Send + 'static> Engine<W> {
                 self.send("readyok");
             }
             "setoption" => self.set_option(&words[1..]),
-            "ucinewgame" => self.clear_tables(),
+            "ucinewgame" => {
+                self.clear_tables();
+                if let Some(s) = &self.set {
+                    s.reset_missing(); // the demand for tables belongs to the old game
+                }
+            }
             "position" => self.position(&words[1..]),
             "go" => {
                 self.ensure_tables();
@@ -247,8 +263,12 @@ impl<W: Write + Send + 'static> Engine<W> {
                 // background beside the search (every "go", not only infinite);
                 // when it is ready, finish_job answers again with it. A position
                 // the tables settle needs none (a paused job stays paused)
-                if !settled {
-                    self.maybe_generate();
+                self.spare = None;
+                if !settled && !self.maybe_generate() && (self.generate5 || self.generate6) && piece_count(&self.board) > 4 {
+                    // nothing to generate yet: the search's demand may name a
+                    // table meanwhile (on_demand_tick), and that job needs a
+                    // copy of the set taken while the main loop still owns it
+                    self.spare = Some(self.set().fork());
                 }
                 if !settled && self.algo != "none" {
                     self.start_search(p);
@@ -264,7 +284,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                     if !j.ctrl.paused() {
                         j.ctrl.pause();
                         let name = j.mat.name();
-                        self.send(&format!("info string egtb: generation of {} paused, the next go infinite resumes it", name));
+                        self.send(&format!("info string egtb: generation of {} paused, the next go resumes it", name));
                     }
                 }
                 self.stop_search();
@@ -481,19 +501,9 @@ impl<W: Write + Send + 'static> Engine<W> {
     /// search with `background_workers` threads and `finish_job` answers again
     /// when it is ready. Returns whether a generation is running afterwards.
     fn maybe_generate(&mut self) -> bool {
-        let Some(m) = Material::of_board(&self.board) else { return false };
-        if m.pieces() <= 4 || self.board.castling != 0 {
-            return false;
-        }
-        let set = self.set();
-        if let Some(i) = set.find(&m.name()) {
-            if set.tables[i].is_available() {
-                return false;
-            }
-        }
-        if m.pieces() == 5 && !self.generate5 || m.pieces() == 6 && !self.generate6 {
-            return false; // the option is off: the search runs instead, quietly
-        }
+        let Some(m) = self.generation_target() else {
+            return false; // nothing missing that the options allow: the search runs alone, quietly
+        };
         if let Some(j) = &self.job {
             if j.mat.name() == m.name() {
                 if j.ctrl.paused() {
@@ -510,8 +520,71 @@ impl<W: Write + Send + 'static> Engine<W> {
         self.start_job(m)
     }
 
+    /// Picks the material worth generating: the root material when its table
+    /// is missing and the options allow its piece count, else the material
+    /// without a table the searches asked for most (`Set::missing_tables`,
+    /// "Erzeugung nach Bedarf" in docs/m6-uci.md: a six-piece root without
+    /// EgtbGenerate6 still gets the five-piece tables its captures lead into).
+    fn generation_target(&self) -> Option<Material> {
+        let missing = |m: &Material| -> bool {
+            if m.pieces() <= 4 || !(m.pieces() == 5 && self.generate5 || m.pieces() == 6 && self.generate6) {
+                return false;
+            }
+            match self.set().find(&m.name()) {
+                Some(i) => !self.set().tables[i].is_available(),
+                None => true,
+            }
+        };
+        if let Some(m) = Material::of_board(&self.board) {
+            if self.board.castling == 0 && missing(&m) {
+                return Some(m);
+            }
+        }
+        for (m, probes) in self.set().missing_tables(0) {
+            if missing(&m) {
+                self.send(&format!("info string egtb: the search asked {} times for {}, generating it", egtb::group(probes as usize), m.name()));
+                return Some(m);
+            }
+        }
+        None
+    }
+
+    /// Runs in the main loop every few seconds of a search (the reporter
+    /// knocks): when no generation runs and a spare copy of the set is at
+    /// hand, the material the search asked for most, within the options'
+    /// piece limits, is generated beside it ("Erzeugung nach Bedarf").
+    fn on_demand_tick(&mut self) {
+        if !self.searching || self.restart || self.job.is_some() || self.spare.is_none() {
+            return;
+        }
+        let Some(demand) = self.demand.clone() else { return };
+        let list = egtb::missing_tables_of(&demand.lock().unwrap(), 0);
+        for (m, probes) in list {
+            if m.pieces() == 5 && self.generate5 || m.pieces() == 6 && self.generate6 {
+                self.send(&format!("info string egtb: the search asked {} times for {}, generating it", egtb::group(probes as usize), m.name()));
+                let fork = self.spare.take().expect("checked above");
+                self.start_job_from(m, fork);
+                return;
+            }
+        }
+    }
+
     fn start_job(&mut self, m: Material) -> bool {
-        let mut fork = self.set().fork();
+        let fork = self.set().fork();
+        self.start_job_from(m, fork)
+    }
+
+    /// Generates m in the background on `fork`, a copy of the loaded tables
+    /// (taken by the caller while the main loop owned them).
+    fn start_job_from(&mut self, m: Material, mut fork: Set) -> bool {
+        // decided: the next demand decision looks at the rest
+        match (&self.demand, &self.set) {
+            (Some(d), _) => {
+                d.lock().unwrap().remove(&m.signature());
+            }
+            (None, Some(s)) => s.forget_missing(&m),
+            _ => {}
+        }
         let ti = fork.add_material(m.clone());
         let size = fork.tables[ti].size;
         let (need, measured) = fork.estimate_bytes(ti);
@@ -616,6 +689,9 @@ impl<W: Write + Send + 'static> Engine<W> {
         if !again {
             return;
         }
+        // the next table the searches asked for, if any, starts right away
+        // (the restarted search pauses it when the new table answers everything)
+        self.maybe_generate();
         if !self.search() && self.algo != "none" {
             let mut p = self.last_go;
             if !p.infinite && p.budget.is_some() {

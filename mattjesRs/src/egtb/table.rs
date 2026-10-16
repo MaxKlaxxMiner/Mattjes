@@ -436,8 +436,9 @@ pub struct Set {
     /// Counts the lookups of materials without a table (up to MAX_PIECES
     /// pieces), by canonical signature: the demand a search creates for
     /// tables that could be generated (`missing_tables`). A mutex, because
-    /// lookups take a shared reference (one search thread, uncontended).
-    missing: Mutex<std::collections::HashMap<super::Signature, u64>>,
+    /// lookups take a shared reference; an Arc, because the main loop reads
+    /// it (`demand_handle`) while the search thread owns the set.
+    missing: std::sync::Arc<Mutex<std::collections::HashMap<super::Signature, u64>>>,
 }
 
 impl Set {
@@ -482,7 +483,7 @@ impl Set {
 
     /// Allocates the base tables without values; `generate_all` or `load` fills them.
     pub fn new() -> Set {
-        let mut s = Set { tables: Vec::new(), base_count: 0, by_sig: vec![-1; SIGNATURE_SPACE], cache_dir: super::persist::default_cache_dir(), missing: Mutex::new(std::collections::HashMap::new()) };
+        let mut s = Set { tables: Vec::new(), base_count: 0, by_sig: vec![-1; SIGNATURE_SPACE], cache_dir: super::persist::default_cache_dir(), missing: std::sync::Arc::new(Mutex::new(std::collections::HashMap::new())) };
         for m in Material::all() {
             s.add_material(m);
         }
@@ -595,18 +596,39 @@ impl Set {
     /// search creates: the table asked for most is the one worth generating
     /// next (docs/m6-uci.md, "Erzeugung nach Bedarf").
     pub fn missing_tables(&self, n: usize) -> Vec<(Material, u64)> {
-        let mut out: Vec<(Material, u64)> = self.missing.lock().unwrap().iter().filter(|(_, &p)| p > 0).map(|(&sig, &p)| (material_from_signature(sig), p)).collect();
-        out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name().cmp(&b.0.name())));
-        if n > 0 {
-            out.truncate(n);
-        }
-        out
+        let mut map = self.missing.lock().unwrap();
+        // asked for before the table arrived: no demand any more
+        map.retain(|&sig, _| self.find(&material_from_signature(sig).name()).is_none_or(|i| !self.tables[i].is_available()));
+        missing_tables_of(&map, n)
+    }
+
+    /// A handle on the demand counters that outlives the set's move into the
+    /// search thread: the main loop reads it to start a generation meanwhile.
+    pub fn demand_handle(&self) -> std::sync::Arc<Mutex<std::collections::HashMap<super::Signature, u64>>> {
+        self.missing.clone()
     }
 
     /// Zeroes the counters of `missing_tables`.
     pub fn reset_missing(&self) {
         self.missing.lock().unwrap().clear();
     }
+
+    /// Drops one material from `missing_tables` (its generation was decided),
+    /// so that the next decision looks at the rest.
+    pub fn forget_missing(&self, m: &Material) {
+        self.missing.lock().unwrap().remove(&m.signature());
+    }
+}
+
+/// The materials of a demand map (see `Set::missing_tables`), most asked
+/// first, at most n (0: all).
+pub fn missing_tables_of(map: &std::collections::HashMap<super::Signature, u64>, n: usize) -> Vec<(Material, u64)> {
+    let mut out: Vec<(Material, u64)> = map.iter().filter(|(_, &p)| p > 0).map(|(&sig, &p)| (material_from_signature(sig), p)).collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name().cmp(&b.0.name())));
+    if n > 0 {
+        out.truncate(n);
+    }
+    out
 }
 
 /// Decodes the two-bit counts per type and colour (see `board_signature`)
