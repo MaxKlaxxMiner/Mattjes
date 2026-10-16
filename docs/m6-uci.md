@@ -223,8 +223,36 @@ Züge erledigt sind. Bei MultiPV 1 wird bei einem bekannten Gewinn in n Halbzüg
 bis n − 2 nach etwas Kürzerem gesucht (Rxf1 oben: Tiefen 1 bis 11, 8 Tsd. Besuche,
 dann steht Matt in 7 exakt); mit MultiPV werden alle offenen Züge aufgelöst.
 Vorher lädt die Hauptschleife alle Cache-Dateien, die die Suche durch Schläge und
-Umwandlungen erreichen kann (`loadDependencies`, rekursiv über
-`Material.Dependencies`), denn der Such-Thread lädt nichts.
+Umwandlungen erreichen kann (`loadDependencies`), denn der Such-Thread lädt nichts.
+
+**Vorhandene Tabellen auch für große Wurzeln (2026-10-16):** Bis dahin ging
+`loadDependencies` von `egtb.MaterialOf` aus, das über sechs Steinen scheitert, und
+lief von dort rekursiv über `Material.Dependencies` nach unten. Eine Wurzel mit
+sieben oder mehr Steinen lud deshalb nichts, obwohl der Bedarfszähler ihre
+Fünf-Steiner-Anfragen sah und die Datei vielleicht längst im Cache lag. Jetzt sind
+die Kandidaten die Dateien im Cache-Ordner (ein Verzeichnislauf, Namen wie
+`5-KRRKN.bin` über `egtb.ParseFileName`, nach Namen sortiert, damit Go und Rust
+dieselbe Reihenfolge haben), und `Material.ReachableFrom` filtert sie gegen die
+Steintypen der Wurzel (`egtb.PiecesOf`, ohne Grenze): je Seite dürfen die Bauern
+nicht mehr werden, und jede Figur, die die Wurzelseite nicht hat, muss ein
+überzähliger Bauer per Umwandlung decken; beide Farbzuordnungen werden geprüft, weil
+in der Tabelle Weiß die stärkere Seite ist. Das ist ein Filter nach Material, kein
+Beweis der Erreichbarkeit (ob die Felder es zulassen, zählt nicht), und er ersetzt
+die Rekursion auch für Fünf- und Sechs-Steiner-Wurzeln. Geladen wird nur, was als
+Datei existiert, und das kostet je Tabelle nur Kopf und Blockindex (KBNKQ rund
+24 KB), die Blöcke folgen beim ersten Zugriff. Statt einer Zeile pro Tabelle meldet
+der Lauf eine Summenzeile (`info string egtb: loaded 3 cached tables the search can
+reach (step 8, the search resolves exact distances)`), die Wurzeltabelle behält ihre
+eigene. Eine früher ohne Datei registrierte Tabelle wird bei jedem `go` neu
+versucht, die Datei kann inzwischen da sein (`openTable`). Nebenbei fiel die Grenze
+von 127 Tabellen je Set (`bySig` war `[]int8`, jetzt `int16`): Basis 35 plus 110
+Fünf-Steiner wären darüber gewesen, sobald eine Bauernstellung alles erreicht. Der
+Rochade-Check ist aus dem Abhängigkeitslauf verschwunden, Rochaderechte ändern das
+erreichbare Material nicht. Probe am Bauern-Test
+(`5k2/5P1P/4P3/pP6/P6q/3P2P1/2P5/K7 w - a6 0 1`, zwölf Steine) mit KRRKN, KRRNK und
+KRNKN im Cache: alle drei erreichbar (zwei Umwandlungen für die Türme, der a5-Bauer
+wird zum Springer), alle drei geladen, Go und Rust zeilenidentisch; das Matt in 6
+braucht sie dann nicht (keine Blockcache-Zeile), aber die Suche hätte sie.
 
 **Thread, Stop, Zeit:** Die Suche läuft in einem eigenen Thread, die Hauptschleife
 liest weiter Kommandos (`isready` wird sofort beantwortet). `stop` setzt ein atomares

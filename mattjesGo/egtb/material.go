@@ -176,10 +176,10 @@ type Signature uint32
 
 const signatureSpace = 1 << 20
 
-// MaterialOf reads the material of a board (kings excluded) in canonical form.
-// ok is false when a side has no king or the material exceeds MaxPieces.
-func MaterialOf(b *bitboard.Board) (m Material, ok bool) {
-	var w, bl []chess.Piece
+// PiecesOf reads the piece types of a board besides the kings, white and
+// black separately and in board order, for any number of pieces. ok is false
+// unless both kings are present.
+func PiecesOf(b *bitboard.Board) (white, black []chess.Piece, ok bool) {
 	kings := 0
 	for _, p := range b.Squares {
 		switch {
@@ -187,15 +187,51 @@ func MaterialOf(b *bitboard.Board) (m Material, ok bool) {
 		case p.Is(chess.King):
 			kings++
 		case p.Color() == chess.White:
-			w = append(w, p.Type())
+			white = append(white, p.Type())
 		default:
-			bl = append(bl, p.Type())
+			black = append(black, p.Type())
 		}
 	}
-	if kings != 2 || 2+len(w)+len(bl) > MaxPieces {
+	return white, black, kings == 2
+}
+
+// MaterialOf reads the material of a board (kings excluded) in canonical form.
+// ok is false when a side has no king or the material exceeds MaxPieces.
+func MaterialOf(b *bitboard.Board) (m Material, ok bool) {
+	w, bl, ok := PiecesOf(b)
+	if !ok || 2+len(w)+len(bl) > MaxPieces {
 		return Material{}, false
 	}
 	return canonicalMaterial(w, bl), true
+}
+
+// ReachableFrom reports whether a game from a position with these piece types
+// (kings excluded, any number) can reach this material by captures and
+// promotions: per side the pawns do not grow, and every piece the side lacks
+// is covered by a spare pawn, promoted. Both color assignments are tried,
+// because the table's White is the stronger side, not the board's White.
+// Only material counts, not whether the squares allow it, so this is a
+// filter for the tables worth loading, not a proof of reachability.
+func (m Material) ReachableFrom(white, black []chess.Piece) bool {
+	return sideReachable(m.White, white) && sideReachable(m.Black, black) ||
+		sideReachable(m.White, black) && sideReachable(m.Black, white)
+}
+
+func sideReachable(target, from []chess.Piece) bool {
+	var have, need [6]int // by pieceOrder: 1 pawn .. 5 queen
+	for _, p := range from {
+		have[pieceOrder(p)]++
+	}
+	for _, p := range target {
+		need[pieceOrder(p)]++
+	}
+	spare := have[1] - need[1] // pawns that need not stay pawns
+	for t := 2; t <= 5; t++ {
+		if need[t] > have[t] {
+			spare -= need[t] - have[t]
+		}
+	}
+	return spare >= 0
 }
 
 func typeBit(p chess.Piece) uint {

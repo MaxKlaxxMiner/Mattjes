@@ -679,19 +679,14 @@ func (e *Engine) loadMaterial(b *bitboard.Board) {
 	e.loadTable(m)
 }
 
+// loadTable registers the material and loads its cache file, with one line
+// per table loaded.
 func (e *Engine) loadTable(m egtb.Material) {
-	if e.set.Find(m.Name()) != nil {
+	t, loaded := e.openTable(m)
+	if !loaded {
 		return
 	}
-	t := e.set.AddMaterial(m)
 	path := e.set.TablePath(t)
-	if _, err := os.Stat(path); err != nil {
-		return
-	}
-	if err := e.set.LoadTable(t, path); err != nil {
-		e.send("info string %s: %v", path, err)
-		return
-	}
 	if t.Exact() {
 		e.send("info string egtb: loaded %s", path)
 	} else {
@@ -702,29 +697,66 @@ func (e *Engine) loadTable(m egtb.Material) {
 	e.flush()
 }
 
-// loadDependencies loads every cached table a search below this position can
-// reach by captures and promotions (five- and six-piece roots; the base is
-// always there). The search thread must not touch the set, so this happens
-// before it starts.
+// openTable registers the material (if new) and loads its cache file unless
+// the table is already available or no file exists. A table registered
+// earlier without a file is retried, the file may have appeared since.
+// Returns whether a file was loaded now.
+func (e *Engine) openTable(m egtb.Material) (*egtb.Table, bool) {
+	t := e.set.Find(m.Name())
+	if t != nil && t.Available() {
+		return t, false
+	}
+	if t == nil {
+		t = e.set.AddMaterial(m)
+	}
+	path := e.set.TablePath(t)
+	if _, err := os.Stat(path); err != nil {
+		return t, false
+	}
+	if err := e.set.LoadTable(t, path); err != nil {
+		e.send("info string %s: %v", path, err)
+		return t, false
+	}
+	return t, true
+}
+
+// loadDependencies loads every cached table beyond the base that a search
+// below this position can reach by captures and promotions, whatever the size
+// of the root: an eleven-piece pawn ending reaches the five-piece tables too.
+// The candidates are the files in the cache directory (one listing, sorted by
+// name), filtered by material, so an empty directory costs nothing and a
+// table is loaded only when its file exists (header and block index only,
+// the blocks follow on demand). One summary line instead of one per table.
+// The search thread must not touch the set, so this happens before it starts.
 func (e *Engine) loadDependencies(b *bitboard.Board) {
-	m, ok := egtb.MaterialOf(b)
-	if !ok || m.Pieces() <= 4 || b.Castling != 0 {
+	white, black, ok := egtb.PiecesOf(b)
+	if !ok || 2+len(white)+len(black) <= 4 {
 		return
 	}
-	seen := map[string]bool{m.Name(): true}
-	queue := []egtb.Material{m}
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		for _, d := range cur.Dependencies() {
-			if d.Pieces() <= 4 || seen[d.Name()] {
-				continue
-			}
-			seen[d.Name()] = true
-			e.loadTable(d)
-			queue = append(queue, d)
+	entries, err := os.ReadDir(e.set.CacheDir)
+	if err != nil {
+		return
+	}
+	loaded, step := 0, 1
+	for _, ent := range entries {
+		m, ok := egtb.ParseFileName(ent.Name())
+		if !ok || !m.ReachableFrom(white, black) {
+			continue
+		}
+		if t, ok := e.openTable(m); ok {
+			loaded++
+			step = max(step, t.Step)
 		}
 	}
+	if loaded == 0 {
+		return
+	}
+	if step <= 1 {
+		e.send("info string egtb: loaded %d cached tables the search can reach", loaded)
+	} else {
+		e.send("info string egtb: loaded %d cached tables the search can reach (step %d, the search resolves exact distances)", loaded, step)
+	}
+	e.flush()
 }
 
 // eval values a position from the side to move's view: from the table, or,

@@ -57,6 +57,23 @@ pub fn sort_types(ts: &mut [Piece]) {
     ts.sort_by_key(|&p| std::cmp::Reverse(piece_order(p)));
 }
 
+fn side_reachable(target: &[Piece], from: &[Piece]) -> bool {
+    let (mut have, mut need) = ([0i32; 6], [0i32; 6]); // by piece_order: 1 pawn .. 5 queen
+    for &p in from {
+        have[piece_order(p) as usize] += 1;
+    }
+    for &p in target {
+        need[piece_order(p) as usize] += 1;
+    }
+    let mut spare = have[1] - need[1]; // pawns that need not stay pawns
+    for t in 2..=5 {
+        if need[t] > have[t] {
+            spare -= need[t] - have[t];
+        }
+    }
+    spare >= 0
+}
+
 /// >0 if side a is stronger than side b, 0 if equal.
 pub fn compare_sides(a: &[Piece], b: &[Piece]) -> i32 {
     if a.len() != b.len() {
@@ -206,9 +223,10 @@ impl Material {
         n
     }
 
-    /// The material of a board (kings excluded) in canonical form; None when a
-    /// side has no king or the material exceeds MAX_PIECES.
-    pub fn of_board(b: &Board) -> Option<Material> {
+    /// The piece types of a board besides the kings, white and black
+    /// separately and in board order, for any number of pieces; None unless
+    /// both kings are present.
+    pub fn pieces_of(b: &Board) -> Option<(Vec<Piece>, Vec<Piece>)> {
         let (mut w, mut bl) = (Vec::new(), Vec::new());
         let mut kings = 0;
         for &p in &b.squares {
@@ -223,10 +241,32 @@ impl Material {
                 bl.push(p.kind());
             }
         }
-        if kings != 2 || 2 + w.len() + bl.len() > table::MAX_PIECES {
+        if kings != 2 {
+            return None;
+        }
+        Some((w, bl))
+    }
+
+    /// The material of a board (kings excluded) in canonical form; None when a
+    /// side has no king or the material exceeds MAX_PIECES.
+    pub fn of_board(b: &Board) -> Option<Material> {
+        let (w, bl) = Material::pieces_of(b)?;
+        if 2 + w.len() + bl.len() > table::MAX_PIECES {
             return None;
         }
         Some(Material::canonical(&w, &bl))
+    }
+
+    /// Whether a game from a position with these piece types (kings excluded,
+    /// any number) can reach this material by captures and promotions: per
+    /// side the pawns do not grow, and every piece the side lacks is covered
+    /// by a spare pawn, promoted. Both color assignments are tried, because
+    /// the table's White is the stronger side, not the board's White. Only
+    /// material counts, not whether the squares allow it, so this is a filter
+    /// for the tables worth loading, not a proof of reachability.
+    pub fn reachable_from(&self, white: &[Piece], black: &[Piece]) -> bool {
+        side_reachable(&self.white, white) && side_reachable(&self.black, black)
+            || side_reachable(&self.white, black) && side_reachable(&self.black, white)
     }
 
     /// Sorts both sides and puts the stronger one first.

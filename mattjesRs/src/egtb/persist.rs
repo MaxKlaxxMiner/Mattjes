@@ -99,6 +99,7 @@ pub const TABLE_CHECKSUMS: &[(&str, u64)] = &[
     // five pieces (format v3, 2026-10-09, Go and Rust identical), added as they are measured
     ("KBBBK", 0xa552a70f5be1c3db),
     ("KBNKQ", 0xa03df227d9f5eb72),
+    ("KRRKN", 0x443a1b3b48954ec3), // 2026-10-16, UCI background job, Go and Rust files byte-identical
     // six pieces (format v3, Rust, home machine): KRRKBN 1294 s, 35 GiB committed
     ("KRRKBN", 0x11049fde56c4b77c),
 ];
@@ -262,6 +263,18 @@ impl Set {
     /// The cache file of a material beyond the base, e.g. "5-KBNKQ.bin".
     pub fn table_path(&self, t: &Table) -> PathBuf {
         self.cache_dir.join(format!("{}-{}.bin", t.mat.pieces(), t.mat.name()))
+    }
+
+    /// Reads the material of a cache file name as `table_path` writes it
+    /// ("5-KRRKN.bin"); None for any other name, the base file included.
+    pub fn parse_file_name(name: &str) -> Option<Material> {
+        let base = name.strip_suffix(".bin")?;
+        let (_, mat_name) = base.split_once('-')?;
+        let m = Material::parse(mat_name).ok()?;
+        if format!("{}-{}.bin", m.pieces(), m.name()) != name {
+            return None;
+        }
+        Some(m)
     }
 
     /// The base cache file in the set's cache directory.

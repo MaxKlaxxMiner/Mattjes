@@ -726,54 +726,89 @@ impl<W: Write + Send + 'static> Engine<W> {
         self.load_table(m);
     }
 
+    /// Registers the material and loads its cache file, with one line per
+    /// table loaded.
     fn load_table(&mut self, m: Material) {
-        let set = self.set.as_mut().expect("tables are loaded before searching");
-        if set.find(&m.name()).is_some() {
+        let (ti, loaded) = self.open_table(m);
+        if !loaded {
             return;
         }
-        let ti = set.add_material(m);
+        let set = self.set.as_ref().expect("tables are loaded before searching");
+        let t = &set.tables[ti];
+        let path = set.table_path(t);
+        let mut o = self.out.lock().unwrap();
+        if t.is_exact() {
+            let _ = writeln!(o, "info string egtb: loaded {}", path.display());
+        } else {
+            // cache files beyond the base hold buckets of FILE_STEP moves: the
+            // table stage does not report them, the search resolves them
+            let _ = writeln!(o, "info string egtb: loaded {} (step {}, the search resolves exact distances)", path.display(), t.step());
+        }
+        let _ = o.flush();
+    }
+
+    /// Registers the material (if new) and loads its cache file unless the
+    /// table is already available or no file exists. A table registered
+    /// earlier without a file is retried, the file may have appeared since.
+    /// Returns the table index and whether a file was loaded now.
+    fn open_table(&mut self, m: Material) -> (usize, bool) {
+        let set = self.set.as_mut().expect("tables are loaded before searching");
+        let ti = match set.find(&m.name()) {
+            Some(ti) if set.tables[ti].is_available() => return (ti, false),
+            Some(ti) => ti,
+            None => set.add_material(m),
+        };
         let path = set.table_path(&set.tables[ti]);
         if !path.exists() {
-            return;
+            return (ti, false);
         }
         match set.load_table(ti, &path) {
-            Ok(()) => {
-                let mut o = self.out.lock().unwrap();
-                if set.tables[ti].is_exact() {
-                    let _ = writeln!(o, "info string egtb: loaded {}", path.display());
-                } else {
-                    // cache files beyond the base hold buckets of FILE_STEP
-                    // moves: the table stage does not report them, the search
-                    // resolves them
-                    let _ = writeln!(o, "info string egtb: loaded {} (step {}, the search resolves exact distances)", path.display(), set.tables[ti].step());
-                }
-                let _ = o.flush();
+            Ok(()) => (ti, true),
+            Err(e) => {
+                self.send(&format!("info string {}: {}", path.display(), e));
+                (ti, false)
             }
-            Err(e) => self.send(&format!("info string {}: {}", path.display(), e)),
         }
     }
 
-    /// Loads every cached table a search below this position can reach by
-    /// captures and promotions (five- and six-piece roots; the base is always
-    /// there). The search thread owns the set meanwhile and cannot load, so
-    /// this happens before it starts.
+    /// Loads every cached table beyond the base that a search below this
+    /// position can reach by captures and promotions, whatever the size of
+    /// the root: an eleven-piece pawn ending reaches the five-piece tables
+    /// too. The candidates are the files in the cache directory (one listing,
+    /// sorted by name), filtered by material, so an empty directory costs
+    /// nothing and a table is loaded only when its file exists (header and
+    /// block index only, the blocks follow on demand). One summary line
+    /// instead of one per table. The search thread owns the set meanwhile and
+    /// cannot load, so this happens before it starts.
     fn load_dependencies(&mut self, b: &Board) {
-        let Some(m) = Material::of_board(b) else { return };
-        if m.pieces() <= 4 || b.castling != 0 {
+        let Some((white, black)) = Material::pieces_of(b) else { return };
+        if 2 + white.len() + black.len() <= 4 {
             return;
         }
-        let mut seen = std::collections::HashSet::new();
-        seen.insert(m.name());
-        let mut queue = std::collections::VecDeque::from([m]);
-        while let Some(cur) = queue.pop_front() {
-            for d in cur.dependencies() {
-                if d.pieces() <= 4 || !seen.insert(d.name()) {
-                    continue;
-                }
-                self.load_table(d.clone());
-                queue.push_back(d);
+        let Ok(entries) = std::fs::read_dir(&self.set().cache_dir) else { return };
+        let mut names: Vec<String> = entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        let (mut loaded, mut step) = (0, 1);
+        for name in names {
+            let Some(m) = Set::parse_file_name(&name) else { continue };
+            if !m.reachable_from(&white, &black) {
+                continue;
+            }
+            let (ti, ok) = self.open_table(m);
+            if ok {
+                loaded += 1;
+                step = step.max(self.set().tables[ti].step());
             }
         }
+        if loaded == 0 {
+            return;
+        }
+        if step <= 1 {
+            self.send(&format!("info string egtb: loaded {} cached tables the search can reach", loaded));
+        } else {
+            self.send(&format!("info string egtb: loaded {} cached tables the search can reach (step {}, the search resolves exact distances)", loaded, step));
+        }
+        self.flush();
     }
 
     /// Values a position from the side to move's view: from the table, or, for

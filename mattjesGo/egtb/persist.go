@@ -77,6 +77,7 @@ var TableChecksums = map[string]uint64{
 	"KPPK": 0x829f48ba8cf92ce4, "KPKP": 0xae084110af4ab131,
 	// five pieces (format v3, 2026-10-09, Go and Rust identical), added as they are measured
 	"KBBBK": 0xa552a70f5be1c3db, "KBNKQ": 0xa03df227d9f5eb72,
+	"KRRKN": 0x443a1b3b48954ec3, // 2026-10-16, UCI background job, Go and Rust files byte-identical
 	// six pieces (format v3, Rust, home machine): KRRKBN 1294 s, 35 GiB committed
 	"KRRKBN": 0x11049fde56c4b77c,
 }
@@ -175,6 +176,24 @@ func DefaultPath() string { return filepath.Join(DefaultCacheDir(), BaseFileName
 // TablePath is the cache file of a material beyond the base, e.g. "5-KBNKQ.bin".
 func (s *Set) TablePath(t *Table) string {
 	return filepath.Join(s.CacheDir, fmt.Sprintf("%d-%s.bin", t.Mat.Pieces(), t.Mat.Name()))
+}
+
+// ParseFileName reads the material of a cache file name as TablePath writes
+// it ("5-KRRKN.bin"); ok is false for any other name, the base file included.
+func ParseFileName(name string) (Material, bool) {
+	base, found := strings.CutSuffix(name, ".bin")
+	if !found {
+		return Material{}, false
+	}
+	_, matName, found := strings.Cut(base, "-")
+	if !found {
+		return Material{}, false
+	}
+	m, err := Parse(matName)
+	if err != nil || fmt.Sprintf("%d-%s.bin", m.Pieces(), m.Name()) != name {
+		return Material{}, false
+	}
+	return m, true
 }
 
 // BasePath is the base cache file in the set's cache directory.

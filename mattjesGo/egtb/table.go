@@ -2,6 +2,7 @@ package egtb
 
 import (
 	"fmt"
+	"math"
 	"math/bits"
 	"sync"
 
@@ -226,8 +227,8 @@ const MaxPieces = 6
 // demand (one file each).
 type Set struct {
 	Tables    []*Table
-	baseCount int    // the first baseCount tables are the four-piece base
-	bySig     []int8 // signature -> table index, -1 none
+	baseCount int     // the first baseCount tables are the four-piece base
+	bySig     []int16 // signature -> table index, -1 none
 	// CacheDir holds the cache files (BaseFileName and one file per larger
 	// material); next to the binary unless changed.
 	CacheDir string
@@ -242,7 +243,7 @@ type Set struct {
 
 // NewSet allocates the base tables without values; Generate or Load fills them.
 func NewSet() *Set {
-	s := &Set{bySig: make([]int8, signatureSpace), CacheDir: DefaultCacheDir(), missing: map[Signature]uint64{}}
+	s := &Set{bySig: make([]int16, signatureSpace), CacheDir: DefaultCacheDir(), missing: map[Signature]uint64{}}
 	for i := range s.bySig {
 		s.bySig[i] = -1
 	}
@@ -294,11 +295,11 @@ func (s *Set) AddMaterial(m Material) *Table {
 	if t := s.Find(m.Name()); t != nil {
 		return t
 	}
-	if m.Pieces() > MaxPieces || len(s.Tables) >= 127 {
+	if m.Pieces() > MaxPieces || len(s.Tables) >= math.MaxInt16 {
 		panic("egtb: cannot add material " + m.Name())
 	}
 	t := newTable(m)
-	s.bySig[m.signature()] = int8(len(s.Tables))
+	s.bySig[m.signature()] = int16(len(s.Tables))
 	s.Tables = append(s.Tables, t)
 	return t
 }

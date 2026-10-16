@@ -429,7 +429,7 @@ pub struct Set {
     /// The first `base_count` tables are the four-piece base.
     base_count: usize,
     /// signature -> table index, -1 none
-    by_sig: Vec<i8>,
+    by_sig: Vec<i16>,
     /// Holds the cache files (the base file and one per larger material);
     /// next to the binary unless changed.
     pub cache_dir: std::path::PathBuf,
@@ -502,8 +502,8 @@ impl Set {
         if let Some(i) = self.find(&m.name()) {
             return i;
         }
-        assert!(m.pieces() <= MAX_PIECES && self.tables.len() < 127, "egtb: cannot add material {}", m.name());
-        self.by_sig[m.signature() as usize] = self.tables.len() as i8;
+        assert!(m.pieces() <= MAX_PIECES && self.tables.len() < i16::MAX as usize, "egtb: cannot add material {}", m.name());
+        self.by_sig[m.signature() as usize] = self.tables.len() as i16;
         self.tables.push(Table::new(m));
         self.tables.len() - 1
     }
