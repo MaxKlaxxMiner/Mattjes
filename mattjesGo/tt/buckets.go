@@ -18,12 +18,17 @@ const bucketBytes = BucketEntries * EntryBytes
 // bucket count, two bits less than a direct-mapped table of the same size.
 // Replacement evicts the entry with the smallest value (perft: the smallest
 // subtree, which is the cheapest to recompute); callers that need another
-// priority put it into the high value bits. Entries of a bucket are always
-// packed from the front, nothing is ever deleted.
+// priority put it into the high value bits. With SetPriorityBits(n) the top n
+// value bits are a class, and a new entry whose class is below the class of
+// that smallest entry is dropped instead (df-pn: an open estimate never
+// evicts a proof). Entries of a bucket are always packed from the front,
+// nothing is ever deleted.
 type Buckets struct {
-	raw     []entry  // backing memory, over-allocated by one bucket for alignment
-	buckets []bucket // 64-byte aligned view into raw
-	mask    uint64
+	raw        []entry  // backing memory, over-allocated by one bucket for alignment
+	buckets    []bucket // 64-byte aligned view into raw
+	mask       uint64
+	prioShift  uint // value >> prioShift = the priority class (= ValueBits without priority bits: every class is 0)
+	classShift uint // value >> classShift = the top two value bits (Stats.Evicted)
 	Stats
 }
 
@@ -38,15 +43,26 @@ func newBuckets(n int) *Buckets {
 	for uintptr(unsafe.Pointer(&raw[off]))%bucketBytes != 0 {
 		off++
 	}
+	vb := bits.Len(uint(n - 1))
 	return &Buckets{
-		raw:     raw,
-		buckets: unsafe.Slice((*bucket)(unsafe.Pointer(&raw[off])), n),
-		mask:    uint64(n - 1),
+		raw:        raw,
+		buckets:    unsafe.Slice((*bucket)(unsafe.Pointer(&raw[off])), n),
+		mask:       uint64(n - 1),
+		prioShift:  uint(vb),
+		classShift: uint(vb - 2),
 	}
 }
 
 func (t *Buckets) ValueBits() int   { return bits.OnesCount64(t.mask) }
 func (t *Buckets) MaxValue() uint64 { return t.mask }
+
+// SetPriorityBits declares the top n value bits as the priority class of an
+// entry (0 = off, every store is kept). Stores whose class is below the class
+// of the entry they would evict are dropped and counted in Stats.Dropped.
+func (t *Buckets) SetPriorityBits(n int) { t.prioShift = uint(t.ValueBits() - n) }
+
+// PriorityBits returns the setting of SetPriorityBits.
+func (t *Buckets) PriorityBits() int { return t.ValueBits() - int(t.prioShift) }
 
 // Probe returns the value stored for k.
 func (t *Buckets) Probe(k Key) (uint64, bool) {
@@ -67,7 +83,9 @@ func (t *Buckets) Probe(k Key) (uint64, bool) {
 }
 
 // Store writes the value for k: into the entry that already holds k, else into
-// the first empty entry, else over the entry with the smallest value.
+// the first empty entry, else over the entry with the smallest value, unless
+// that entry's priority class is above the new value's (then nothing is
+// stored, see SetPriorityBits).
 func (t *Buckets) Store(k Key, value uint64) {
 	if value > t.mask {
 		panic("tt: value exceeds ValueBits")
@@ -86,7 +104,13 @@ func (t *Buckets) Store(k Key, value uint64) {
 		}
 	}
 	if !victim.empty() && !victim.matches(k, t.mask) {
+		old := victim.word0 & t.mask
+		if old>>t.prioShift > value>>t.prioShift {
+			t.Dropped++
+			return
+		}
 		t.Replaced++
+		t.Evicted[old>>t.classShift]++
 	}
 	*victim = entry{k[0]&^t.mask | value, k[1]}
 }

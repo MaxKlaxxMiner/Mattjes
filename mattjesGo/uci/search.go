@@ -269,14 +269,19 @@ func (e *Engine) startSearch(p goParams) {
 		}
 	}
 	oracle := mateab.Tables{Set: e.set}
-	var direct *tt.Table
+	var pnTable *tt.Buckets
 	var abTable mateab.Table
 	switch algo {
 	case "matepn":
-		direct = e.directTable()
+		// buckets with priority replacement: proofs and final entries are
+		// never evicted for open estimates (docs/m4-mate-search.md, step 6)
+		pnTable = e.bucketTable()
+		pnTable.SetPriorityBits(matepn.PriorityBits)
 	case "mateab":
 		if e.hashMB >= bucketsFromMB {
-			abTable = e.bucketTable()
+			bt := e.bucketTable()
+			bt.SetPriorityBits(0)
+			abTable = bt
 		} else {
 			abTable = e.directTable()
 		}
@@ -295,7 +300,7 @@ func (e *Engine) startSearch(p goParams) {
 				return childResult{proven: cr.MatePlies != 0, length: max(cr.MatePlies, -cr.MatePlies), pv: cr.PV, nodes: cr.Nodes, aborted: cr.Aborted}
 			})
 		case "matepn":
-			s := matepn.New(oracle, direct, matepn.Saturating{Bits: direct.ValueBits()}, mobility == "on")
+			s := matepn.New(oracle, pnTable, matepn.Saturating{Bits: matepn.CodecBits(pnTable)}, mobility == "on")
 			s.LazyMobility = mobility == "lazy"
 			s.Epsilon, s.Final, s.Stop, s.ProgressEvery, s.Progress = 4, true, stop, progressEvery, rep.progress
 			r = runRoot(&root, maxPlies, multiPV, rep, known, func(c *bitboard.Board, plies int) childResult {
@@ -539,6 +544,13 @@ func (e *Engine) finishSearch(r searchEnd) {
 	}
 	if r.note != "" {
 		e.send("info string search: %s", r.note)
+	}
+	// the replacement balance of df-pn: evicted proofs cost their subtree
+	// again, dropped entries are open estimates that found no room
+	if e.tableAlgo == "matepn" && e.buckets != nil && r.nodes > 0 {
+		st := e.buckets.Counters()
+		e.send("info string tt: %s stores, %s replaced (%s proofs, %s finals), %s dropped", egtb.Group(int(st.Stores)), egtb.Group(int(st.Replaced)), egtb.Group(int(st.Evicted[2])), egtb.Group(int(st.Evicted[3])), egtb.Group(int(st.Dropped)))
+		e.buckets.ResetStats()
 	}
 	// the block cache of the packed tables (every material beyond the base)
 	if hits, misses, distinct, blocks := e.set.CacheStats(); hits+misses > 0 {

@@ -22,6 +22,30 @@ use crate::tt::{Key, TransTable};
 /// The deepest proof goal (the depth salt table size).
 pub const MAX_PLIES: usize = 127;
 
+/// The top bits of every stored value: the class of the entry, so that a
+/// bucket table with the same setting (`tt::Buckets::set_priority_bits`)
+/// never evicts a proof for an open estimate. An open node is class 0, a
+/// disproven one 1 (valid for its depth only), a proven one 2 (valid for
+/// every deeper goal and needed by the proof line), a final entry 3. The
+/// codec gets the remaining bits (`codec_bits`).
+pub const PRIORITY_BITS: u32 = 2;
+
+const CLASS_OPEN: u64 = 0;
+const CLASS_DISPROVEN: u64 = 1;
+const CLASS_PROVEN: u64 = 2;
+const CLASS_FINAL: u64 = 3;
+
+/// Caps the codec width: with no evictions the visits depend only on where
+/// the numbers saturate (10 bits each = 1022), so every table from 256 MB
+/// (buckets) up counts exactly the same, which makes the visits comparable
+/// across table sizes.
+pub const MAX_CODEC_BITS: u32 = 20;
+
+/// The width a codec for this table should use.
+pub fn codec_bits<T: TransTable>(t: &T) -> u32 {
+    (t.value_bits() - PRIORITY_BITS).min(MAX_CODEC_BITS)
+}
+
 /// Result of a search.
 #[derive(Clone, Default)]
 pub struct Result {
@@ -122,6 +146,10 @@ pub struct Searcher<O: Oracle, T: TransTable, C: Codec> {
     /// limits). Entries stored before that are all complete.
     pub stop: Option<Arc<AtomicBool>>,
     aborted: bool,
+    /// Puts the class into the top `PRIORITY_BITS` of a value; `value_mask`
+    /// strips it before the codec unpacks the numbers.
+    prio_shift: u32,
+    value_mask: u64,
     nodes: u64,
     leaves: u64,
     tt_hits: u64,
@@ -132,7 +160,10 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
     /// `mobility` initialises unknown children with their number of legal moves
     /// instead of 1 (one generator call per new leaf).
     pub fn new(oracle: O, table: T, codec: C, mobility: bool) -> Self {
-        Searcher { oracle, table, codec, mobility, lazy_mobility: false, epsilon: 0, final_entries: false, mated: false, progress: None, progress_every: PROGRESS_NODES, stop: None, aborted: false, nodes: 0, leaves: 0, tt_hits: 0, final_hits: 0 }
+        let shift = table.value_bits() - PRIORITY_BITS; // the class sits in the top bits, whatever the codec uses below
+        assert!(codec.pack(INF, INF) >> shift == 0, "matepn: the codec leaves no room for the priority bits (use codec_bits)");
+        assert!(shift >= 14, "matepn: final entries need 14 value bits below the priority bits");
+        Searcher { oracle, table, codec, mobility, lazy_mobility: false, epsilon: 0, final_entries: false, mated: false, progress: None, progress_every: PROGRESS_NODES, stop: None, aborted: false, prio_shift: shift, value_mask: (1 << shift) - 1, nodes: 0, leaves: 0, tt_hits: 0, final_hits: 0 }
     }
 
     /// Polls the stop flag every `STOP_NODES` visits.
@@ -300,7 +331,7 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
             }
             if let Some(v) = self.table.probe(child.key) {
                 self.tt_hits += 1;
-                (child.pn, child.dn) = self.codec.unpack(v);
+                (child.pn, child.dn) = self.codec.unpack(v & self.value_mask);
                 continue;
             }
             self.leaves += 1;
@@ -371,7 +402,14 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
     }
 
     fn store(&mut self, b: &Board, depth: usize, pn: u32, dn: u32) {
-        let v = self.codec.pack(pn, dn);
+        let class = if pn == 0 {
+            CLASS_PROVEN
+        } else if dn == 0 {
+            CLASS_DISPROVEN
+        } else {
+            CLASS_OPEN
+        };
+        let v = self.codec.pack(pn, dn) | class << self.prio_shift;
         self.table.store(key(b, depth), v);
         if self.final_entries && (pn == 0 || dn == 0) {
             self.store_final(b, depth, pn == 0);
@@ -379,7 +417,8 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
     }
 
     /// Final entries live under the unsalted key: 7 bits smallest proven depth
-    /// + 1 and 7 bits largest disproven depth + 1 (0 = none each).
+    /// plus one and 7 bits largest disproven depth plus one (0 = none each),
+    /// class `CLASS_FINAL` on top.
     fn store_final(&mut self, b: &Board, depth: usize, proven: bool) {
         let k = final_key(b, depth);
         let (mut pd, mut dd) = match self.table.probe(k) {
@@ -394,7 +433,7 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
         } else if depth > dd {
             dd = depth;
         }
-        self.table.store(k, ((pd + 1) as u64) << 7 | (dd + 1) as u64);
+        self.table.store(k, ((pd + 1) as u64) << 7 | (dd + 1) as u64 | CLASS_FINAL << self.prio_shift);
     }
 
     /// Answers from the depth-free entry when it decides the node at this depth.
@@ -457,7 +496,7 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
             let proven = if let Some((pn, _)) = self.probe_final(&c, depth - 1) {
                 pn == 0
             } else if let Some(v) = self.table.probe(key(&c, depth - 1)) {
-                self.codec.unpack(v).0 == 0
+                self.codec.unpack(v & self.value_mask).0 == 0
             } else {
                 let mut cbuf = new_buffer();
                 matches!(self.terminal(&c, &mut cbuf, depth - 1).0, Some((0, _)))

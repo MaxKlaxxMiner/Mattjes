@@ -73,9 +73,10 @@ pub struct GoParams {
 /// The transposition table of the search: one at a time, the layout follows
 /// the algorithm.
 pub enum SearchTable {
-    /// matepn: proofs must not be evicted by larger numbers.
+    /// mateab below BUCKETS_FROM_MB (its 21 value bits).
     Direct(tt::Table),
-    /// mateab: buckets keep mates over refutations.
+    /// mateab: buckets keep mates over refutations; matepn: buckets with
+    /// priority classes never evict a proof for an open estimate.
     Buckets(tt::Buckets),
 }
 
@@ -347,9 +348,9 @@ impl<W: Write + Send + 'static> Engine<W> {
                         let (c, t) = run_mateab(&root, max_plies, multi_pv, oracle, t, &known, &stop, &rep);
                         (c, Some(SearchTable::Direct(t)))
                     }
-                    ("matepn", Some(SearchTable::Direct(t))) => {
+                    ("matepn", Some(SearchTable::Buckets(t))) => {
                         let (c, t) = run_matepn(&root, max_plies, multi_pv, oracle, t, &mobility, &known, &stop, &rep);
-                        (c, Some(SearchTable::Direct(t)))
+                        (c, Some(SearchTable::Buckets(t)))
                     }
                     ("matelist", table) => (run_matelist(&root, max_plies, max_positions, &stop, &rep), table),
                     (_, table) => (Core::default(), table),
@@ -452,6 +453,15 @@ impl<W: Write + Send + 'static> Engine<W> {
         if !r.note.is_empty() {
             self.send(&format!("info string search: {}", r.note));
         }
+        // the replacement balance of df-pn: evicted proofs cost their subtree
+        // again, dropped entries are open estimates that found no room
+        if self.table_algo == "matepn" && r.nodes > 0 {
+            if let Some(SearchTable::Buckets(t)) = self.tables.as_mut() {
+                let st = *t.stats();
+                t.reset_stats();
+                self.send(&format!("info string tt: {} stores, {} replaced ({} proofs, {} finals), {} dropped", egtb::group(st.stores as usize), egtb::group(st.replaced as usize), egtb::group(st.evicted[2] as usize), egtb::group(st.evicted[3] as usize), egtb::group(st.dropped as usize)));
+            }
+        }
         // the block cache of the packed tables (every material beyond the base)
         let (hits, misses, distinct, blocks) = self.set().cache_stats();
         if hits + misses > 0 {
@@ -503,7 +513,10 @@ impl<W: Write + Send + 'static> Engine<W> {
     /// cleared: the value layouts differ, matepn would read mateab's entries
     /// as proof numbers.
     fn search_table(&mut self, algo: &str) -> Option<SearchTable> {
-        let want_buckets = algo == "mateab" && self.hash_mb >= BUCKETS_FROM_MB;
+        // matepn always: buckets with priority replacement, proofs and final
+        // entries are never evicted for open estimates (docs/m4-mate-search.md,
+        // step 6); mateab from BUCKETS_FROM_MB
+        let want_buckets = algo == "matepn" || (algo == "mateab" && self.hash_mb >= BUCKETS_FROM_MB);
         let fits = match &self.tables {
             Some(SearchTable::Buckets(_)) => want_buckets,
             Some(SearchTable::Direct(_)) => !want_buckets,
@@ -517,6 +530,9 @@ impl<W: Write + Send + 'static> Engine<W> {
             if let Some(t) = self.tables.as_mut() {
                 t.clear();
             }
+        }
+        if let Some(SearchTable::Buckets(t)) = self.tables.as_mut() {
+            t.set_priority_bits(if algo == "matepn" { matepn::PRIORITY_BITS } else { 0 });
         }
         self.table_algo = algo.to_string();
         self.tables.take()
@@ -662,7 +678,7 @@ fn run_mateab<W: Write + Send + 'static, T: TransTable + 'static>(root: &Board, 
 /// table.
 #[allow(clippy::too_many_arguments)]
 fn run_matepn<W: Write + Send + 'static, T: TransTable + 'static>(root: &Board, max_plies: usize, multi_pv: usize, oracle: Tables<'_>, table: T, mobility: &str, known: &[super::RootMove], stop: &Arc<AtomicBool>, rep: &Arc<Reporter<W>>) -> (Core, T) {
-    let bits = table.value_bits();
+    let bits = matepn::codec_bits(&table);
     let mut s = matepn::Searcher::new(oracle, table, matepn::Saturating { bits }, mobility == "on");
     s.lazy_mobility = mobility == "lazy";
     s.epsilon = 4;

@@ -17,7 +17,7 @@ mod table;
 #[allow(unused_imports)]
 pub use buckets::{Buckets, BUCKET_ENTRIES};
 #[allow(unused_imports)]
-pub use table::{Stats, Table, TransTable, ENTRY_BYTES};
+pub use table::{Stats, Table, TransTable, ENTRY_BYTES, PRIORITY_CLASSES};
 
 /// The 128-bit position key (same type as `bitboard::Key`).
 pub type Key = [u64; 2];

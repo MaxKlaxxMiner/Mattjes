@@ -32,11 +32,20 @@ const EntryBytes = 16
 // of other positions a probe looked at; NearMiss[i] counts how often the low
 // 16 / 32 / 48 bits of their second key word matched anyway, i.e. how many false
 // hits a table that stored only that many check bits would have produced.
+// Evicted splits Replaced by the top two value bits of the entry that was
+// lost (the priority class when the caller keeps one there, see Buckets);
+// Dropped counts stores that Buckets refused because every entry of the
+// bucket belongs to a higher class than the new one.
 type Stats struct {
 	Probes, Hits, Stores, Replaced uint64
+	Evicted                        [4]uint64
+	Dropped                        uint64
 	Foreign                        uint64
 	NearMiss                       [3]uint64
 }
+
+// PriorityClasses is the number of classes Evicted distinguishes (two bits).
+const PriorityClasses = 4
 
 func (s *Stats) foreign(check, want uint64) {
 	s.Foreign++
@@ -56,8 +65,9 @@ func (s *Stats) foreign(check, want uint64) {
 
 // Table is the direct-mapped layout: one entry per slot, always replace.
 type Table struct {
-	entries []entry
-	mask    uint64 // index bits = value bits
+	entries    []entry
+	mask       uint64 // index bits = value bits
+	classShift uint   // value >> classShift = the top two value bits (Stats.Evicted)
 	Stats
 }
 
@@ -67,7 +77,7 @@ func New(sizeMB int) *Table {
 }
 
 func newTable(slots int) *Table {
-	return &Table{entries: make([]entry, slots), mask: uint64(slots - 1)}
+	return &Table{entries: make([]entry, slots), mask: uint64(slots - 1), classShift: uint(bits.Len(uint(slots-1)) - 2)}
 }
 
 // slotsFor returns the largest power of two n with n*slotBytes <= sizeMB MB.
@@ -117,6 +127,7 @@ func (t *Table) Store(k Key, value uint64) {
 	e := &t.entries[k[0]&t.mask]
 	if !e.empty() && !e.matches(k, t.mask) {
 		t.Replaced++
+		t.Evicted[(e.word0&t.mask)>>t.classShift]++
 	}
 	*e = entry{k[0]&^t.mask | value, k[1]}
 }

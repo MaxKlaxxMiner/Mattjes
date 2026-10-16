@@ -713,3 +713,83 @@ bleiben); mit `t` lädt `egtbLoadForPositions` die Cache-Dateien der Materialien
 der gewählten Stellungen (quantisiert, die Suche löst auf). Während der Messung
 gab es kurz eine UCI-Option `EgtbQuantize` und einen Buchstaben `q`; beide sind
 mit der Entscheidung für die feste Schrittweite wieder entfallen.
+
+## Schritt 7: Ersetzung nach Wert (2026-10-16)
+
+Das Problem stand seit Schritt 5 fest: `matepn` speicherte alle Einträge mit
+gleichen Rechten in der direkten Tabelle ("immer ersetzen"), und ein frisches
+Blatt löschte dabei beliebig Beweise, Widerlegungen und Endeinträge. Für df-pn
+ist das teurer als für Alpha/Beta, weil `mid` ständig in Teilbäume
+zurückkehrt: Ein verdrängter Beweis wird komplett neu bewiesen, verdrängte
+offene Zahlen ändern über die Schwellen den Weg der Suche, und `proofLength`
+findet den Beweisbaum nicht mehr (KBB-K, KR-KR). Die Besuche schwankten
+deshalb allein mit der Tabellengröße um Faktor 4 und waren kein Maß für
+irgendetwas.
+
+**Einbau.** Jeder Value trägt oben zwei **Prioritätsbits** (`PriorityBits`,
+Klassen 0 offen, 1 widerlegt, 2 bewiesen, 3 Endeintrag; Widerlegungen gelten
+nur für ihre Tiefe, Beweise für jede tiefere und für die Beweislinie), der
+Codec bekommt die Bits darunter (`CodecBits`). `tt.Buckets` kennt die Bits
+über `SetPriorityBits(n)`: Der Opfer-Eintrag ist wie bisher der kleinste Value
+des Buckets (Klasse zuerst, darunter die Zahlen), aber liegt seine Klasse über
+der des neuen Eintrags, wird der neue **verworfen** (`Stats.Dropped`) statt
+gespeichert. Ein offenes Blatt findet in einem Bucket voller Beweise also
+keinen Platz, und das ist richtig: Die Schätzung ist das Billigste im Spiel.
+`Stats.Evicted[4]` zählt Verdrängungen nach der Klasse des verlorenen Eintrags,
+auch in der direkten Tabelle. Testbank-Buchstabe `b` wählt die Buckets, UCI
+nimmt sie für `matepn` immer (`info string tt: ... replaced (... proofs, ...
+finals), ... dropped` nach jeder Suche). Die direkte Tabelle bleibt als
+Vergleich, ihre Prioritätsbits sind dort nur Statistik.
+
+**Codec-Breite gedeckelt.** Die ersten Reihen mit Buckets zeigten, dass bei
+null Verdrängungen die Besuche nur noch von der halben Codec-Breite abhängen
+(64 = 128 MB, 256 = 512 MB, 1024 = 2048 MB jeweils besuchsgleich, weil die
+Sättigungsgrenze 510, 1022, 2046 den Weg bestimmt). `MaxCodecBits` = 20
+(Sättigung bei 1022) macht die Besuche ab 256 MB Buckets bei jeder Größe
+identisch, auch bei 16 GB; darunter sind es weniger Bits. Die Klasse sitzt
+immer in den obersten Bits der Tabelle, unabhängig vom Codec.
+
+**Messung** (Go = Rust besuchsgenau, Arbeitsrechner, `mEf` plus `b`, Einzeltiefe
+2N − 1; Zeiten eines einzelnen Laufs, grob):
+
+| TT | KQ-KN Buckets | verdrängt | KR-KR Buckets | verdrängt | KQ-KN direkt | davon Beweise | KR-KR direkt | davon Beweise |
+|---|---|---|---|---|---|---|---|---|
+| 64 MB | 172.346 | 0 | 1.151.675 | 1.755 (0 Beweise, 1 Endeintrag) | 148.697 | 23 + 411 | 1.407.646 | 5.765 + 26.053 |
+| 128 MB | 172.346 | 0 | 1.108.539 | 158 (0, 1) | 132.413 | 10 + 162 | 849.617 | 1.307 + 5.006 |
+| 256 MB | 271.120 | 0 | 1.023.102 | 19 (0, 0) | 179.602 | 11 + 179 | 901.329 | 772 + 3.285 |
+| 512 MB | 271.120 | 0 | 1.022.906 | 2 (0, 0) | 591.589 | 93 + 1.025 | 1.088.826 | 504 + 1.960 |
+| 1 GB | 271.120 | 0 | 1.022.904 | 0 | 670.774 | 60 + 627 | 857.926 | 161 + 771 |
+| 2 GB | 271.120 | 0 | 1.022.904 | 0 | 577.626 | 24 + 202 | 1.263.454 | 160 + 717 |
+
+Lesart:
+
+- **Die Buckets konvergieren, die direkte Tabelle nicht.** KQ-KN zählt ab
+  256 MB bei jeder Größe exakt 271.120 Besuche, KR-KR ab 1 GB 1.022.904 (bei
+  256 MB 19 verdrängte offene Einträge, 0,02 % Abweichung). Die direkte
+  Tabelle streut weiter um Faktor 5 (KQ-KN 132 Tsd. bis 671 Tsd.) und verliert
+  bei **jeder** Größe Beweise und Endeinträge, selbst bei 2 GB und 0,2 %
+  Füllgrad: Bei n Einträgen in m Slots gibt es rund n²/2m Kollisionen, und die
+  treffen Beweise genauso wie Schätzungen.
+- **Beweisbaum komplett.** KR-KR liefert mit Buckets bei jeder Größe die
+  Variante, mit der direkten Tabelle bei keiner. Das war in Schritt 4 (KBB-K)
+  und 5 der Grund für "Mattlänge nur als Schranke".
+- **Tempo ist nicht das Argument.** Testbank bis Matt in 15 bei 256 MB:
+  Buckets 1.370.235 Besuche, direkte Tabelle 1.402.380 mit 22 Codec-Bits, aber
+  1.156.948 mit 20 (KQ-KN 179.602, KR-KR 901.329, beide ohne Beweisbaum). Dass
+  die direkte Tabelle in einer Konfiguration weniger Besuche braucht, ist
+  Zufall der Kollisionen, bei 512 MB sind es für KQ-KN 591.589. Die
+  Besuchszeit ändert sich nicht messbar, die vier Einträge eines Buckets liegen
+  in einer Cache-Line. Die Benchmark-Stellung KRR-KN mit 16 GB misst der
+  Autor; dort zählt, ob die `tt:`-Zeile null verdrängte Beweise meldet und ob
+  die Tiefen-Zeiten unter den 70,5 s aus Schritt 5 bleiben.
+- **Die Besuchszahlen sind wieder Regressionswerte:** Testbank `mEfb`, 256 MB:
+  KQQ-K 31, KQR-K 10.284, KRR-K 64.745, KQ-KN 271.120, KR-KR 1.023.102, Bauern
+  953, Summe 1.370.235 (Go = Rust). Ab 1 GB KR-KR 1.022.904. Die alten Werte
+  aus Schritt 5 (mit direkter Tabelle und 24 Codec-Bits) gelten nicht mehr.
+
+Noch nicht gemacht, als Verfeinerung notiert: Unter offenen Einträgen den mit
+dem kleineren **Aufwand** verdrängen (Besuche im Teilbaum als kleiner Zähler im
+Value, die klassische df-pn-Ersetzung) statt den mit den kleineren Zahlen; und
+Alterung über Suchen hinweg (die Tabelle bleibt zwischen `go`-Kommandos, nur
+`ucinewgame` leert sie; Beweise einer alten Wurzel bleiben gültig, offene
+Einträge anderer Tiefen nicht). Nächster Schritt: Beweisziel "Gewinn".

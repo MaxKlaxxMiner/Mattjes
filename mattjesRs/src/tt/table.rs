@@ -39,15 +39,24 @@ pub const ENTRY_BYTES: usize = std::mem::size_of::<Entry>();
 /// other positions a probe looked at; `near_miss[i]` counts how often the low
 /// 16 / 32 / 48 bits of their second key word matched anyway, i.e. how many false
 /// hits a table that stored only that many check bits would have produced.
+/// `evicted` splits `replaced` by the top two value bits of the entry that was
+/// lost (the priority class when the caller keeps one there, see `Buckets`);
+/// `dropped` counts stores that `Buckets` refused because every entry of the
+/// bucket belongs to a higher class than the new one.
 #[derive(Clone, Copy, Default)]
 pub struct Stats {
     pub probes: u64,
     pub hits: u64,
     pub stores: u64,
     pub replaced: u64,
+    pub evicted: [u64; PRIORITY_CLASSES],
+    pub dropped: u64,
     pub foreign: u64,
     pub near_miss: [u64; 3],
 }
+
+/// The number of classes `evicted` distinguishes (two bits).
+pub const PRIORITY_CLASSES: usize = 4;
 
 impl Stats {
     #[inline(always)]
@@ -105,7 +114,8 @@ pub(super) fn slots_for(size_mb: usize, slot_bytes: usize) -> usize {
 /// The direct-mapped layout: one entry per slot, always replace.
 pub struct Table {
     pub(super) entries: Vec<Entry>,
-    mask: u64, // index bits = value bits
+    mask: u64,        // index bits = value bits
+    class_shift: u32, // value >> class_shift = the top two value bits (Stats.evicted)
     pub stats: Stats,
 }
 
@@ -116,7 +126,8 @@ impl Table {
     }
 
     pub(super) fn with_slots(slots: usize) -> Table {
-        Table { entries: vec![Entry::default(); slots], mask: slots as u64 - 1, stats: Stats::default() }
+        let mask = slots as u64 - 1;
+        Table { entries: vec![Entry::default(); slots], mask, class_shift: mask.count_ones() - 2, stats: Stats::default() }
     }
 
     pub fn bytes(&self) -> usize {
@@ -163,9 +174,11 @@ impl TransTable for Table {
         assert!(value <= self.mask, "tt: value exceeds value_bits");
         self.stats.stores += 1;
         let mask = self.mask;
+        let class_shift = self.class_shift;
         let e = &mut self.entries[(k[0] & mask) as usize];
         if !e.empty() && !e.matches(k, mask) {
             self.stats.replaced += 1;
+            self.stats.evicted[(e.value(mask) >> class_shift) as usize] += 1;
         }
         *e = Entry::new(k, mask, value);
     }

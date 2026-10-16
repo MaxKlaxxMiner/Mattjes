@@ -36,7 +36,32 @@ type Table interface {
 	Probe(k tt.Key) (uint64, bool)
 	Store(k tt.Key, value uint64)
 	Prefetch(k tt.Key)
+	ValueBits() int
 }
+
+// PriorityBits are the top bits of every stored value: the class of the
+// entry, so that a bucket table with the same setting (tt.Buckets.
+// SetPriorityBits) never evicts a proof for an open estimate. An open node
+// is class 0, a disproven one 1 (valid for its depth only), a proven one 2
+// (valid for every deeper goal and needed by the proof line), a final entry
+// 3. The codec gets the remaining bits (CodecBits).
+const PriorityBits = 2
+
+const (
+	classOpen uint64 = iota
+	classDisproven
+	classProven
+	classFinal
+)
+
+// MaxCodecBits caps the codec width: with no evictions the visits depend
+// only on where the numbers saturate (10 bits each = 1022), so every table
+// from 256 MB (buckets) up counts exactly the same, which makes the visits
+// comparable across table sizes.
+const MaxCodecBits = 20
+
+// CodecBits is the width a codec for this table should use.
+func CodecBits(t Table) int { return min(t.ValueBits()-PriorityBits, MaxCodecBits) }
 
 // MaxPlies is the deepest proof goal (the depth salt table size).
 const MaxPlies = 127
@@ -103,6 +128,10 @@ type Searcher struct {
 	// goes into a recursive call is moved to the heap as well
 	scratch bitboard.Board
 	stack   [MaxPlies + 2]bitboard.Board
+	// prioShift puts the class into the top PriorityBits of a value,
+	// valueMask strips it before the codec unpacks the numbers
+	prioShift uint
+	valueMask uint64
 
 	nodes, leaves, ttHits, finalHits uint64
 }
@@ -121,7 +150,14 @@ const StopNodes = 1 << 12
 // New returns a searcher. mobility initialises unknown children with their
 // number of legal moves instead of 1 (one generator call per new leaf).
 func New(oracle mateab.Oracle, table Table, codec Codec, mobility bool) *Searcher {
-	return &Searcher{oracle: oracle, table: table, codec: codec, mobility: mobility, ProgressEvery: ProgressNodes}
+	shift := uint(table.ValueBits() - PriorityBits) // the class sits in the top bits, whatever the codec uses below
+	if codec.Pack(Inf, Inf)>>shift != 0 {
+		panic("matepn: the codec leaves no room for the priority bits (use CodecBits)")
+	}
+	if shift < 14 {
+		panic("matepn: final entries need 14 value bits below the priority bits")
+	}
+	return &Searcher{oracle: oracle, table: table, codec: codec, mobility: mobility, ProgressEvery: ProgressNodes, prioShift: shift, valueMask: 1<<shift - 1}
 }
 
 // depthSalt is XORed into both key words, so (position, remaining depth) is
@@ -307,7 +343,7 @@ func (s *Searcher) mid(b *bitboard.Board, thPn, thDn uint32, depth int) (uint32,
 		}
 		if v, ok := s.table.Probe(children[i].key); ok {
 			s.ttHits++
-			children[i].pn, children[i].dn = s.codec.Unpack(v)
+			children[i].pn, children[i].dn = s.codec.Unpack(v & s.valueMask)
 			continue
 		}
 		s.leaves++
@@ -396,14 +432,22 @@ func (s *Searcher) leafNumbers(c *bitboard.Board, depth int) (uint32, uint32) {
 }
 
 func (s *Searcher) store(b *bitboard.Board, depth int, pn, dn uint32) {
-	s.table.Store(key(b, depth), s.codec.Pack(pn, dn))
+	class := classOpen
+	switch {
+	case pn == 0:
+		class = classProven
+	case dn == 0:
+		class = classDisproven
+	}
+	s.table.Store(key(b, depth), s.codec.Pack(pn, dn)|class<<s.prioShift)
 	if s.Final && (pn == 0 || dn == 0) {
 		s.storeFinal(b, depth, pn == 0)
 	}
 }
 
 // Final entries live under the unsalted key: 7 bits smallest proven depth + 1
-// and 7 bits largest disproven depth + 1 (0 = none each).
+// and 7 bits largest disproven depth + 1 (0 = none each), class classFinal
+// on top.
 func unpackFinal(v uint64) (proven, disproven int) {
 	return int(v>>7&127) - 1, int(v&127) - 1
 }
@@ -434,7 +478,7 @@ func (s *Searcher) storeFinal(b *bitboard.Board, depth int, proven bool) {
 	} else if depth > dd {
 		dd = depth
 	}
-	s.table.Store(finalKey(b, depth), uint64(pd+1)<<7|uint64(dd+1))
+	s.table.Store(finalKey(b, depth), uint64(pd+1)<<7|uint64(dd+1)|classFinal<<s.prioShift)
 }
 
 // probeFinal answers from the depth-free entry when it decides the node at
@@ -519,7 +563,7 @@ func (s *Searcher) proofLength(b *bitboard.Board, depth int, memo map[tt.Key]int
 		if pn, _, ok := s.probeFinal(c, depth-1); ok {
 			proven = pn == 0
 		} else if v, ok := s.table.Probe(key(c, depth-1)); ok {
-			pn, _ := s.codec.Unpack(v)
+			pn, _ := s.codec.Unpack(v & s.valueMask)
 			proven = pn == 0
 		} else {
 			var cbuf chess.MoveBuffer

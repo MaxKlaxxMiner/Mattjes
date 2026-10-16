@@ -148,7 +148,10 @@ fn experiments() {
     // tests_egtb::egtb_load_or_generate(12); // makes sure the four-piece base exists (15 s once, then 0.2 s); larger materials via "egtb-measure <name>"
     // --- interval oracle (docs/m5-endgame-tables.md, quantised cache files): KRR-KN with 5-KRRKN.bin (buckets of 8 moves) = the search resolves the 16-ply window; without the file 87,503 visits (Go = Rust) ---
     // --- block cache of the packed table (docs/m5-endgame-tables.md, "Blockformat"): hits, misses and the working set ---
-    tests_pn::matepn_solve_fen("KRR-KN after Nh2", "8/8/4k3/8/8/8/RK5n/2R5 w - - 2 2", 7, 256, "sat", "mEft"); // 9,988 visits, 3,997 of 14,784 blocks touched (Go = Rust); without the file 87,503 visits
+    // tests_pn::matepn_solve_fen("KRR-KN after Nh2", "8/8/4k3/8/8/8/RK5n/2R5 w - - 2 2", 7, 256, "sat", "mEft"); // 9,988 visits, 3,997 of 14,784 blocks touched (Go = Rust); without the file 87,503 visits
+    // --- replacement by value (docs/m4-mate-search.md, step 7): b = buckets with priority classes (open < disproven < proven < final), the direct table for comparison; visits must match Go ---
+    tests_pn::matepn_solve(15, 256, "sat", "mEfb"); // 1,370,235 visits in total (KQ-KN 271,120, KR-KR 1,023,102), 0 proofs evicted, every proof tree complete; identical from 256 MB up (KR-KR 1,022,904 from 1 GB)
+    // tests_pn::matepn_solve(15, 256, "sat", "mEf"); // the direct table: 1,156,948 visits, 772 proofs and 3,285 final entries of KR-KR evicted, its proof tree incomplete; swings 5x with the size
     // tests_egtb::egtb_measure(&["KQKBN"], 12, true); // generated in 45 s, checksum 7b54498535f836cb, byte-identical to Go
     // tests_pn::matepn_solve(12, 256, "sat", "mEfi"); // iterative deepening: the shortest mate, cost of all depths
 }

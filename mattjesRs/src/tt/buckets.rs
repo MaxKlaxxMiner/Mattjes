@@ -19,11 +19,18 @@ const _: () = assert!(BUCKET_BYTES == BUCKET_ENTRIES * ENTRY_BYTES);
 /// two bits less than a direct-mapped table of the same size. Replacement evicts
 /// the entry with the smallest value (perft: the smallest subtree, which is the
 /// cheapest to recompute); callers that need another priority put it into the
-/// high value bits. Entries of a bucket are always packed from the front,
-/// nothing is ever deleted.
+/// high value bits. With `set_priority_bits(n)` the top n value bits are a
+/// class, and a new entry whose class is below the class of that smallest entry
+/// is dropped instead (df-pn: an open estimate never evicts a proof). Entries
+/// of a bucket are always packed from the front, nothing is ever deleted.
 pub struct Buckets {
     pub(super) buckets: Vec<Bucket>,
     mask: u64,
+    /// value >> prio_shift = the priority class (= value_bits without priority
+    /// bits: every class is 0)
+    prio_shift: u32,
+    /// value >> class_shift = the top two value bits (Stats.evicted)
+    class_shift: u32,
     pub stats: Stats,
 }
 
@@ -34,11 +41,25 @@ impl Buckets {
     }
 
     pub(super) fn with_buckets(n: usize) -> Buckets {
-        Buckets { buckets: vec![Bucket::default(); n], mask: n as u64 - 1, stats: Stats::default() }
+        let mask = n as u64 - 1;
+        let vb = mask.count_ones();
+        Buckets { buckets: vec![Bucket::default(); n], mask, prio_shift: vb, class_shift: vb - 2, stats: Stats::default() }
     }
 
     pub fn bytes(&self) -> usize {
         self.buckets.len() * BUCKET_BYTES
+    }
+
+    /// Declares the top n value bits as the priority class of an entry (0 =
+    /// off, every store is kept). Stores whose class is below the class of
+    /// the entry they would evict are dropped and counted in `Stats.dropped`.
+    pub fn set_priority_bits(&mut self, n: u32) {
+        self.prio_shift = self.value_bits() - n;
+    }
+
+    /// The setting of `set_priority_bits`.
+    pub fn priority_bits(&self) -> u32 {
+        self.value_bits() - self.prio_shift
     }
 }
 
@@ -67,12 +88,15 @@ impl TransTable for Buckets {
     }
 
     /// Writes into the entry that already holds k, else into the first empty
-    /// entry, else over the entry with the smallest value.
+    /// entry, else over the entry with the smallest value, unless that entry's
+    /// priority class is above the new value's (then nothing is stored, see
+    /// `set_priority_bits`).
     #[inline(always)]
     fn store(&mut self, k: Key, value: u64) {
         assert!(value <= self.mask, "tt: value exceeds value_bits");
         self.stats.stores += 1;
         let mask = self.mask;
+        let (prio_shift, class_shift) = (self.prio_shift, self.class_shift);
         let b = &mut self.buckets[(k[0] & mask) as usize].0;
         let mut victim = 0;
         for (i, e) in b.iter().enumerate() {
@@ -86,7 +110,13 @@ impl TransTable for Buckets {
         }
         let v = &mut b[victim];
         if !v.empty() && !v.matches(k, mask) {
+            let old = v.value(mask);
+            if old >> prio_shift > value >> prio_shift {
+                self.stats.dropped += 1;
+                return;
+            }
             self.stats.replaced += 1;
+            self.stats.evicted[(old >> class_shift) as usize] += 1;
         }
         *v = Entry::new(k, mask, value);
     }

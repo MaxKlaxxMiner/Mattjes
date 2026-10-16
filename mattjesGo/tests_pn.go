@@ -30,7 +30,9 @@ import (
 // entries, t = endgame tables as oracle (cached tables of the positions' own
 // materials included; beyond the base they hold buckets of egtb.FileStep
 // moves, the search resolves the exact distance from the bounds), i =
-// iterative deepening.
+// iterative deepening, b = bucket table with priority replacement (proofs
+// and final entries are never evicted for open estimates, m4-mate-search.md
+// step 6) instead of the direct-mapped table that always replaces.
 func matepnSolve(maxMateIn int, sizeMB int, codec string, options string) {
 	runMatepn(chess.MatePositions, func(p chess.MatePosition) bool { return p.MateIn <= maxMateIn }, sizeMB, codec, options)
 }
@@ -44,6 +46,16 @@ func matepnSolveNamed(name string, sizeMB int, codec string, options string) {
 // test-positions.md with its cached table.
 func matepnSolveFEN(name, fen string, mateIn int, sizeMB int, codec string, options string) {
 	runMatepn([]chess.MatePosition{{Name: name, FEN: fen, MateIn: mateIn}}, func(chess.MatePosition) bool { return true }, sizeMB, codec, options)
+}
+
+// pnTable is what the bench needs from either tt layout.
+type pnTable interface {
+	matepn.Table
+	Clear()
+	ResetStats()
+	Counters() *tt.Stats
+	Used() int
+	Slots() int
 }
 
 func runMatepn(positions []chess.MatePosition, selected func(p chess.MatePosition) bool, sizeMB int, codecName string, options string) {
@@ -66,13 +78,22 @@ func runMatepn(positions []chess.MatePosition, selected func(p chess.MatePositio
 			epsilon = o.eps
 		}
 	}
-	table := tt.New(sizeMB)
+	var table pnTable
+	layout := "direct-mapped TT"
+	if has('b') {
+		bt := tt.NewBuckets(sizeMB)
+		bt.SetPriorityBits(matepn.PriorityBits)
+		table = bt
+		layout = "bucket TT with priority replacement"
+	} else {
+		table = tt.New(sizeMB)
+	}
 	var codec matepn.Codec
 	switch codecName {
 	case "sat":
-		codec = matepn.Saturating{Bits: table.ValueBits()}
+		codec = matepn.Saturating{Bits: matepn.CodecBits(table)}
 	case "float":
-		codec = matepn.Float{Bits: table.ValueBits()}
+		codec = matepn.Float{Bits: matepn.CodecBits(table)}
 	default:
 		panic("codec sat or float")
 	}
@@ -89,7 +110,7 @@ func runMatepn(positions []chess.MatePosition, selected func(p chess.MatePositio
 	if iterative {
 		mode = "iterative deepening"
 	}
-	fmt.Printf("=== matepn / df-pn, %s, direct-mapped TT %d MB (%d value bits), codec %s, mobility %s, epsilon %d/8, final %v, mated %v, %s ===\n", mode, sizeMB, table.ValueBits(), codec.Name(), mobilityName, epsilon, final, mated, title)
+	fmt.Printf("=== matepn / df-pn, %s, %s %d MB (%d value bits, %d for the codec), codec %s, mobility %s, epsilon %d/8, final %v, mated %v, %s ===\n", mode, layout, sizeMB, table.ValueBits(), matepn.CodecBits(table), codec.Name(), mobilityName, epsilon, final, mated, title)
 	ok := true
 	var totalNodes uint64
 	var totalTime time.Duration
@@ -136,6 +157,8 @@ func runMatepn(positions []chess.MatePosition, selected func(p chess.MatePositio
 		case r.Proven:
 			fmt.Printf("    proven: %s nodes in %s, %s leaves, %s tt hits, %s final hits, %s stores, %s replaced, fill %.1f%%\n",
 				perftGroup(r.Nodes), fmtMs(elapsed), perftGroup(r.Leaves), perftGroup(r.TTHits), perftGroup(r.FinalHits), perftGroup(st.Stores), perftGroup(st.Replaced), 100*float64(table.Used())/float64(table.Slots()))
+			fmt.Printf("    evicted: %s open, %s disproofs, %s proofs, %s finals; %s dropped\n",
+				perftGroup(st.Evicted[0]), perftGroup(st.Evicted[1]), perftGroup(st.Evicted[2]), perftGroup(st.Evicted[3]), perftGroup(st.Dropped))
 			if set != nil {
 				// the packed tables beyond the base (docs/m5-endgame-tables.md, "Blockformat")
 				if hits, misses, distinct, blocks := set.CacheStats(); hits+misses > 0 {

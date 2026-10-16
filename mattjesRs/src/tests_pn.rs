@@ -38,15 +38,27 @@ pub fn matepn_solve_fen(name: &'static str, fen: &'static str, mate_in: u32, siz
     run_matepn(&positions, &|_| true, size_mb, codec, options);
 }
 
+/// Option b: a bucket table with priority replacement (proofs and final
+/// entries are never evicted for open estimates, m4-mate-search.md step 6)
+/// instead of the direct-mapped table that always replaces.
 fn run_matepn(positions: &[MatePosition], selected: &dyn Fn(&MatePosition) -> bool, size_mb: usize, codec: &str, options: &str) {
-    let table = tt::Table::new(size_mb);
-    let bits = table.value_bits();
     let tables = options.contains('t');
     let mut set = if tables { Some(tests_egtb::egtb_load_or_generate(12)) } else { None };
     if let Some(set) = set.as_mut() {
         tests_egtb::egtb_load_for_positions(set, positions, selected);
     }
-    match (codec, &set) {
+    if options.contains('b') {
+        let mut table = tt::Buckets::new(size_mb);
+        table.set_priority_bits(matepn::PRIORITY_BITS);
+        run_with_codec(table, codec, set.as_ref(), positions, selected, options);
+    } else {
+        run_with_codec(tt::Table::new(size_mb), codec, set.as_ref(), positions, selected, options);
+    }
+}
+
+fn run_with_codec<T: TransTable + 'static>(table: T, codec: &str, set: Option<&egtb::Set>, positions: &[MatePosition], selected: &dyn Fn(&MatePosition) -> bool, options: &str) {
+    let bits = matepn::codec_bits(&table);
+    match (codec, set) {
         ("sat", None) => run(table, matepn::Saturating { bits }, mateab::Material, None, positions, selected, options),
         ("float", None) => run(table, matepn::Float { bits }, mateab::Material, None, positions, selected, options),
         ("sat", Some(set)) => run(table, matepn::Saturating { bits }, mateab::Tables { set }, Some(set), positions, selected, options),
@@ -74,10 +86,12 @@ fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, 
         }
     }
     println!(
-        "=== matepn / df-pn, {}, direct-mapped TT {} MB ({} value bits), codec {}, mobility {}, epsilon {}/8, final {}, mated {}, {} ===",
+        "=== matepn / df-pn, {}, {} {} MB ({} value bits, {} for the codec), codec {}, mobility {}, epsilon {}/8, final {}, mated {}, {} ===",
         if iterative { "iterative deepening" } else { "single depth 2N-1" },
+        if has('b') { "bucket TT with priority replacement" } else { "direct-mapped TT" },
         (table.slots() * tt::ENTRY_BYTES) >> 20,
         table.value_bits(),
+        matepn::codec_bits(&table),
         codec.name(),
         mobility_name,
         epsilon,
@@ -139,6 +153,7 @@ fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, 
                 group(st.replaced),
                 100.0 * t.used() as f64 / t.slots() as f64
             );
+            println!("    evicted: {} open, {} disproofs, {} proofs, {} finals; {} dropped", group(st.evicted[0]), group(st.evicted[1]), group(st.evicted[2]), group(st.evicted[3]), group(st.dropped));
             if let Some(set) = set {
                 // the packed tables beyond the base (docs/m5-endgame-tables.md, "Blockformat")
                 let (hits, misses, distinct, blocks) = set.cache_stats();
