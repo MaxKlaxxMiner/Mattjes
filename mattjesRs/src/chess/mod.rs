@@ -9,6 +9,7 @@ mod perftdata;
 mod piece;
 mod pos;
 mod root_move;
+mod wdldata;
 
 #[allow(unused_imports)]
 pub use fen::{Setup, START_FEN};
@@ -24,3 +25,5 @@ pub use piece::Piece;
 pub use pos::{Pos, FIELD_COUNT, HEIGHT, WIDTH};
 #[allow(unused_imports)]
 pub use root_move::RootMove;
+#[allow(unused_imports)]
+pub use wdldata::{Outcome, WdlPosition, WDL_POSITIONS};

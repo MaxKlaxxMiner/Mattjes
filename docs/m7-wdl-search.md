@@ -2,7 +2,14 @@
 
 Entwurf in `docs/m7-wdl-search-design.md`, Teststellungen in `test-positions.md`
 ("WDL-Teststellungen") und `chess/wdldata.go`. Alle Zahlen hier vom
-Arbeitsrechner (i5, ein Thread), Go; Rust folgt nach dem Mechanik-Schritt.
+Arbeitsrechner (i5, ein Thread). **Rust-Port am 2026-10-21** (`src/wdlpn/`,
+`src/chess/wdldata.rs`, `src/tests_wdl.rs`): Besuche, Einträge und Linien
+identisch mit Go (diff der Testbank-Ausgabe ohne Zeiten über fünf
+Stellungen), Rust 1,3 bis 1,7-mal schneller (KBB-K 1,68 s statt 2,58 s,
+KRR-KN 2,23 s statt 3,74 s, KP-K Randbauer 2,21 s statt 2,26 s: die
+Remisfälle sind tabellengebunden). Die Rust-Testbank läuft auf einem Thread
+mit 256 MB Stack, weil jede Rekursionsstufe die Kinder mit ihren
+Abhängigkeits-Bitsets hält (rund 18 KB bei 255 Halbzügen Deckel).
 
 ## Schritt 1: `wdlpn`, df-pn ohne Tiefenschranke (2026-10-21)
 
