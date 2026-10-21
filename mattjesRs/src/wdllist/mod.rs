@@ -136,6 +136,8 @@ pub struct Graph {
     log: bool,
     store: Store,
     max_slots: usize,
+    /// The position budget; an expansion starts only below it.
+    max_positions: usize,
     keys: Vec<crate::tt::Key>,
     recs: Vec<Record>,
     children: Vec<Vec<u32>>,
@@ -165,16 +167,13 @@ pub struct Graph {
 
 impl Graph {
     fn new(root: &Board, side_to_move_attacks: bool, log: bool, max_positions: usize, certificate: bool) -> Graph {
-        let mut max_slots = INITIAL_SLOTS;
-        while max_slots * MAX_LOAD_PERCENT / 100 < max_positions {
-            max_slots *= 2;
-        }
         let attacker_white = root.white_move == side_to_move_attacks;
         let mut g = Graph {
             attacker_white,
             log,
-            store: Store::with_slots(INITIAL_SLOTS.min(max_slots)),
-            max_slots,
+            store: Store::with_slots(INITIAL_SLOTS),
+            max_slots: INITIAL_SLOTS,
+            max_positions: 0,
             keys: Vec::new(),
             recs: Vec::new(),
             children: Vec::new(),
@@ -196,6 +195,7 @@ impl Graph {
             root_defender: root.pieces[if attacker_white { 1 } else { 0 }],
             unsafe_level: if certificate { Some(Vec::new()) } else { None },
         };
+        g.set_budget(max_positions);
         g.store.put(root.key, 0);
         g.add(root);
         g
@@ -227,6 +227,25 @@ impl Graph {
     /// The node index of a key, inserting it as the next node when it is
     /// new (the caller then calls `add`); grows the store when it is full.
     /// `ok` is false once the position budget is exhausted.
+    /// Sets the position budget (raised between the runs of a Solver). The
+    /// store may grow to hold the budget plus one full expansion, so that
+    /// an expansion started below the budget never finds it full: a node
+    /// is either expanded completely or not at all, which a resumed run
+    /// relies on.
+    fn set_budget(&mut self, max_positions: usize) {
+        let max_positions = if max_positions == 0 { 1 << 26 } else { max_positions };
+        self.max_positions = max_positions;
+        self.max_slots = self.max_slots.max(INITIAL_SLOTS);
+        while self.max_slots * MAX_LOAD_PERCENT / 100 < max_positions + MAX_MOVES {
+            self.max_slots *= 2;
+        }
+    }
+
+    /// The position budget is used up, no further expansion starts.
+    fn full(&self) -> bool {
+        self.recs.len() >= self.max_positions
+    }
+
     fn get_or_put(&mut self, key: crate::tt::Key) -> (u32, bool, bool) {
         let next = self.recs.len() as u64;
         let (idx, is_new, ok) = self.store.get_or_put(key, next);
@@ -606,67 +625,137 @@ impl Graph {
 /// attacker node ("the side to move forces a win"), otherwise a defender
 /// node. Unless told otherwise it races the proof-number descent against
 /// the certificate builder on two threads; the first decision wins and
-/// stops the other.
+/// stops the other. One run of a Solver with `Options::max_positions`.
 pub fn solve(root: &Board, side_to_move_attacks: bool, opt: Options) -> Result {
-    if opt.brute_force || opt.no_race {
-        let brute = opt.brute_force;
-        let mut r = on_big_stack(move || solve_pn(root, side_to_move_attacks, opt), root);
-        r.method = if brute { "brute force" } else { "pn" };
-        return r;
+    let max_positions = opt.max_positions;
+    Solver::new(root, side_to_move_attacks, opt).run(max_positions)
+}
+
+/// Answers one question in instalments: every `run` continues the race
+/// up to a position budget per graph and keeps both graphs for the next
+/// run, so that a driver can share its time over several questions (the
+/// root moves of a position) without restarting them. Once decided, the
+/// graphs are released and `run` returns the result again.
+pub struct Solver {
+    opt: Options,
+    /// The proof-number descent.
+    pn: Option<Searcher>,
+    /// The certificate builder (None without the race).
+    cert: Option<Searcher>,
+    result: Result,
+    done: bool,
+    /// Positions of both graphs (kept after the release).
+    total: usize,
+}
+
+impl Solver {
+    /// Prepares the question (the graphs hold only the root).
+    pub fn new(root: &Board, side_to_move_attacks: bool, opt: Options) -> Solver {
+        let pn = Some(Searcher::new_pn(root, side_to_move_attacks, opt.clone()));
+        let cert = if opt.brute_force || opt.no_race { None } else { Some(Searcher::new_cert(root, side_to_move_attacks, opt.clone())) };
+        Solver { opt, pn, cert, result: Result::default(), done: false, total: 0 }
     }
-    let stop_pn = Arc::new(AtomicBool::new(false));
-    let stop_cert = Arc::new(AtomicBool::new(false));
-    let mut cert_opt = opt.clone();
-    cert_opt.race_stop = Some(stop_cert.clone());
-    let mut pn_opt = opt;
-    pn_opt.race_stop = Some(stop_pn.clone());
-    let root_copy = *root;
-    let (rp, rc) = std::thread::scope(|s| {
-        let cert_stop_pn = stop_pn.clone();
-        let cert = std::thread::Builder::new()
-            .stack_size(THREAD_STACK)
-            .spawn_scoped(s, move || {
-                let mut r = solve_certificate(&root_copy, side_to_move_attacks, cert_opt);
-                r.method = "certificate";
-                cert_stop_pn.store(true, Ordering::Relaxed);
-                r
-            })
-            .expect("certificate thread");
-        let pn = std::thread::Builder::new()
-            .stack_size(THREAD_STACK)
-            .spawn_scoped(s, move || {
-                let mut r = solve_pn(&root_copy, side_to_move_attacks, pn_opt);
-                r.method = "pn";
-                r
-            })
-            .expect("pn thread");
-        let rp = pn.join().expect("pn thread panicked");
-        stop_cert.store(true, Ordering::Relaxed);
-        let rc = cert.join().expect("certificate thread panicked");
-        (rp, rc)
-    });
-    if rp.outcome != Outcome::Undecided {
-        return rp;
+
+    /// The number of positions in both graphs (the memory of the
+    /// question); after the decision the last count.
+    pub fn positions(&mut self) -> usize {
+        if self.done {
+            return self.total;
+        }
+        self.total = self.pn.as_ref().map_or(0, |s| s.g.recs.len()) + self.cert.as_ref().map_or(0, |s| s.g.recs.len());
+        self.total
     }
-    if rc.outcome != Outcome::Undecided {
-        return rc;
+
+    /// Continues the question until it is decided, the stop flag is set or
+    /// a graph reaches `max_positions` (aborted, call again with a larger
+    /// budget). The result's counts are those of the deciding graph, or of
+    /// the descent's graph while undecided.
+    pub fn run(&mut self, max_positions: usize) -> Result {
+        if self.done {
+            return self.result.clone();
+        }
+        let Solver { pn, cert, .. } = self;
+        let pn = pn.as_mut().expect("solver graphs");
+        let Some(cert) = cert.as_mut() else {
+            let brute = self.opt.brute_force;
+            let mut r = on_big_stack(move || pn.run_pn(max_positions));
+            r.method = if brute { "brute force" } else { "pn" };
+            self.finish(r.clone());
+            return r;
+        };
+        let stop_pn = Arc::new(AtomicBool::new(false));
+        let stop_cert = Arc::new(AtomicBool::new(false));
+        cert.opt.race_stop = Some(stop_cert.clone());
+        pn.opt.race_stop = Some(stop_pn.clone());
+        let (rp, rc) = std::thread::scope(|s| {
+            let cert_stop_pn = stop_pn.clone();
+            let cert = std::thread::Builder::new()
+                .stack_size(THREAD_STACK)
+                .spawn_scoped(s, move || {
+                    let mut r = cert.run_cert(max_positions);
+                    r.method = "certificate";
+                    cert_stop_pn.store(true, Ordering::Relaxed);
+                    r
+                })
+                .expect("certificate thread");
+            let pn = std::thread::Builder::new()
+                .stack_size(THREAD_STACK)
+                .spawn_scoped(s, move || {
+                    let mut r = pn.run_pn(max_positions);
+                    r.method = "pn";
+                    r
+                })
+                .expect("pn thread");
+            let rp = pn.join().expect("pn thread panicked");
+            stop_cert.store(true, Ordering::Relaxed);
+            let rc = cert.join().expect("certificate thread panicked");
+            (rp, rc)
+        });
+        let r = if rp.outcome != Outcome::Undecided {
+            rp
+        } else if rc.outcome != Outcome::Undecided {
+            rc
+        } else {
+            let mut r = rp;
+            r.aborted = r.aborted || rc.aborted;
+            r.stuck = r.stuck || rc.stuck;
+            r
+        };
+        self.finish(r.clone());
+        r
     }
-    let mut r = rp;
-    r.aborted = r.aborted || rc.aborted;
-    r.stuck = r.stuck || rc.stuck;
-    r
+
+    /// Keeps a decision and releases the graphs.
+    fn finish(&mut self, r: Result) {
+        self.positions();
+        if r.outcome != Outcome::Undecided || r.stuck {
+            self.done = true;
+            self.result = r;
+            self.pn = None;
+            self.cert = None;
+        }
+    }
 }
 
 /// Runs a search on a thread with a large stack (the descent recurses).
-fn on_big_stack(f: impl FnOnce() -> Result + Send, _root: &Board) -> Result {
+fn on_big_stack(f: impl FnOnce() -> Result + Send) -> Result {
     std::thread::scope(|s| std::thread::Builder::new().stack_size(THREAD_STACK).spawn_scoped(s, f).expect("search thread").join().expect("search thread panicked"))
 }
 
-/// Answers one question with the proof-number descent.
-fn solve_pn(root: &Board, side_to_move_attacks: bool, opt: Options) -> Result {
-    let max_positions = if opt.max_positions == 0 { 1 << 26 } else { opt.max_positions };
-    let g = Graph::new(root, side_to_move_attacks, opt.log_numbers, max_positions, false);
-    let mut s = Searcher::new(g, opt);
+impl Searcher {
+    /// Sets up the proof-number descent of a question.
+    fn new_pn(root: &Board, side_to_move_attacks: bool, opt: Options) -> Searcher {
+        let g = Graph::new(root, side_to_move_attacks, opt.log_numbers, opt.max_positions, false);
+        Searcher::new(g, opt)
+    }
+}
+
+impl Searcher {
+/// Continues the proof-number descent up to `max_positions`.
+fn run_pn(&mut self, max_positions: usize) -> Result {
+    let s = self;
+    s.aborted = false;
+    s.g.set_budget(max_positions);
     let mut r = Result::default();
     if s.opt.brute_force {
         let mut i = 0;
@@ -691,7 +780,7 @@ fn solve_pn(root: &Board, side_to_move_attacks: bool, opt: Options) -> Result {
                 if s.g.status[0] == ST_SAFE || s.g.attacker_won(0) {
                     break;
                 }
-                r.resets += 1;
+                s.resets += 1;
                 s.g.reset_numbers();
             }
         }
@@ -699,14 +788,16 @@ fn solve_pn(root: &Board, side_to_move_attacks: bool, opt: Options) -> Result {
     r.aborted = s.aborted;
     r.stuck = s.stuck;
     r.exhausts = s.exhausts;
+    r.resets = s.resets;
     s.g.fill_result(&mut r);
     let line = format!("done: {} positions, {} expansions, {} edges, {} visits, {} won, {} fixed-point runs, {} resets, {}", s.g.recs.len(), s.g.expansions, s.g.edges, s.g.visits, r.won, s.g.safe_checks, r.resets, fmt_dur(s.start.elapsed()));
     s.report(&line);
     r
 }
+}
 
 /// The search state around a graph.
-struct Searcher {
+pub(crate) struct Searcher {
     g: Graph,
     opt: Options,
     start: Instant,
@@ -714,6 +805,12 @@ struct Searcher {
     aborted: bool,
     stuck: bool,
     exhausts: usize,
+    /// Descent: heuristic disproofs the fixed point rejected.
+    resets: usize,
+    /// Certificate builder: widening rounds so far.
+    rounds: usize,
+    /// Certificate builder: the nodes the next closure starts from.
+    frontier: Vec<u32>,
 }
 
 impl Searcher {
@@ -722,7 +819,7 @@ impl Searcher {
             opt.progress_every = 1 << 20;
         }
         let cap_n = if opt.number_cap == 0 { DEFAULT_NUMBER_CAP } else { opt.number_cap };
-        Searcher { g, opt, start: Instant::now(), cap_n, aborted: false, stuck: false, exhausts: 0 }
+        Searcher { g, opt, start: Instant::now(), cap_n, aborted: false, stuck: false, exhausts: 0, resets: 0, rounds: 0, frontier: vec![0] }
     }
 
     fn report(&self, line: &str) {
@@ -735,9 +832,11 @@ impl Searcher {
         self.opt.stop.as_ref().is_some_and(|s| s.load(Ordering::Relaxed)) || self.opt.race_stop.as_ref().is_some_and(|s| s.load(Ordering::Relaxed))
     }
 
-    /// Adds all children of a node and propagates wins.
+    /// Adds all children of a node and propagates wins. It aborts (the
+    /// stop flag, the position budget) before touching the node, never in
+    /// the middle of it.
     fn expand(&mut self, i: u32) {
-        if self.g.expansions & 1023 == 0 && self.stop_requested() {
+        if self.g.full() || self.g.expansions & 1023 == 0 && self.stop_requested() {
             self.aborted = true;
             return;
         }
@@ -837,7 +936,13 @@ impl Searcher {
             self.report(&line);
         }
         if self.aborted || depth >= MAX_DEPTH {
-            return (th_pn, th_dn);
+            // a threshold is never a decision: an infinite one (the root's,
+            // or passed down along single children) returned as a number
+            // would make the parent's sum infinite, and an infinite number
+            // at the root ends every descent at once without a decision
+            // (seen on KRR-KN after Nh2: 25 million visits per five
+            // seconds, no expansion)
+            return (finite(th_pn), finite(th_dn));
         }
         if self.g.attacker_won(i) {
             return (0, INF);
@@ -848,7 +953,7 @@ impl Searcher {
         if self.g.flags[i as usize] & FL_EXPANDED == 0 {
             self.expand(i);
             if self.aborted {
-                return (th_pn, th_dn);
+                return (finite(th_pn), finite(th_dn));
             }
             if self.g.attacker_won(i) {
                 return (0, INF);
@@ -893,7 +998,7 @@ impl Searcher {
                 // the best child is decided or a repetition: nothing to
                 // search below on this path, so the parent must move on
                 self.g.flags[i as usize] &= !FL_ON_PATH;
-                return (pn.max(th_pn), dn.max(th_dn));
+                return (finite(pn.max(th_pn)), finite(dn.max(th_dn)));
             }
             let (cpn, cdn) = child_numbers_local(&self.g, &local, bi, c);
             let (c_th_pn, c_th_dn);
@@ -963,6 +1068,11 @@ impl Searcher {
                     self.g.flags[i as usize] &= !FL_ON_PATH;
                     return (INF, 0);
                 }
+                if self.aborted {
+                    // the budget or the stop flag ended the exhaust: not a decision, not a bug
+                    self.g.flags[i as usize] &= !FL_ON_PATH;
+                    return (pn, dn);
+                }
                 if !self.g.attacker_won(c) && !self.g.defender_holds(c) {
                     // cannot happen: a fully expanded subgraph is decided by the fixed point
                     self.aborted = true;
@@ -997,8 +1107,6 @@ fn child_numbers_local(g: &Graph, local: &[(u32, u32, bool); MAX_MOVES], ci: usi
         g.child_numbers(c)
     }
 }
-
-pub(crate) use certificate::solve_certificate;
 
 fn clip(x: u32, cap_n: u32) -> u32 {
     if x >= INF {
@@ -1038,6 +1146,11 @@ fn lthreshold(th: u32, sum_with: impl Fn(u32) -> u32) -> u32 {
         v += 1;
     }
     v
+}
+
+/// Caps a threshold handed back as a number below INF.
+fn finite(x: u32) -> u32 {
+    x.min(INF - 1)
 }
 
 /// Adds two node numbers, INF absorbing, finite sums below INF.

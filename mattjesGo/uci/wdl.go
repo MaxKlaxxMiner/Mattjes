@@ -52,8 +52,22 @@ type wdlEntry struct {
 	move      chess.Move
 	class     wdlClass
 	pv        []chess.Move // the winning line (ours or the opponent's), the move first
-	positions int
+	positions int          // positions of the move's graphs (both questions, both racers)
 	method    string
+	// solvers keeps the two questions alive between the rounds: 0 "we
+	// win", 1 "the opponent wins"; nil until asked, dropped with the move
+	solvers [2]*wdllist.Solver
+}
+
+// graphPositions is the memory of the move's live and finished questions.
+func (en *wdlEntry) graphPositions() int {
+	n := 0
+	for _, s := range en.solvers {
+		if s != nil {
+			n += s.Positions()
+		}
+	}
+	return n
 }
 
 // wdlBytesPerPosition turns the Hash size into the position budget of one
@@ -61,10 +75,23 @@ type wdlEntry struct {
 // graph, roughly); the author ignores memory for now, so this is generous.
 const wdlBytesPerPosition = 64
 
-// runWdl drives the WDL search per root move: known table values are
-// taken as they are, every other move gets the two questions. The list is
-// reported after every decision; a stop ends the search with what is
-// decided.
+// wdlFirstBudget is the position budget of the first round (per question).
+const wdlFirstBudget = 1 << 16
+
+// wdlBudgetGrowth multiplies the budget from round to round; the rounds
+// before the last one cost a third of it in total.
+const wdlBudgetGrowth = 4
+
+// runWdl drives the WDL search over the root moves in rounds: known table
+// values are taken as they are, every other move gets the two questions
+// with a position budget per graph that grows by wdlBudgetGrowth per round
+// until it reaches the Hash budget, so that no single move eats the whole
+// time before the others are even looked at. The questions are wdllist
+// Solvers that keep their graphs between the rounds (no restart, the
+// memory is the price: every open question holds two graphs). The list is
+// reported after every decision; the search ends when every move is
+// decided, when the top multiPV moves are proven wins (nothing can rank
+// above them), when the full budget left moves open, or on stop.
 func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, stop *atomic.Bool, maxPositions int) searchEnd {
 	var buf chess.MoveBuffer
 	n := root.GenMoves(&buf)
@@ -102,59 +129,105 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 		last = time.Now()
 		rep.text("wdl: " + line)
 	}
-	opt := wdllist.Options{Epsilon: 8, MaxPositions: maxPositions, Stop: stop, Progress: progress, ProgressEvery: 1 << 22}
+	opt := wdllist.Options{Epsilon: 8, Stop: stop, Progress: progress, ProgressEvery: 1 << 22}
 	decided := n - len(open)
+	wins := 0
+	for _, en := range entries {
+		if en.class == wdlWin {
+			wins++
+		}
+	}
 	rep.wdlLines(decided, entries, positions, nil)
-	for _, i := range open {
-		if stop.Load() {
-			break
-		}
-		m := &entries[i]
-		c := *root
-		c.DoMove(m.move)
-		rep.current, rep.currentNo = m.move, i+1
-		// we win? (the root is a defender node of the child: the opponent
-		// to move, we attack)
-		r := wdllist.Solve(&c, false, opt)
-		positions += uint64(r.Positions)
-		m.positions += r.Positions
-		switch r.Outcome {
-		case wdllist.Proven:
-			m.class, m.pv, m.method = wdlWin, append([]chess.Move{m.move}, r.PV...), r.Method
-		case wdllist.Disproven:
-			m.class, m.method = wdlNoWin, r.Method
-		}
-		if r.Aborted || m.class == wdlWin {
-			if r.Aborted {
+	budget := min(wdlFirstBudget, maxPositions)
+	for round := 1; len(open) > 0 && wins < multiPV && !end.aborted; round++ {
+		opt.MaxPositions = budget
+		rep.note(fmt.Sprintf("wdl: round %d, %d positions per graph, %d moves open, %d positions so far", round, budget, len(open), positions))
+		stillOpen := open[:0]
+		for _, i := range open {
+			if stop.Load() {
 				end.aborted = true
 				break
 			}
-			decided++
-			rep.wdlLines(decided, entries, positions, nil)
-			continue
-		}
-		// the opponent wins? (the root is an attacker node of the child)
-		r = wdllist.Solve(&c, true, opt)
-		positions += uint64(r.Positions)
-		m.positions += r.Positions
-		switch r.Outcome {
-		case wdllist.Proven:
-			m.class, m.pv, m.method = wdlLoss, append([]chess.Move{m.move}, r.PV...), r.Method
-			decided++
-		case wdllist.Disproven:
-			if m.class == wdlNoWin {
-				m.class = wdlDraw
-				decided++
-			} else {
-				m.class = wdlNoLoss
+			m := &entries[i]
+			c := *root
+			c.DoMove(m.move)
+			rep.current, rep.currentNo = m.move, i+1
+			before := m.class
+			ask := func(q int, attacks bool) wdllist.Result {
+				if m.solvers[q] == nil {
+					m.solvers[q] = wdllist.NewSolver(&c, attacks, opt)
+				}
+				r := m.solvers[q].Run(budget)
+				total := m.graphPositions()
+				positions += uint64(total - m.positions)
+				m.positions = total
+				return r
 			}
-			m.method = r.Method
+			// we win? (the root is a defender node of the child: the opponent
+			// to move, we attack); open unless the first question is answered
+			if m.class == wdlUnknown || m.class == wdlNoLoss {
+				r := ask(0, false)
+				switch r.Outcome {
+				case wdllist.Proven:
+					m.class, m.pv, m.method = wdlWin, append([]chess.Move{m.move}, r.PV...), r.Method
+					wins++
+				case wdllist.Disproven:
+					if m.class == wdlNoLoss {
+						m.class = wdlDraw
+					} else {
+						m.class = wdlNoWin
+					}
+					m.method = r.Method
+				}
+				if r.Aborted && stop.Load() {
+					end.aborted = true
+					break
+				}
+			}
+			// the opponent wins? (the root is an attacker node of the child)
+			if m.class == wdlUnknown || m.class == wdlNoWin {
+				r := ask(1, true)
+				switch r.Outcome {
+				case wdllist.Proven:
+					m.class, m.pv, m.method = wdlLoss, append([]chess.Move{m.move}, r.PV...), r.Method
+				case wdllist.Disproven:
+					if m.class == wdlNoWin {
+						m.class = wdlDraw
+					} else {
+						m.class = wdlNoLoss
+					}
+					m.method = r.Method
+				}
+				if r.Aborted && stop.Load() {
+					end.aborted = true
+					break
+				}
+			}
+			switch m.class {
+			case wdlWin, wdlDraw, wdlLoss:
+				decided++
+				m.solvers = [2]*wdllist.Solver{}
+			default:
+				stillOpen = append(stillOpen, i)
+			}
+			if m.class != before {
+				rep.wdlLines(decided, entries, positions, nil)
+			}
+			if wins >= multiPV {
+				break
+			}
 		}
-		if r.Aborted {
-			end.aborted = true
+		if end.aborted {
 			break
 		}
-		rep.wdlLines(decided, entries, positions, nil)
+		open = stillOpen
+		if budget >= maxPositions {
+			break // the full budget left them open
+		}
+		budget = min(budget*wdlBudgetGrowth, maxPositions)
+	}
+	for i := range entries {
+		entries[i].solvers = [2]*wdllist.Solver{} // the open graphs go with the search
 	}
 	end.wdl = orderWdl(entries)
 	end.nodes = positions

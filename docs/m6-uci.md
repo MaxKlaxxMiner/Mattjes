@@ -428,16 +428,31 @@ höchstens alle fünf Sekunden eine `info string wdl:`-Zeile des laufenden
 Suchers, dazu die `currmove`-Zeile des Reporters.
 
 Rauchtest (`tests/uci-wdl.sh ./runMattjesGo.exe tests/uci-smoke.txt 15000
-4 1024`, Arbeitsrechner): KQQ-KN 37 Gewinne und 2 Remis nach 2,7 s;
-Benchmark KRR-KN mit Schwarz am Zug nach 15 s elf Verluste bewiesen, Nh2
-noch offen (`cp 1`); KQ-KRR Dauerschach nach 15 s zwei Verluste und ein
-"kann nicht gewinnen", zwölf Züge offen.
+4 1024`, Arbeitsrechner, erste Fassung): KQQ-KN 37 Gewinne und 2 Remis
+nach 2,7 s; Benchmark KRR-KN mit Schwarz am Zug nach 15 s elf Verluste
+bewiesen, Nh2 noch offen (`cp 1`); KQ-KRR Dauerschach nach 15 s zwei
+Verluste und ein "kann nicht gewinnen", zwölf Züge offen.
 
-Offen daran: die Zeit geht in Wurzelzug-Reihenfolge weg (der erste Zug
-kann das ganze Budget fressen), ein Budget je Zug oder ein Rundlauf über
-die offenen Züge wäre für MultiPV besser; `Threads` wird nicht beachtet
-(zwei Threads je Frage); Tabellen als Orakel in der Suche fehlen noch
-(nur die Tabellenstufe an der Wurzel); Rust hat `fastwdl` noch nicht.
+**Runden statt Reihenfolge (2026-10-21):** die Zeit ging in
+Wurzelzug-Reihenfolge weg, der erste offene Zug konnte das ganze Budget
+fressen. Jetzt läuft der Treiber in Runden über alle offenen Züge mit einem
+Stellungsbudget je Graph, das von 65.536 um Faktor 4 je Runde bis zum
+`Hash`-Budget wächst; die Fragen sind `wdllist.Solver`-Objekte, die ihre
+Graphen zwischen den Runden behalten (kein Neustart; Einzelheiten und
+Messung in `docs/m7-wdl-search.md`, "Runden über die Wurzelzüge"). Je
+Runde eine ungedrosselte Zeile `info string wdl: round 3, 1048576
+positions per graph, 4 moves open, 3456793 positions so far`. Die Suche
+endet, wenn alle Züge entschieden sind, wenn so viele Gewinne bewiesen
+sind, wie MultiPV Zeilen hat, wenn das volle Budget Züge offen ließ, oder
+bei `stop`. `nodes` zählt die Stellungen aller Graphen (beide Fragen, beide
+Sucher). KRR-KN damit: acht Verluste nach 0,4 s, alle zwölf nach 21 s (Go)
+bzw. 11 s (Rust); KQ-KRR Dauerschach nach 25 s zehn Verluste und drei
+"kann nicht gewinnen" (Rust). Speicher: jede offene Frage hält zwei
+Graphen, das `Hash`-Budget gilt je Graph, nicht insgesamt.
+
+Offen daran: `Threads` wird nicht beachtet (zwei Threads je Frage);
+Tabellen als Orakel in der Suche fehlen noch (nur die Tabellenstufe an
+der Wurzel); `Hash` als Gesamtbudget über alle lebenden Graphen.
 
 ## Offen
 

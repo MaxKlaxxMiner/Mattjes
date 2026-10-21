@@ -152,8 +152,13 @@ fn chebyshev(a: i32, b: i32) -> i32 {
 
 impl Searcher {
     /// Adds the next k untried policy moves of a defender node (generation
-    /// on the first call); false when the store is full.
+    /// on the first call); false when the position budget is used up
+    /// (checked before the node is touched, as in expand).
     fn expand_partial(&mut self, i: u32, k: usize) -> bool {
+        if self.g.full() {
+            self.aborted = true;
+            return false;
+        }
         let b = self.g.board(i);
         let mut buf = new_buffer();
         let n = b.gen_moves(&mut buf);
@@ -208,8 +213,9 @@ impl Searcher {
     /// is queued once per wave (FL_REGION).
     fn closure(&mut self, frontier: Vec<u32>) {
         let mut queue = frontier;
+        let mut next: Vec<u32> = Vec::new();
         while !queue.is_empty() && !self.aborted {
-            let mut next: Vec<u32> = Vec::new();
+            next = Vec::new();
             for &i in &queue {
                 self.g.flags[i as usize] &= !FL_REGION;
                 if self.g.status[i as usize] != ST_UNKNOWN {
@@ -221,6 +227,9 @@ impl Searcher {
                         continue;
                     }
                     self.expand(i);
+                    if self.aborted {
+                        break;
+                    }
                     if self.g.expansions & ((1 << 16) - 1) == 0 {
                         let line = format!("cert closure: {} positions, {} expansions, {} edges, {} defender placements ({}), {}", self.g.recs.len(), self.g.expansions, self.g.edges, self.g.defender_configs.as_ref().map_or(0, |c| c.len()), self.g.king_squares(), fmt_dur(self.start.elapsed()));
                         self.report(&line);
@@ -239,9 +248,13 @@ impl Searcher {
                     }
                 }
             }
-            queue = next;
+            if self.aborted {
+                break; // the rest of the queue stays marked until below
+            }
+            queue = std::mem::take(&mut next);
         }
-        for &i in &queue {
+        // an interrupted wave leaves its queue and the next one marked
+        for &i in queue.iter().chain(next.iter()) {
             self.g.flags[i as usize] &= !FL_REGION;
         }
     }
@@ -255,49 +268,92 @@ impl Searcher {
     }
 }
 
-/// Answers one question with the certificate builder.
-pub(crate) fn solve_certificate(root: &Board, side_to_move_attacks: bool, opt: Options) -> Result {
-    let max_positions = if opt.max_positions == 0 { 1 << 26 } else { opt.max_positions };
-    let g = Graph::new(root, side_to_move_attacks, false, max_positions, true);
-    let mut s = Searcher::new(g, opt);
-    s.start = Instant::now();
-    let mut r = Result::default();
-    let mut frontier = vec![0u32];
-    let mut round = 0;
-    while !s.aborted {
-        round += 1;
-        r.rounds = round;
-        s.closure(frontier);
-        if s.aborted {
-            break;
-        }
-        s.g.safe_set();
-        if s.g.attacker_won(0) || s.g.status[0] == ST_SAFE {
-            break;
-        }
-        if s.stop_requested() {
-            s.aborted = true;
-            break;
-        }
-        frontier = s.g.unsafe_defenders();
-        let (mut won, mut safe) = (0, 0);
-        for i in 0..s.g.status.len() {
-            if s.g.attacker_won(i as u32) {
-                won += 1;
-            } else if s.g.status[i] == ST_SAFE {
-                safe += 1;
+impl Graph {
+    /// Collects the open nodes without children reachable from the root
+    /// through open nodes: the frontier of a resumed run, whose interrupted
+    /// closure lost its queue (the nodes it had added are in the graph,
+    /// partially expanded defenders keep their move).
+    fn open_unexpanded(&mut self) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut stack = vec![0u32];
+        let mut marked = vec![0u32];
+        self.flags[0] |= FL_REGION;
+        while let Some(i) = stack.pop() {
+            if self.flags[i as usize] & FL_EXPANDED == 0 {
+                out.push(i);
+                continue;
+            }
+            for ci in 0..self.children[i as usize].len() {
+                let c = self.children[i as usize][ci];
+                if self.flags[c as usize] & FL_REGION != 0 || self.status[c as usize] != ST_UNKNOWN {
+                    continue;
+                }
+                self.flags[c as usize] |= FL_REGION;
+                marked.push(c);
+                stack.push(c);
             }
         }
-        let line = format!("cert round {}: {} positions, {} expansions, {} edges, {} won, {} safe, {} defender nodes widened, {}", round, s.g.recs.len(), s.g.expansions, s.g.edges, won, safe, frontier.len(), fmt_dur(s.start.elapsed()));
-        s.report(&line);
-        if frontier.is_empty() {
-            s.aborted = true; // cannot happen: an unsafe root has an unsafe defender with untried moves below it
-            s.stuck = true;
-            break;
+        for &i in &marked {
+            self.flags[i as usize] &= !FL_REGION;
         }
+        out
     }
-    r.aborted = s.aborted;
-    r.stuck = s.stuck;
-    s.g.fill_result(&mut r);
-    r
+}
+
+impl Searcher {
+    /// Sets up the certificate builder of a question.
+    pub(crate) fn new_cert(root: &Board, side_to_move_attacks: bool, opt: Options) -> Searcher {
+        let g = Graph::new(root, side_to_move_attacks, false, opt.max_positions, true);
+        let mut s = Searcher::new(g, opt);
+        s.start = Instant::now();
+        s
+    }
+
+    /// Continues the certificate builder up to `max_positions`.
+    pub(crate) fn run_cert(&mut self, max_positions: usize) -> Result {
+        let s = self;
+        s.aborted = false;
+        s.g.set_budget(max_positions);
+        if s.rounds > 0 {
+            s.frontier = s.g.open_unexpanded();
+        }
+        let mut r = Result::default();
+        while !s.aborted {
+            s.rounds += 1;
+            let frontier = std::mem::take(&mut s.frontier);
+            s.closure(frontier);
+            if s.aborted {
+                break;
+            }
+            s.g.safe_set();
+            if s.g.attacker_won(0) || s.g.status[0] == ST_SAFE {
+                break;
+            }
+            if s.stop_requested() {
+                s.aborted = true;
+                break;
+            }
+            s.frontier = s.g.unsafe_defenders();
+            let (mut won, mut safe) = (0, 0);
+            for i in 0..s.g.status.len() {
+                if s.g.attacker_won(i as u32) {
+                    won += 1;
+                } else if s.g.status[i] == ST_SAFE {
+                    safe += 1;
+                }
+            }
+            let line = format!("cert round {}: {} positions, {} expansions, {} edges, {} won, {} safe, {} defender nodes widened, {}", s.rounds, s.g.recs.len(), s.g.expansions, s.g.edges, won, safe, s.frontier.len(), fmt_dur(s.start.elapsed()));
+            s.report(&line);
+            if s.frontier.is_empty() {
+                s.aborted = true; // cannot happen: an unsafe root has an unsafe defender with untried moves below it
+                s.stuck = true;
+                break;
+            }
+        }
+        r.rounds = s.rounds;
+        r.aborted = s.aborted;
+        r.stuck = s.stuck;
+        s.g.fill_result(&mut r);
+        r
+    }
 }

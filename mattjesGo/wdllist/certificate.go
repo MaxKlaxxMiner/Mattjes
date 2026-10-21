@@ -165,9 +165,14 @@ func chebyshev(a, b int) int {
 }
 
 // expandPartial adds the next k untried policy moves of a defender node
-// (generation on the first call); returns false when the store is full.
+// (generation on the first call); returns false when the position budget
+// is used up (checked before the node is touched, as in expand).
 func (s *searcher) expandPartial(i uint32, k int) bool {
 	g := s.g
+	if g.full() {
+		s.aborted = true
+		return false
+	}
 	b := g.board(i)
 	var buf chess.MoveBuffer
 	n := b.GenMoves(&buf)
@@ -237,34 +242,69 @@ func (g *Graph) fullyTried(i uint32) bool {
 	return g.flags[i]&flExpanded != 0 && len(g.children[i]) >= int(g.nmoves[i])
 }
 
-// solveCertificate answers one question with the certificate builder.
-func solveCertificate(root *bitboard.Board, sideToMoveAttacks bool, opt Options) Result {
-	maxPositions := opt.MaxPositions
-	if maxPositions <= 0 {
-		maxPositions = 1 << 26
-	}
+// newCertSearcher sets up the certificate builder of a question.
+func newCertSearcher(root *bitboard.Board, sideToMoveAttacks bool, opt Options) *searcher {
 	g := &Graph{attackerWhite: root.WhiteMove == sideToMoveAttacks, defenderConfigs: map[uint64]uint32{}, unsafeLevel: []uint16{}}
 	side := 0
 	if g.attackerWhite {
 		side = 1
 	}
 	g.rootDefender = root.Pieces[side]
-	g.maxSlots = initialSlots
-	for g.maxSlots*ttstore.MaxLoadPercent/100 < maxPositions {
-		g.maxSlots *= 2
-	}
+	g.setBudget(opt.MaxPositions)
 	g.store = ttstore.NewSlots(min(initialSlots, g.maxSlots))
 	g.store.Put(root.Key, 0)
 	g.add(root)
-	s := &searcher{g: g, opt: opt, start: time.Now(), capN: DefaultNumberCap}
+	s := &searcher{g: g, opt: opt, start: time.Now(), capN: DefaultNumberCap, frontier: []uint32{0}}
 	if opt.ProgressEvery <= 0 {
 		s.opt.ProgressEvery = 1 << 20
 	}
+	return s
+}
+
+// openUnexpanded collects the open nodes without children reachable from
+// the root through open nodes: the frontier of a resumed run, whose
+// interrupted closure lost its queue (the nodes it had added are in the
+// graph, partially expanded defenders keep their move).
+func (g *Graph) openUnexpanded() []uint32 {
+	var out []uint32
+	stack := []uint32{0}
+	marked := []uint32{0}
+	g.flags[0] |= flRegion
+	for len(stack) > 0 {
+		i := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if g.flags[i]&flExpanded == 0 {
+			out = append(out, i)
+			continue
+		}
+		for _, c := range g.children[i] {
+			if g.flags[c]&flRegion != 0 || g.status[c] != stUnknown {
+				continue
+			}
+			g.flags[c] |= flRegion
+			marked = append(marked, c)
+			stack = append(stack, c)
+		}
+	}
+	for _, i := range marked {
+		g.flags[i] &^= flRegion
+	}
+	return out
+}
+
+// runCert continues the certificate builder up to maxPositions.
+func (s *searcher) runCert(maxPositions int) Result {
+	g := s.g
+	opt := s.opt
+	s.aborted = false
+	g.setBudget(maxPositions)
+	if s.rounds > 0 {
+		s.frontier = g.openUnexpanded()
+	}
 	var r Result
-	frontier := []uint32{0}
-	for round := 1; !s.aborted; round++ {
-		r.Rounds = round
-		s.closure(frontier)
+	for !s.aborted {
+		s.rounds++
+		s.closure(s.frontier)
 		if s.aborted {
 			break
 		}
@@ -276,7 +316,7 @@ func solveCertificate(root *bitboard.Board, sideToMoveAttacks bool, opt Options)
 			s.aborted = true
 			break
 		}
-		frontier = g.unsafeDefenders()
+		s.frontier = g.unsafeDefenders()
 		won, safe := 0, 0
 		for i := range g.status {
 			if g.AttackerWon(uint32(i)) {
@@ -285,12 +325,13 @@ func solveCertificate(root *bitboard.Board, sideToMoveAttacks bool, opt Options)
 				safe++
 			}
 		}
-		s.report(fmt.Sprintf("cert round %d: %d positions, %d expansions, %d edges, %d won, %d safe, %d defender nodes widened, %s", round, len(g.recs), g.expansions, g.edges, won, safe, len(frontier), fmtDur(time.Since(s.start))))
-		if len(frontier) == 0 {
+		s.report(fmt.Sprintf("cert round %d: %d positions, %d expansions, %d edges, %d won, %d safe, %d defender nodes widened, %s", s.rounds, len(g.recs), g.expansions, g.edges, won, safe, len(s.frontier), fmtDur(time.Since(s.start))))
+		if len(s.frontier) == 0 {
 			s.aborted, s.stuck = true, true // cannot happen: an unsafe root has an unsafe defender with untried moves below it
 			break
 		}
 	}
+	r.Rounds = s.rounds
 	r.Aborted, r.Stuck = s.aborted, s.stuck
 	switch {
 	case g.AttackerWon(0):
@@ -328,8 +369,9 @@ func (s *searcher) closure(frontier []uint32) {
 		g.flags[c] |= flRegion
 		return append(next, c)
 	}
+	var next []uint32
 	for len(queue) > 0 && !s.aborted {
-		var next []uint32
+		next = nil
 		for _, i := range queue {
 			g.flags[i] &^= flRegion
 			if g.status[i] != stUnknown {
@@ -341,6 +383,9 @@ func (s *searcher) closure(frontier []uint32) {
 					continue
 				}
 				s.expand(i)
+				if s.aborted {
+					break
+				}
 				if g.expansions&(1<<16-1) == 0 {
 					s.report(fmt.Sprintf("cert closure: %d positions, %d expansions, %d edges, %d defender placements (%s), %s", len(g.recs), g.expansions, g.edges, len(g.defenderConfigs), g.kingSquares(), fmtDur(time.Since(s.start))))
 				}
@@ -359,9 +404,16 @@ func (s *searcher) closure(frontier []uint32) {
 				}
 			}
 		}
+		if s.aborted {
+			break // the rest of the queue stays marked until below
+		}
 		queue = next
 	}
+	// an interrupted wave leaves its queue and the next one marked
 	for _, i := range queue {
+		g.flags[i] &^= flRegion
+	}
+	for _, i := range next {
 		g.flags[i] &^= flRegion
 	}
 }

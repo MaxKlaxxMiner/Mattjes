@@ -329,13 +329,98 @@ Umhashen bereit (`Graph.keys`, 16 Byte je Knoten). KQQ-KN damit 4 ms je
 Frage in beiden Sprachen und 0,8 s im UCI, und Rust ist jetzt überall
 schneller (KBB-K 1,84 s statt 2,54 s, falscher Läufer 81 ms statt 121 ms).
 
+## Runden über die Wurzelzüge: der fortsetzbare Solver (2026-10-21)
+
+Im UCI ging die Zeit in Wurzelzug-Reihenfolge weg: der erste offene Zug
+fraß das ganze Budget, und Arena sah bei MultiPV nichts von den anderen.
+Der Treiber (`uci/wdl.go`, `src/uci/wdl.rs`) läuft jetzt in **Runden über
+alle offenen Züge** mit einem Stellungsbudget je Graph, das von 2^16 um
+Faktor 4 je Runde bis zum `Hash`-Budget wächst (`wdlFirstBudget`,
+`wdlBudgetGrowth`). Die erste Fassung baute die Graphen je Runde neu
+auf; das kostete bei KRR-KN nicht das erwartete Drittel, sondern verdoppelte
+die Zeit (25 s statt 15 s für elf Verluste), weil die Verluste erst in der
+dritten Runde fallen und die ersten beiden Runden je Frage komplett
+verloren waren.
+
+Deshalb ist eine Frage jetzt ein **`Solver`-Objekt** (`NewSolver`,
+`Run(maxPositions)`, `Positions()`): beide Sucher des Wettrennens leben
+darin weiter, `Run` setzt das Rennen bis zum nächsten Budget fort, eine
+Entscheidung gibt die Graphen frei. `Solve` ist ein einzelner `Run`. Damit
+das Fortsetzen korrekt ist, gilt:
+
+- **Eine Expansion ist atomar.** Das Budget wird vor dem Anfassen eines
+  Knotens geprüft (`Graph.full`), nie mitten in der Kinderliste; der Store
+  darf bis Budget plus `chess.MaxMoves` wachsen (`setBudget`), damit
+  `getOrPut` unterhalb des Budgets nie "voll" meldet. Vorher ließ der
+  Abbruch halb expandierte Knoten zurück (Flag gesetzt, Kinder fehlen),
+  die der Abstieg nie nachexpandiert hätte.
+- **Die Breitensuche räumt beim Abbruch auf.** `closure` ließ die
+  `flRegion`-Markierungen der nächsten Welle und des Rests der laufenden
+  Welle stehen; `unsafeDefenders` hätte diese Knoten beim Fortsetzen als
+  schon besucht übersprungen. Jetzt werden beide Listen am Ende entmarkiert.
+- **Die Warteschlange der unterbrochenen Breitensuche ist weg**, die
+  angelegten Knoten nicht: ein fortgesetzter `runCert` startet die
+  nächste Welle mit `openUnexpanded` (alle offenen Knoten ohne Kinder,
+  erreichbar über offene Knoten), teilexpandierte Verteidiger behalten
+  ihren Zug.
+- Der Abstieg braucht nichts: `mid` räumt die Pfadflags auf jedem
+  Abbruchweg auf, die gespeicherten Zahlen bleiben, der nächste `Run`
+  steigt von der Wurzel ab.
+- Die Stop-Flags des Rennens werden je `Run` neu angelegt (Go: lokale
+  Atomics, deren Zeiger in die Optionen der Sucher gesetzt werden; Rust:
+  `Options.race_stop` je Sucher).
+
+Ergebnis (Arbeitsrechner, `go movetime 40000`, Hash 1024, MultiPV 64):
+KRR-KN mit Schwarz am Zug hat nach **0,4 s acht Verluste** (Runde 1 mit
+64 Ki Stellungen je Graph), nach 14,6 s elf (wie vorher seriell), und
+**alle zwölf nach 21 s** (Go) bzw. **11 s** (Rust); Nh2 war vorher nie
+entschieden worden, siehe unten. KQ-KRR Dauerschach hat nach 25 s zehn
+Verluste und drei "kann nicht gewinnen" (Rust; vorher zwei Verluste und
+zwölf offene Züge). Zwei Züge bleiben dort offen. `nodes` zählt jetzt die
+Stellungen aller Graphen eines Zuges (beide Fragen, beide Sucher), nicht
+mehr nur die des entscheidenden Graphen; KQQ-KN meldet 743 Tsd. statt
+84 Tsd. bei unveränderten 0,8 s.
+
+Der Speicher ist der Preis: jede offene Frage hält zwei Graphen, bis zu
+`Hash`·2^20/64 Stellungen je Graph, über alle offenen Züge hinweg. Bei
+KRR-KN in Runde 4 (4 Mi Stellungen je Graph, vier offene Züge) sind das
+bis zu 16 Graphen; die wachsenden Stores halten den Verbrauch bei dem,
+was wirklich angelegt wurde. `Hash` als pauschales Budget über alle
+Graphen ist für später notiert.
+
+Die Suche endet außerdem, sobald so viele Gewinne bewiesen sind, wie
+MultiPV Zeilen hat (nichts kann über einem Gewinn stehen); bei MultiPV 1
+also mit dem ersten Gewinn.
+
+**Fund dabei: eine Schwelle ist nie eine Entscheidung.** Bei KRR-KN nach
+Nh2 drehte der Abstieg leer: 25 Mio. Besuche je fünf Sekunden ohne eine
+Expansion, Wurzel `pn 112 dn 1073741824`, also dn = Inf. Ursache: `mid`
+gab am Tiefendeckel (1024) und bei "bestes Kind ist Wiederholung" die
+Schwellen als Zahlen zurück, und die Schwellen sind an der Wurzel Inf/Inf
+und werden entlang einzelner Kinder (`second` = Inf, also `bound` = Inf)
+unverändert nach unten gereicht. Ein Inf in der Rückgabe machte die Summe
+des Elternknotens Inf, `clip` speichert Inf als Inf, und an der Wurzel
+galt dann `dn >= thDn` sofort: jeder Abstieg kehrte nach einem Besuch
+zurück, die äußere Schleife lief endlos. Jetzt deckelt `finite` jede als
+Zahl zurückgegebene Schwelle bei Inf − 1 (Go und Rust). Der reine Abstieg
+(`px`) ist über die 14 schnellen Stellungen weiter zeilenidentisch zwischen
+Go und Rust, und Nh2 ist seitdem als Verlust bewiesen (die Frage "Weiß
+gewinnt nach Nh2" per Abstieg mit 3,2 Mio. Stellungen).
+
+Zweiter Fund: der Abstieg meldete **STUCK (bug)**, wenn das Budget mitten
+in einem `exhaust` ausging (das Kind ist dann weder gewonnen noch sicher,
+was ohne Abbruch unmöglich wäre). Das war ein Fehlbericht und hätte mit
+dem Solver die Frage fälschlich beendet; jetzt wird nach dem `exhaust` erst
+auf Abbruch geprüft.
+
 **Nächste Hebel**, nach erwartetem Nutzen:
 
-1. Zeitbudget je Wurzelzug statt Reihenfolge (MultiPV in Arena).
-2. Speicher je Knoten: die Slices/Vecs für Kinder und Eltern kosten
+1. Speicher je Knoten: die Slices/Vecs für Kinder und Eltern kosten
    Allokationen; CSR-Blöcke wie in `matelist` machen den Graphen halb so
-   groß und schneller.
-3. Beide Fragen in einem Graphen (die Gewinne der einen Frage sind die
-   Verluste der anderen), spart die zweite Frage bei Verlusten.
-4. Politik mit taktischer Vorschau (Schach-Gabeln), für KR-KB-artige
+   groß und schneller. Dazu `Hash` als Budget über alle lebenden Graphen.
+2. Beide Fragen in einem Graphen (die Gewinne der einen Frage sind die
+   Verluste der anderen), spart die zweite Frage bei Verlusten; oder gleich
+   der Wurzelgraph einmal gelöst und der Status der Kinder abgelesen.
+3. Politik mit taktischer Vorschau (Schach-Gabeln), für KR-KB-artige
    Verteidigungen.
+4. `Threads` beachten (mehr Fragen gleichzeitig statt zwei Threads je Frage).

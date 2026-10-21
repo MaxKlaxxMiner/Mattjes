@@ -239,6 +239,11 @@ func (r *reporter) text(line string) {
 	if time.Since(r.last) < progressInterval {
 		return
 	}
+	r.note(line)
+}
+
+// note prints a line unthrottled (one per event, such as a round).
+func (r *reporter) note(line string) {
 	r.last = time.Now()
 	r.e.send("info string %s", compact(line))
 	r.e.flush()

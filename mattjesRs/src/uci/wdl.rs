@@ -52,6 +52,7 @@ pub struct WdlEntry {
     pub class: WdlClass,
     /// The winning line (ours or the opponent's), the move first.
     pub pv: Vec<Move>,
+    /// Positions of the move's graphs (both questions, both racers).
     pub positions: usize,
     pub method: &'static str,
 }
@@ -64,10 +65,23 @@ pub const WDL_BYTES_PER_POSITION: usize = 64;
 /// search thread does not).
 pub type Extend<'a> = Option<&'a mut dyn FnMut(&[Move]) -> Vec<Move>>;
 
-/// Drives the WDL search per root move: known table values are taken as
-/// they are, every other move gets the two questions. The list is reported
-/// after every decision; a stop ends the search with what is decided.
-pub fn run_wdl<W: Write + Send + 'static>(root: &Board, rep: &Arc<Reporter<W>>, known: &[RootMove], stop: &Arc<AtomicBool>, max_positions: usize) -> Core {
+/// The position budget of the first round (per question).
+pub const WDL_FIRST_BUDGET: usize = 1 << 16;
+
+/// Multiplies the budget from round to round; the rounds before the last
+/// one cost a third of it in total.
+pub const WDL_BUDGET_GROWTH: usize = 4;
+
+/// Drives the WDL search over the root moves in rounds: known table values
+/// are taken as they are, every other move gets the two questions with a
+/// position budget that grows by WDL_BUDGET_GROWTH per round until it
+/// reaches the Hash budget, so that no single move eats the whole time
+/// before the others are even looked at (a graph is built anew per
+/// question, the restarts cost a third). The list is reported after every
+/// decision; the search ends when every move is decided, when the top
+/// multi_pv moves are proven wins (nothing can rank above them), when the
+/// full budget left moves open, or on stop.
+pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &Arc<Reporter<W>>, known: &[RootMove], stop: &Arc<AtomicBool>, max_positions: usize) -> Core {
     let mut buf = new_buffer();
     let n = root.gen_moves(&mut buf);
     let mut entries: Vec<WdlEntry> = Vec::with_capacity(n);
@@ -105,70 +119,104 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, rep: &Arc<Reporter<W>>, 
         *l = Instant::now();
         rep_progress.text(&format!("wdl: {}", line));
     });
-    let opt = Options { epsilon: 8, max_positions, stop: Some(stop.clone()), progress: Some(progress), progress_every: 1 << 22, ..Default::default() };
+    let mut opt = Options { epsilon: 8, max_positions, stop: Some(stop.clone()), progress: Some(progress), progress_every: 1 << 22, ..Default::default() };
     let mut decided = n - open.len();
+    let mut wins = entries.iter().filter(|en| en.class == WdlClass::Win).count();
     rep.wdl_lines(decided, &entries, positions);
-    for i in open {
-        if stop.load(Ordering::Relaxed) {
-            break;
-        }
-        let mv = entries[i].mv;
-        let mut c = *root;
-        c.do_move(mv);
-        *rep.current.lock().unwrap() = Some((mv, i + 1));
-        // we win? (the root is a defender node of the child)
-        let r = wdllist::solve(&c, false, opt.clone());
-        positions += r.positions as u64;
-        entries[i].positions += r.positions;
-        match r.outcome {
-            Outcome::Proven => {
-                entries[i].class = WdlClass::Win;
-                entries[i].pv = std::iter::once(mv).chain(r.pv.iter().copied()).collect();
-                entries[i].method = r.method;
+    // the two questions per move stay alive between the rounds: 0 "we
+    // win", 1 "the opponent wins"; None until asked, dropped with the move
+    let mut solvers: Vec<[Option<wdllist::Solver>; 2]> = (0..n).map(|_| [None, None]).collect();
+    let mut budget = WDL_FIRST_BUDGET.min(max_positions);
+    let mut round = 0;
+    while !open.is_empty() && wins < multi_pv && !core.aborted {
+        round += 1;
+        opt.max_positions = budget;
+        rep.note(&format!("wdl: round {}, {} positions per graph, {} moves open, {} positions so far", round, budget, open.len(), positions));
+        let mut still_open = Vec::with_capacity(open.len());
+        for &i in &open {
+            if stop.load(Ordering::Relaxed) {
+                core.aborted = true;
+                break;
             }
-            Outcome::Disproven => {
-                entries[i].class = WdlClass::NoWin;
-                entries[i].method = r.method;
-            }
-            Outcome::Undecided => {}
-        }
-        if r.aborted {
-            core.aborted = true;
-            break;
-        }
-        if entries[i].class == WdlClass::Win {
-            decided += 1;
-            rep.wdl_lines(decided, &entries, positions);
-            continue;
-        }
-        // the opponent wins? (the root is an attacker node of the child)
-        let r = wdllist::solve(&c, true, opt.clone());
-        positions += r.positions as u64;
-        entries[i].positions += r.positions;
-        match r.outcome {
-            Outcome::Proven => {
-                entries[i].class = WdlClass::Loss;
-                entries[i].pv = std::iter::once(mv).chain(r.pv.iter().copied()).collect();
-                entries[i].method = r.method;
-                decided += 1;
-            }
-            Outcome::Disproven => {
-                if entries[i].class == WdlClass::NoWin {
-                    entries[i].class = WdlClass::Draw;
-                    decided += 1;
-                } else {
-                    entries[i].class = WdlClass::NoLoss;
+            let mv = entries[i].mv;
+            let mut c = *root;
+            c.do_move(mv);
+            *rep.current.lock().unwrap() = Some((mv, i + 1));
+            let before = entries[i].class;
+            // asks question q with this round's budget and books the memory
+            // of the move's graphs
+            let mut ask = |q: usize, attacks: bool, entries: &mut Vec<WdlEntry>, positions: &mut u64| {
+                let r = solvers[i][q].get_or_insert_with(|| wdllist::Solver::new(&c, attacks, opt.clone())).run(budget);
+                let total: usize = solvers[i].iter_mut().flatten().map(|s| s.positions()).sum();
+                *positions += (total - entries[i].positions) as u64;
+                entries[i].positions = total;
+                r
+            };
+            // we win? (the root is a defender node of the child: the opponent
+            // to move, we attack); open unless the first question is answered
+            if matches!(entries[i].class, WdlClass::Unknown | WdlClass::NoLoss) {
+                let r = ask(0, false, &mut entries, &mut positions);
+                match r.outcome {
+                    Outcome::Proven => {
+                        entries[i].class = WdlClass::Win;
+                        entries[i].pv = std::iter::once(mv).chain(r.pv.iter().copied()).collect();
+                        entries[i].method = r.method;
+                        wins += 1;
+                    }
+                    Outcome::Disproven => {
+                        entries[i].class = if entries[i].class == WdlClass::NoLoss { WdlClass::Draw } else { WdlClass::NoWin };
+                        entries[i].method = r.method;
+                    }
+                    Outcome::Undecided => {}
                 }
-                entries[i].method = r.method;
+                if r.aborted && stop.load(Ordering::Relaxed) {
+                    core.aborted = true;
+                    break;
+                }
             }
-            Outcome::Undecided => {}
+            // the opponent wins? (the root is an attacker node of the child)
+            if matches!(entries[i].class, WdlClass::Unknown | WdlClass::NoWin) {
+                let r = ask(1, true, &mut entries, &mut positions);
+                match r.outcome {
+                    Outcome::Proven => {
+                        entries[i].class = WdlClass::Loss;
+                        entries[i].pv = std::iter::once(mv).chain(r.pv.iter().copied()).collect();
+                        entries[i].method = r.method;
+                    }
+                    Outcome::Disproven => {
+                        entries[i].class = if entries[i].class == WdlClass::NoWin { WdlClass::Draw } else { WdlClass::NoLoss };
+                        entries[i].method = r.method;
+                    }
+                    Outcome::Undecided => {}
+                }
+                if r.aborted && stop.load(Ordering::Relaxed) {
+                    core.aborted = true;
+                    break;
+                }
+            }
+            if entries[i].class.decided() {
+                decided += 1;
+                solvers[i] = [None, None];
+            } else {
+                still_open.push(i);
+            }
+            if entries[i].class != before {
+                rep.wdl_lines(decided, &entries, positions);
+            }
+            if wins >= multi_pv {
+                break;
+            }
         }
-        if r.aborted {
-            core.aborted = true;
+        if core.aborted {
             break;
         }
-        rep.wdl_lines(decided, &entries, positions);
+        open = still_open;
+        if budget >= max_positions {
+            break; // the full budget left them open
+        }
+        budget = (budget * WDL_BUDGET_GROWTH).min(max_positions);
     }
+    drop(solvers); // the open graphs go with the search
     core.nodes = positions;
     core.answered = !core.aborted;
     core.wdl = Some(order_wdl(&entries));

@@ -252,13 +252,15 @@ impl<W: Write + Send + 'static> Reporter<W> {
 
     /// Reports a status line of a phase-based search, at most every few seconds.
     pub(super) fn text(&self, line: &str) {
-        {
-            let mut last = self.last.lock().unwrap();
-            if last.elapsed() < PROGRESS_INTERVAL {
-                return;
-            }
-            *last = Instant::now();
+        if self.last.lock().unwrap().elapsed() < PROGRESS_INTERVAL {
+            return;
         }
+        self.note(line);
+    }
+
+    /// Prints a line unthrottled (one per event, such as a round).
+    pub(super) fn note(&self, line: &str) {
+        *self.last.lock().unwrap() = Instant::now();
         let mut o = self.out.lock().unwrap();
         let _ = writeln!(o, "info string {}", compact(line));
         let _ = o.flush();
@@ -368,7 +370,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                         (c, Some(SearchTable::Buckets(t)))
                     }
                     ("matelist", table) => (run_matelist(&root, max_plies, max_positions, &stop, &rep), table),
-                    ("fastwdl", table) => (super::wdl::run_wdl(&root, &rep, &known, &stop, max_positions_wdl), table),
+                    ("fastwdl", table) => (super::wdl::run_wdl(&root, multi_pv, &rep, &known, &stop, max_positions_wdl), table),
                     (_, table) => (Core::default(), table),
                 }
             };

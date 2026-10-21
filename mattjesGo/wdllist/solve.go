@@ -130,6 +130,7 @@ type Graph struct {
 	log           bool // numbers on the log scale (Options.LogNumbers)
 	store         *ttstore.Store
 	maxSlots      int
+	maxPositions  int // the position budget; an expansion starts only below it
 	keys          [][2]uint64
 	recs          [][bitboard.PackedFixedBytes]byte
 	children      [][]uint32 // child edges per node (nil until expanded)
@@ -184,15 +185,32 @@ func (g *Graph) Index(b *bitboard.Board) (uint32, bool) {
 // newGraph sets up the store for maxPositions (grown on demand) and adds
 // the root.
 func newGraph(root *bitboard.Board, sideToMoveAttacks bool, log bool, maxPositions int) *Graph {
-	maxSlots := initialSlots
-	for maxSlots*ttstore.MaxLoadPercent/100 < maxPositions {
-		maxSlots *= 2
-	}
-	g := &Graph{attackerWhite: root.WhiteMove == sideToMoveAttacks, log: log, store: ttstore.NewSlots(min(initialSlots, maxSlots)), maxSlots: maxSlots}
+	g := &Graph{attackerWhite: root.WhiteMove == sideToMoveAttacks, log: log}
+	g.setBudget(maxPositions)
+	g.store = ttstore.NewSlots(min(initialSlots, g.maxSlots))
 	g.store.Put(root.Key, 0)
 	g.add(root)
 	return g
 }
+
+// setBudget sets the position budget (raised between the runs of a
+// Solver). The store may grow to hold the budget plus one full expansion,
+// so that an expansion started below the budget never finds it full: a
+// node is either expanded completely or not at all, which a resumed run
+// relies on.
+func (g *Graph) setBudget(maxPositions int) {
+	if maxPositions <= 0 {
+		maxPositions = 1 << 26
+	}
+	g.maxPositions = maxPositions
+	g.maxSlots = max(g.maxSlots, initialSlots)
+	for g.maxSlots*ttstore.MaxLoadPercent/100 < maxPositions+chess.MaxMoves {
+		g.maxSlots *= 2
+	}
+}
+
+// full: the position budget is used up, no further expansion starts.
+func (g *Graph) full() bool { return len(g.recs) >= g.maxPositions }
 
 // getOrPut returns the node index of a key, inserting it as the next node
 // when it is new (the caller then calls add); grows the store when it is
@@ -317,26 +335,75 @@ func (g *Graph) board(i uint32) bitboard.Board {
 // node ("the side to move forces a win"), otherwise a defender node. Unless
 // told otherwise it races the proof-number descent (good at wins) against
 // the certificate builder (good at draws) on two threads; the first decision
-// wins and stops the other.
+// wins and stops the other. One Run of a Solver with Options.MaxPositions.
 func Solve(root *bitboard.Board, sideToMoveAttacks bool, opt Options) Result {
-	if opt.BruteForce || opt.NoRace {
-		r := solvePN(root, sideToMoveAttacks, opt)
+	return NewSolver(root, sideToMoveAttacks, opt).Run(opt.MaxPositions)
+}
+
+// Solver answers one question in instalments: every Run continues the
+// race up to a position budget per graph and keeps both graphs for the
+// next Run, so that a driver can share its time over several questions
+// (the root moves of a position) without restarting them. Once decided,
+// the graphs are released and Run returns the result again.
+type Solver struct {
+	opt    Options
+	pn     *searcher // the proof-number descent
+	cert   *searcher // the certificate builder (nil without the race)
+	result Result
+	done   bool
+	total  int // positions of both graphs (kept after the release)
+}
+
+// NewSolver prepares the question (the graphs hold only the root).
+func NewSolver(root *bitboard.Board, sideToMoveAttacks bool, opt Options) *Solver {
+	s := &Solver{opt: opt, pn: newPNSearcher(root, sideToMoveAttacks, opt)}
+	if !opt.BruteForce && !opt.NoRace {
+		s.cert = newCertSearcher(root, sideToMoveAttacks, opt)
+	}
+	return s
+}
+
+// Positions is the number of positions in both graphs (the memory of the
+// question); after the decision the last count.
+func (s *Solver) Positions() int {
+	if s.done {
+		return s.total
+	}
+	s.total = len(s.pn.g.recs)
+	if s.cert != nil {
+		s.total += len(s.cert.g.recs)
+	}
+	return s.total
+}
+
+// Run continues the question until it is decided, the stop flag is set or
+// a graph reaches maxPositions (Aborted, call again with a larger budget).
+// The Result's counts are those of the deciding graph, or of the descent's
+// graph while undecided.
+func (s *Solver) Run(maxPositions int) Result {
+	if s.done {
+		return s.result
+	}
+	if s.cert == nil {
+		r := s.pn.runPN(maxPositions)
 		r.Method = "pn"
-		if opt.BruteForce {
+		if s.opt.BruteForce {
 			r.Method = "brute force"
 		}
+		s.finish(r)
 		return r
 	}
 	var stopPN, stopCert atomic.Bool
 	done := make(chan struct{})
-	if opt.Stop != nil {
+	if s.opt.Stop != nil {
+		stop := s.opt.Stop
 		go func() { // the caller's stop reaches both
 			for {
 				select {
 				case <-done:
 					return
 				case <-time.After(10 * time.Millisecond):
-					if opt.Stop.Load() {
+					if stop.Load() {
 						stopPN.Store(true)
 						stopCert.Store(true)
 					}
@@ -344,40 +411,46 @@ func Solve(root *bitboard.Board, sideToMoveAttacks bool, opt Options) Result {
 			}
 		}()
 	}
-	certOpt := opt
-	certOpt.Stop = &stopCert
+	s.cert.opt.Stop = &stopCert
 	certResult := make(chan Result, 1)
 	go func() {
-		r := solveCertificate(root, sideToMoveAttacks, certOpt)
+		r := s.cert.runCert(maxPositions)
 		r.Method = "certificate"
 		stopPN.Store(true)
 		certResult <- r
 	}()
-	pnOpt := opt
-	pnOpt.Stop = &stopPN
-	rp := solvePN(root, sideToMoveAttacks, pnOpt)
+	s.pn.opt.Stop = &stopPN
+	rp := s.pn.runPN(maxPositions)
 	rp.Method = "pn"
 	stopCert.Store(true)
 	rc := <-certResult
 	close(done)
-	if rp.Outcome != Undecided {
+	switch {
+	case rp.Outcome != Undecided:
+		s.finish(rp)
 		return rp
-	}
-	if rc.Outcome != Undecided {
+	case rc.Outcome != Undecided:
+		s.finish(rc)
 		return rc
 	}
 	rp.Aborted = rp.Aborted || rc.Aborted
 	rp.Stuck = rp.Stuck || rc.Stuck
+	s.finish(rp)
 	return rp
 }
 
-// solvePN answers one question with the proof-number descent.
-func solvePN(root *bitboard.Board, sideToMoveAttacks bool, opt Options) Result {
-	maxPositions := opt.MaxPositions
-	if maxPositions <= 0 {
-		maxPositions = 1 << 26
+// finish keeps a decision and releases the graphs.
+func (s *Solver) finish(r Result) {
+	s.Positions()
+	if r.Outcome != Undecided || r.Stuck {
+		s.done, s.result = true, r
+		s.pn, s.cert = nil, nil
 	}
-	g := newGraph(root, sideToMoveAttacks, opt.LogNumbers, maxPositions)
+}
+
+// newPNSearcher sets up the proof-number descent of a question.
+func newPNSearcher(root *bitboard.Board, sideToMoveAttacks bool, opt Options) *searcher {
+	g := newGraph(root, sideToMoveAttacks, opt.LogNumbers, opt.MaxPositions)
 	s := &searcher{g: g, opt: opt, start: time.Now(), capN: opt.NumberCap}
 	if opt.ProgressEvery <= 0 {
 		s.opt.ProgressEvery = 1 << 20
@@ -385,7 +458,15 @@ func solvePN(root *bitboard.Board, sideToMoveAttacks bool, opt Options) Result {
 	if s.capN == 0 {
 		s.capN = DefaultNumberCap
 	}
+	return s
+}
 
+// runPN continues the proof-number descent up to maxPositions.
+func (s *searcher) runPN(maxPositions int) Result {
+	g := s.g
+	opt := s.opt
+	s.aborted = false
+	g.setBudget(maxPositions)
 	var r Result
 	if opt.BruteForce {
 		for i := 0; i < len(g.recs) && !s.aborted; i++ {
@@ -408,12 +489,12 @@ func solvePN(root *bitboard.Board, sideToMoveAttacks bool, opt Options) Result {
 				if g.status[0] == stSafe || g.AttackerWon(0) {
 					break
 				}
-				r.Resets++
+				s.resets++
 				g.resetNumbers()
 			}
 		}
 	}
-	r.Aborted, r.Stuck, r.Exhausts = s.aborted, s.stuck, s.exhausts
+	r.Aborted, r.Stuck, r.Exhausts, r.Resets = s.aborted, s.stuck, s.exhausts, s.resets
 	switch {
 	case g.AttackerWon(0):
 		r.Outcome = Proven
@@ -444,6 +525,9 @@ type searcher struct {
 	aborted  bool
 	stuck    bool
 	exhausts int
+	resets   int      // descent: heuristic disproofs the fixed point rejected
+	rounds   int      // certificate builder: widening rounds so far
+	frontier []uint32 // certificate builder: the nodes the next closure starts from
 }
 
 func (s *searcher) report(line string) {
@@ -452,10 +536,12 @@ func (s *searcher) report(line string) {
 	}
 }
 
-// expand adds all children of a node and propagates wins.
+// expand adds all children of a node and propagates wins. It aborts (the
+// stop flag, the position budget) before touching the node, never in the
+// middle of it.
 func (s *searcher) expand(i uint32) {
 	g := s.g
-	if g.expansions&1023 == 0 && s.opt.Stop != nil && s.opt.Stop.Load() {
+	if g.full() || g.expansions&1023 == 0 && s.opt.Stop != nil && s.opt.Stop.Load() {
 		s.aborted = true
 		return
 	}
@@ -593,7 +679,13 @@ func (s *searcher) mid(i uint32, thPn, thDn uint32, depth int) (uint32, uint32) 
 		s.report(fmt.Sprintf("%d visits at depth %d: %d positions, %d expansions, node %d pn %d dn %d thresholds %d/%d, %s", g.visits, depth, len(g.recs), g.expansions, i, g.pn[i], g.dn[i], thPn, thDn, fmtDur(time.Since(s.start))))
 	}
 	if s.aborted || depth >= MaxDepth {
-		return thPn, thDn
+		// a threshold is never a decision: an infinite one (the root's, or
+		// passed down along single children) returned as a number would
+		// make the parent's sum infinite, and an infinite number at the
+		// root ends every descent at once without a decision (seen on
+		// KRR-KN after Nh2: 25 million visits per five seconds, no
+		// expansion)
+		return finite(thPn), finite(thDn)
 	}
 	if g.AttackerWon(i) {
 		return 0, Inf
@@ -604,7 +696,7 @@ func (s *searcher) mid(i uint32, thPn, thDn uint32, depth int) (uint32, uint32) 
 	if g.flags[i]&flExpanded == 0 {
 		s.expand(i)
 		if s.aborted {
-			return thPn, thDn
+			return finite(thPn), finite(thDn)
 		}
 		if g.AttackerWon(i) {
 			return 0, Inf
@@ -664,7 +756,7 @@ func (s *searcher) mid(i uint32, thPn, thDn uint32, depth int) (uint32, uint32) 
 			// the best child is decided or a repetition: nothing to search
 			// below on this path, so the parent must move on
 			g.flags[i] &^= flOnPath
-			return max(pn, thPn), max(dn, thDn)
+			return finite(max(pn, thPn)), finite(max(dn, thDn))
 		}
 		cpn, cdn := childNumbers(bi, c)
 		var cThPn, cThDn uint32
@@ -738,6 +830,11 @@ func (s *searcher) mid(i uint32, thPn, thDn uint32, depth int) (uint32, uint32) 
 			if g.defenderHolds(i) {
 				g.flags[i] &^= flOnPath
 				return Inf, 0
+			}
+			if s.aborted {
+				// the budget or the stop flag ended the exhaust: not a decision, not a bug
+				g.flags[i] &^= flOnPath
+				return pn, dn
 			}
 			if !g.AttackerWon(c) && !g.defenderHolds(c) {
 				// cannot happen: a fully expanded subgraph is decided by the fixed point
@@ -1002,6 +1099,9 @@ func lthreshold(th uint32, sumWith func(v uint32) uint32) uint32 {
 	}
 	return v
 }
+
+// finite caps a threshold handed back as a number below Inf.
+func finite(x uint32) uint32 { return min(x, Inf-1) }
 
 // satAdd adds two node numbers, Inf absorbing, finite sums below Inf.
 func satAdd(a, b uint32) uint32 {
