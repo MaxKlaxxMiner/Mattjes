@@ -552,7 +552,7 @@ func (e *Engine) finishSearch(r searchEnd) {
 			}
 		}
 		rep := &reporter{e: e, start: time.Now().Add(-r.elapsed), multiPV: e.multiPV}
-		rep.wdlLines(decided, r.wdl, r.nodes)
+		rep.wdlLines(decided, r.wdl, r.nodes, e.extendPV)
 		what := wdlSummary(r.wdl)
 		if r.aborted {
 			what = "stopped, " + what

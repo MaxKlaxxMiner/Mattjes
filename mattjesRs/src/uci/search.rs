@@ -53,7 +53,7 @@ const MATELIST_BYTES_PER_POSITION: usize = 128;
 const PROGRESS_EVERY: u64 = 1 << 16;
 
 pub fn is_algo(s: &str) -> bool {
-    matches!(s.to_ascii_lowercase().as_str(), "none" | "mateab" | "matepn" | "matelist")
+    matches!(s.to_ascii_lowercase().as_str(), "none" | "mateab" | "matepn" | "matelist" | "fastwdl")
 }
 
 pub fn is_mobility(s: &str) -> bool {
@@ -118,19 +118,22 @@ pub struct SearchEnd {
     /// or the shortest win with MultiPV 1): a background generation of the
     /// root material is paused, nothing would use it now.
     pub answered: bool,
+    /// The WDL search's list (Search fastwdl), best first; None for the mate searches.
+    pub wdl: Option<Vec<super::wdl::WdlEntry>>,
 }
 
 /// The algorithm-independent part of a search result.
 #[derive(Default)]
-struct Core {
-    mate_plies: i32,
-    root: Vec<RootMove>,
-    plies: usize,
-    nodes: u64,
-    aborted: bool,
-    note: String,
+pub(super) struct Core {
+    pub(super) mate_plies: i32,
+    pub(super) root: Vec<RootMove>,
+    pub(super) plies: usize,
+    pub(super) nodes: u64,
+    pub(super) aborted: bool,
+    pub(super) note: String,
     /// The root driver resolved everything that was asked for (see `SearchEnd::answered`).
-    answered: bool,
+    pub(super) answered: bool,
+    pub(super) wdl: Option<Vec<super::wdl::WdlEntry>>,
 }
 
 /// One root move's answer at one depth from the searchers: `proven` = the
@@ -144,10 +147,10 @@ struct ChildResult {
     proven: bool,
     length: i32,
     bound: bool,
-    note: String,
+    pub(super) note: String,
     pv: Vec<Move>,
-    nodes: u64,
-    aborted: bool,
+    pub(super) nodes: u64,
+    pub(super) aborted: bool,
 }
 
 /// The root driver's state of one move.
@@ -164,13 +167,13 @@ struct RootEntry {
 /// the searcher's progress callback and the root driver, hence the interior
 /// mutability: the driver sets the root move under examination, the depth
 /// and the nodes of the finished root moves, the callback prints them.
-struct Reporter<W: Write + Send + 'static> {
-    out: Arc<Mutex<W>>,
-    start: Instant,
+pub(super) struct Reporter<W: Write + Send + 'static> {
+    pub(super) out: Arc<Mutex<W>>,
+    pub(super) start: Instant,
     last: Mutex<Instant>,
-    multi_pv: usize,
+    pub(super) multi_pv: usize,
     /// The root move under examination and its number in the move list.
-    current: Mutex<Option<(Move, usize)>>,
+    pub(super) current: Mutex<Option<(Move, usize)>>,
     base: AtomicU64,
     depth: AtomicUsize,
     /// The main loop's event channel, for the demand knock.
@@ -248,7 +251,7 @@ impl<W: Write + Send + 'static> Reporter<W> {
     }
 
     /// Reports a status line of a phase-based search, at most every few seconds.
-    fn text(&self, line: &str) {
+    pub(super) fn text(&self, line: &str) {
         {
             let mut last = self.last.lock().unwrap();
             if last.elapsed() < PROGRESS_INTERVAL {
@@ -262,11 +265,11 @@ impl<W: Write + Send + 'static> Reporter<W> {
     }
 }
 
-fn nps(nodes: u64, ms: u64) -> u64 {
+pub(super) fn nps(nodes: u64, ms: u64) -> u64 {
     nodes * 1000 / ms.max(1)
 }
 
-fn pv_string(pv: &[Move]) -> String {
+pub(super) fn pv_string(pv: &[Move]) -> String {
     pv.iter().map(|m| m.uci()).collect::<Vec<_>>().join(" ")
 }
 
@@ -334,6 +337,7 @@ impl<W: Write + Send + 'static> Engine<W> {
         }
         let table = if algo == "matelist" { None } else { self.search_table(&algo) };
         let max_positions = (self.hash_mb << 20) / MATELIST_BYTES_PER_POSITION;
+        let max_positions_wdl = (self.hash_mb << 20) / super::wdl::WDL_BYTES_PER_POSITION;
         let set = self.set.take().expect("tables are loaded before searching");
         self.demand = Some(set.demand_handle()); // read by on_demand_tick while the search thread owns the set
         let (out, tx, search_tx) = (self.out.clone(), self.tx.clone(), self.search_tx.clone());
@@ -364,6 +368,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                         (c, Some(SearchTable::Buckets(t)))
                     }
                     ("matelist", table) => (run_matelist(&root, max_plies, max_positions, &stop, &rep), table),
+                    ("fastwdl", table) => (super::wdl::run_wdl(&root, &rep, &known, &stop, max_positions_wdl), table),
                     (_, table) => (Core::default(), table),
                 }
             };
@@ -378,6 +383,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                 aborted: core.aborted || stop.load(Ordering::Relaxed),
                 note: core.note,
                 answered: core.answered,
+                wdl: core.wdl,
             };
             let _ = search_tx.send(end);
             let _ = tx.send(Event::Searched);
@@ -433,7 +439,29 @@ impl<W: Write + Send + 'static> Engine<W> {
             }
         }
         let ms = r.elapsed.as_millis() as u64;
-        if r.mate_plies != 0 && !r.root.is_empty() {
+        if let Some(wdl) = &r.wdl {
+            // the WDL search: the final list (the reporter printed it after
+            // every decision), the best move is the first of the list
+            let decided = wdl.iter().filter(|en| en.class.decided()).count();
+            let multi_pv = self.multi_pv;
+            let lines = {
+                let mut extend = |pv: &[Move]| self.extend_pv(pv);
+                super::wdl::wdl_block(multi_pv, ms, decided, wdl, r.nodes, Some(&mut extend))
+            };
+            for l in lines {
+                self.send(&l);
+            }
+            let mut what = super::wdl::wdl_summary(wdl);
+            if r.aborted {
+                what = format!("stopped, {}", what);
+            }
+            self.send(&format!("info string search: {}, {} positions in {:.1} s", what, egtb::group(r.nodes as usize), ms as f64 / 1000.0));
+            if let Some(first) = wdl.first() {
+                if !(self.table_best && first.method != "table") {
+                    self.pending_best = first.mv.uci();
+                }
+            }
+        } else if r.mate_plies != 0 && !r.root.is_empty() {
             // the first MultiPV root moves: proven ones with their lines continued
             // through the tables, the rest as cp 0 (no mate found behind them);
             // a negative distance means the engine is mated, the list then holds

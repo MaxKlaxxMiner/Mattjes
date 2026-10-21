@@ -306,15 +306,36 @@ ist für Festungen und Pendel-Remis mit kleiner sicherer Menge da, und für
 Gewinne. Eine taktische Vorschau in der Politik (Schach-Gabeln) ist
 notiert, nicht gebaut.
 
+**UCI** `Search fastwdl` ist gebaut (`docs/m6-uci.md`, Abschnitt "Option
+Search fastwdl").
+
+**Rust-Port (2026-10-21):** `src/wdllist/`, `src/tests_wdllist.rs`,
+`src/uci/wdl.rs`. Der reine Beweiszahl-Abstieg (Testbank-Buchstabe `p`)
+ist deterministisch und in Go und Rust zeilenidentisch (zwölf Stellungen,
+51 Zeilen diff-frei): das sind die Regressionswerte. Das Wettrennen liefert
+dieselben Zertifikatgrößen (Randbauer 1.358 Expansionen, falscher Läufer
+49.398), welcher Sucher gewinnt und wie viele Stellungen der Verlierer
+noch anlegte, hängt vom Timing ab. In Rust laufen beide Sucher auf
+Threads mit 16 MB Stack (der Abstieg rekursiert bis 1024 Ebenen mit rund
+4 KB je Ebene), Go-Stacks wachsen von selbst.
+
+Der Port hat einen Fixkostenposten aufgedeckt: Rust brauchte für KQQ-KN
+(4 Expansionen) 160 ms je Frage, Go 43 ms, im UCI 6,6 s statt 2,7 s für
+39 Züge. Ursache war der Store, der je Frage für 16 Mi Stellungen angelegt
+wurde (512 MB): Go bekommt vom Betriebssystem lazy gemappte Nullseiten,
+Rusts Allokator nullt. Seitdem **wächst der Store**: Start bei 2^16 Slots,
+bei "voll" Faktor 4 bis zum Budget, die Keys liegen je Knoten für das
+Umhashen bereit (`Graph.keys`, 16 Byte je Knoten). KQQ-KN damit 4 ms je
+Frage in beiden Sprachen und 0,8 s im UCI, und Rust ist jetzt überall
+schneller (KBB-K 1,84 s statt 2,54 s, falscher Läufer 81 ms statt 121 ms).
+
 **Nächste Hebel**, nach erwartetem Nutzen:
 
-1. UCI `Search fastwdl` mit `wdllist` (Wettrennen) je Wurzelzug, Scores
-   ±9999 / 0 / 1, damit die Suche in Arena sichtbar wird.
-2. Speicher je Knoten: die Go-Slices für Kinder und Eltern kosten
+1. Zeitbudget je Wurzelzug statt Reihenfolge (MultiPV in Arena).
+2. Speicher je Knoten: die Slices/Vecs für Kinder und Eltern kosten
    Allokationen; CSR-Blöcke wie in `matelist` machen den Graphen halb so
    groß und schneller.
 3. Beide Fragen in einem Graphen (die Gewinne der einen Frage sind die
    Verluste der anderen), spart die zweite Frage bei Verlusten.
-4. Rust-Port, dann die Besuche und Expansionen als Regressionswerte.
-5. Politik mit taktischer Vorschau (Schach-Gabeln), für KR-KB-artige
+4. Politik mit taktischer Vorschau (Schach-Gabeln), für KR-KB-artige
    Verteidigungen.

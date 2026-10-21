@@ -119,11 +119,18 @@ const (
 	flRegion                     // scratch flag of exhaust
 )
 
+// initialSlots: the store starts this small and grows fourfold whenever it
+// is full (the keys are kept per node for the rehash): a question that
+// ends after a few thousand positions must not pay for a 512 MB store.
+const initialSlots = 1 << 16
+
 // Graph is the explicit position graph of one question.
 type Graph struct {
 	attackerWhite bool
 	log           bool // numbers on the log scale (Options.LogNumbers)
 	store         *ttstore.Store
+	maxSlots      int
+	keys          [][2]uint64
 	recs          [][bitboard.PackedFixedBytes]byte
 	children      [][]uint32 // child edges per node (nil until expanded)
 	parents       [][]uint32
@@ -174,6 +181,40 @@ func (g *Graph) Index(b *bitboard.Board) (uint32, bool) {
 	return uint32(v), ok
 }
 
+// newGraph sets up the store for maxPositions (grown on demand) and adds
+// the root.
+func newGraph(root *bitboard.Board, sideToMoveAttacks bool, log bool, maxPositions int) *Graph {
+	maxSlots := initialSlots
+	for maxSlots*ttstore.MaxLoadPercent/100 < maxPositions {
+		maxSlots *= 2
+	}
+	g := &Graph{attackerWhite: root.WhiteMove == sideToMoveAttacks, log: log, store: ttstore.NewSlots(min(initialSlots, maxSlots)), maxSlots: maxSlots}
+	g.store.Put(root.Key, 0)
+	g.add(root)
+	return g
+}
+
+// getOrPut returns the node index of a key, inserting it as the next node
+// when it is new (the caller then calls add); grows the store when it is
+// full. ok is false once the position budget is exhausted.
+func (g *Graph) getOrPut(key [2]uint64) (idx uint32, isNew, ok bool) {
+	next := uint64(len(g.recs))
+	v, isNew, ok := g.store.GetOrPut(key, next)
+	if ok {
+		return uint32(v), isNew, true
+	}
+	if g.store.Slots() >= g.maxSlots {
+		return 0, false, false
+	}
+	grown := ttstore.NewSlots(min(g.store.Slots()*4, g.maxSlots))
+	for i, k := range g.keys {
+		grown.Put(k, uint64(i))
+	}
+	g.store = grown
+	v, isNew, ok = g.store.GetOrPut(key, next)
+	return uint32(v), isNew, ok
+}
+
 // AttackerWon reports whether the node is a win for the attacker (attacker
 // to move and winning, or defender to move and losing).
 func (g *Graph) AttackerWon(i uint32) bool {
@@ -207,6 +248,7 @@ func (g *Graph) attackerAt(i uint32) bool { return g.white[i] == g.attackerWhite
 func (g *Graph) add(b *bitboard.Board) uint32 {
 	i := uint32(len(g.recs))
 	g.recs = append(g.recs, b.PackedFixedRecord())
+	g.keys = append(g.keys, b.Key)
 	g.children = append(g.children, nil)
 	g.parents = append(g.parents, nil)
 	g.white = append(g.white, b.WhiteMove)
@@ -335,13 +377,7 @@ func solvePN(root *bitboard.Board, sideToMoveAttacks bool, opt Options) Result {
 	if maxPositions <= 0 {
 		maxPositions = 1 << 26
 	}
-	slots := 1024
-	for slots*ttstore.MaxLoadPercent/100 < maxPositions {
-		slots *= 2
-	}
-	g := &Graph{attackerWhite: root.WhiteMove == sideToMoveAttacks, log: opt.LogNumbers, store: ttstore.NewSlots(slots)}
-	g.store.Put(root.Key, 0)
-	g.add(root)
+	g := newGraph(root, sideToMoveAttacks, opt.LogNumbers, maxPositions)
 	s := &searcher{g: g, opt: opt, start: time.Now(), capN: opt.NumberCap}
 	if opt.ProgressEvery <= 0 {
 		s.opt.ProgressEvery = 1 << 20
@@ -432,12 +468,11 @@ func (s *searcher) expand(i uint32) {
 	for j := 0; j < n; j++ {
 		c := b
 		c.DoMove(buf[j])
-		idx, isNew, ok := g.store.GetOrPut(c.Key, uint64(len(g.recs)))
+		ci, isNew, ok := g.getOrPut(c.Key)
 		if !ok {
 			s.aborted = true
 			return
 		}
-		ci := uint32(idx)
 		if isNew {
 			g.add(&c)
 		}

@@ -193,12 +193,11 @@ func (s *searcher) expandPartial(i uint32, k int) bool {
 		}
 		c := b
 		c.DoMove(moves[j])
-		idx, isNew, ok := g.store.GetOrPut(c.Key, uint64(len(g.recs)))
+		ci, isNew, ok := g.getOrPut(c.Key)
 		if !ok {
 			s.aborted = true
 			return false
 		}
-		ci := uint32(idx)
 		if !isNew && g.hasChild(i, ci) {
 			continue
 		}
@@ -244,16 +243,17 @@ func solveCertificate(root *bitboard.Board, sideToMoveAttacks bool, opt Options)
 	if maxPositions <= 0 {
 		maxPositions = 1 << 26
 	}
-	slots := 1024
-	for slots*ttstore.MaxLoadPercent/100 < maxPositions {
-		slots *= 2
-	}
-	g := &Graph{attackerWhite: root.WhiteMove == sideToMoveAttacks, store: ttstore.NewSlots(slots), defenderConfigs: map[uint64]uint32{}, unsafeLevel: []uint16{}}
+	g := &Graph{attackerWhite: root.WhiteMove == sideToMoveAttacks, defenderConfigs: map[uint64]uint32{}, unsafeLevel: []uint16{}}
 	side := 0
 	if g.attackerWhite {
 		side = 1
 	}
 	g.rootDefender = root.Pieces[side]
+	g.maxSlots = initialSlots
+	for g.maxSlots*ttstore.MaxLoadPercent/100 < maxPositions {
+		g.maxSlots *= 2
+	}
+	g.store = ttstore.NewSlots(min(initialSlots, g.maxSlots))
 	g.store.Put(root.Key, 0)
 	g.add(root)
 	s := &searcher{g: g, opt: opt, start: time.Now(), capN: DefaultNumberCap}

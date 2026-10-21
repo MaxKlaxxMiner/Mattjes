@@ -25,6 +25,7 @@
 //! (debug: print the FEN).
 
 mod search;
+mod wdl;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
@@ -232,7 +233,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                 self.send("option name MultiPV type spin default 1 min 1 max 256");
                 self.send(&format!("option name Threads type spin default {} min 1 max 64", self.workers));
                 self.send(&format!("option name Hash type spin default {} min {} max 65536", DEFAULT_HASH_MB, MIN_HASH_MB));
-                self.send(&format!("option name Search type combo default {} var none var mateab var matepn var matelist", DEFAULT_ALGO));
+                self.send(&format!("option name Search type combo default {} var none var mateab var matepn var matelist var fastwdl", DEFAULT_ALGO));
                 self.send(&format!("option name MatePnMobility type combo default {} var on var off var lazy", DEFAULT_MOBILITY));
                 self.send(&format!("option name MatePnGoal type combo default {} var mate var win", DEFAULT_GOAL));
                 self.send("option name EgtbWriteCache type check default false");

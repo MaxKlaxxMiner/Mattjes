@@ -104,7 +104,7 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 	}
 	opt := wdllist.Options{Epsilon: 8, MaxPositions: maxPositions, Stop: stop, Progress: progress, ProgressEvery: 1 << 22}
 	decided := n - len(open)
-	rep.wdlLines(decided, entries, positions)
+	rep.wdlLines(decided, entries, positions, nil)
 	for _, i := range open {
 		if stop.Load() {
 			break
@@ -130,7 +130,7 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 				break
 			}
 			decided++
-			rep.wdlLines(decided, entries, positions)
+			rep.wdlLines(decided, entries, positions, nil)
 			continue
 		}
 		// the opponent wins? (the root is an attacker node of the child)
@@ -154,7 +154,7 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 			end.aborted = true
 			break
 		}
-		rep.wdlLines(decided, entries, positions)
+		rep.wdlLines(decided, entries, positions, nil)
 	}
 	end.wdl = orderWdl(entries)
 	end.nodes = positions
@@ -178,8 +178,10 @@ func orderWdl(entries []wdlEntry) []wdlEntry {
 
 // wdlLines prints the MultiPV block of the WDL search: one depth per block
 // (the number of decided moves, so that GUIs keep the lines), the score of
-// the class, the winning line continued through the tables.
-func (r *reporter) wdlLines(decided int, entries []wdlEntry, positions uint64) {
+// the class, the winning line as the graph has it (the final block in
+// finishSearch continues it through the tables; the search thread must not
+// touch the tables).
+func (r *reporter) wdlLines(decided int, entries []wdlEntry, positions uint64, extend func([]chess.Move) []chess.Move) {
 	list := orderWdl(entries)
 	ms := time.Since(r.start).Milliseconds()
 	for i, en := range list {
@@ -190,8 +192,8 @@ func (r *reporter) wdlLines(decided int, entries []wdlEntry, positions uint64) {
 		if len(pv) == 0 {
 			pv = []chess.Move{en.move}
 		}
-		if en.class == wdlWin || en.class == wdlLoss {
-			pv = r.e.extendPV(pv)
+		if extend != nil && (en.class == wdlWin || en.class == wdlLoss) {
+			pv = extend(pv)
 		}
 		r.e.send("info depth %d multipv %d score %s nodes %d nps %d time %d pv %s", max(decided, 1), i+1, en.class.score(), positions, nps(positions, ms), ms, pvString(pv))
 	}

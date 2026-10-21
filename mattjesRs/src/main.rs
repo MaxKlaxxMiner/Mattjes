@@ -32,9 +32,11 @@ mod tests_perft;
 mod tests_pn;
 mod tests_tt;
 mod tests_wdl;
+mod tests_wdllist;
 mod tt;
 mod ttstore;
 mod uci;
+mod wdllist;
 mod wdlpn;
 
 fn main() {
@@ -167,7 +169,9 @@ fn experiments() {
     // --- milestone 7: WDL search (docs/m7-wdl-search-design.md), names "" = all WDL_POSITIONS, options m mobility, e/E/x/X epsilon, b buckets, T four-piece base as oracle ---
     // "test <names> <options> <codec>" overrides the arguments from the command line, so variants run without a rebuild
     // 2026-10-21: epsilon 1 (x) is the setting for disproofs, 1/2 (E) ran forever on KP-K rook pawn; sat beats float (docs/m7-wdl-search.md); visits must match Go
-    tests_wdl::wdlpn_solve(&test_arg(0, ""), 256, &test_arg(2, "sat"), &test_arg(1, "mxb"));
+    // tests_wdl::wdlpn_solve(&test_arg(0, ""), 256, &test_arg(2, "sat"), &test_arg(1, "mxb"));
+    // --- step 2: explicit graph (docs/m7-wdl-search.md), "test <names> <options>": B brute force, p descent alone, e/E/x/X epsilon, w/l number variants, v progress; expansions must match Go ---
+    tests_wdllist::wdllist_solve(&test_arg(0, ""), &test_arg(1, "x"));
     // tests_pn::matepn_solve(15, 256, "sat", "mEfb"); // 1,370,235 visits in total (KQ-KN 271,120, KR-KR 1,023,102), 0 proofs evicted, every proof tree complete; identical from 256 MB up (KR-KR 1,022,904 from 1 GB)
     // tests_pn::matepn_solve(15, 256, "sat", "mEf"); // the direct table: 1,156,948 visits, 772 proofs and 3,285 final entries of KR-KR evicted, its proof tree incomplete; swings 5x with the size
     // tests_egtb::egtb_measure(&["KQKBN"], 12, true); // generated in 45 s, checksum 7b54498535f836cb, byte-identical to Go
