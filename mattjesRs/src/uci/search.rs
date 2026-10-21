@@ -60,6 +60,15 @@ pub fn is_mobility(s: &str) -> bool {
     matches!(s.to_ascii_lowercase().as_str(), "on" | "off" | "lazy")
 }
 
+/// The MatePnGoal default: the shortest mate, depth by depth. "win" takes any
+/// won table position as proof (`matepn::Goal::Win`): the mate length is then
+/// an upper bound and the first proven win ends the search.
+pub const DEFAULT_GOAL: &str = "mate";
+
+pub fn is_goal(s: &str) -> bool {
+    matches!(s.to_ascii_lowercase().as_str(), "mate" | "win")
+}
+
 /// What "go" asks for: infinite, a depth bound in plies (mate N = 2N-1 plies,
 /// depth N rounded up to odd) and a time budget (movetime, or a twentieth of
 /// the remaining time plus half the increment).
@@ -127,13 +136,15 @@ struct Core {
 /// One root move's answer at one depth from the searchers: `proven` = the
 /// question of the depth holds (odd plies: the side to move at the child
 /// mates within plies, even: it is mated), `length` = the plies of that mate
-/// along the proof (`bound` = only the depth is known), `pv` = the line from
-/// the child.
+/// along the proof (`bound` = the length is only an upper bound, or with
+/// length 0 only the depth is known; `note` explains why), `pv` = the line
+/// from the child.
 #[derive(Default)]
 struct ChildResult {
     proven: bool,
     length: i32,
     bound: bool,
+    note: String,
     pv: Vec<Move>,
     nodes: u64,
     aborted: bool,
@@ -311,7 +322,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                 s.store(true, Ordering::Relaxed);
             });
         }
-        let (root, algo, mut max_plies, multi_pv, mobility) = (self.board, self.algo.clone(), p.max_plies, self.multi_pv, self.mobility.clone());
+        let (root, algo, mut max_plies, multi_pv, mobility, goal) = (self.board, self.algo.clone(), p.max_plies, self.multi_pv, self.mobility.clone(), self.goal.clone());
         let known = self.root_table.clone();
         if multi_pv == 1 {
             // one line wanted and the table knows a win in n plies: the open
@@ -349,7 +360,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                         (c, Some(SearchTable::Direct(t)))
                     }
                     ("matepn", Some(SearchTable::Buckets(t))) => {
-                        let (c, t) = run_matepn(&root, max_plies, multi_pv, oracle, t, &mobility, &known, &stop, &rep);
+                        let (c, t) = run_matepn(&root, max_plies, multi_pv, oracle, t, &mobility, &goal, &known, &stop, &rep);
                         (c, Some(SearchTable::Buckets(t)))
                     }
                     ("matelist", table) => (run_matelist(&root, max_plies, max_positions, &stop, &rep), table),
@@ -455,7 +466,7 @@ impl<W: Write + Send + 'static> Engine<W> {
         }
         // the replacement balance of df-pn: evicted proofs cost their subtree
         // again, dropped entries are open estimates that found no room
-        if self.table_algo == "matepn" && r.nodes > 0 {
+        if self.table_algo.starts_with("matepn") && r.nodes > 0 {
             if let Some(SearchTable::Buckets(t)) = self.tables.as_mut() {
                 let st = *t.stats();
                 t.reset_stats();
@@ -517,6 +528,9 @@ impl<W: Write + Send + 'static> Engine<W> {
         // entries are never evicted for open estimates (docs/m4-mate-search.md,
         // step 6); mateab from BUCKETS_FROM_MB
         let want_buckets = algo == "matepn" || (algo == "mateab" && self.hash_mb >= BUCKETS_FROM_MB);
+        // the value layout the table holds: the algorithm, and for matepn the
+        // proof goal (mate and win store different facts under the same keys)
+        let key = if algo == "matepn" { format!("{}/{}", algo, self.goal) } else { algo.to_string() };
         let fits = match &self.tables {
             Some(SearchTable::Buckets(_)) => want_buckets,
             Some(SearchTable::Direct(_)) => !want_buckets,
@@ -526,7 +540,7 @@ impl<W: Write + Send + 'static> Engine<W> {
             self.tables = None; // free the old one before allocating the new one
             self.tables = Some(if want_buckets { SearchTable::Buckets(tt::Buckets::new(self.hash_mb)) } else { SearchTable::Direct(tt::Table::new(self.hash_mb)) });
             self.table_mb = self.hash_mb;
-        } else if self.table_algo != algo {
+        } else if self.table_algo != key {
             if let Some(t) = self.tables.as_mut() {
                 t.clear();
             }
@@ -534,7 +548,7 @@ impl<W: Write + Send + 'static> Engine<W> {
         if let Some(SearchTable::Buckets(t)) = self.tables.as_mut() {
             t.set_priority_bits(if algo == "matepn" { matepn::PRIORITY_BITS } else { 0 });
         }
-        self.table_algo = algo.to_string();
+        self.table_algo = key;
         self.tables.take()
     }
 }
@@ -568,6 +582,7 @@ fn run_root<W: Write + Send + 'static>(root: &Board, max_plies: usize, multi_pv:
         .collect();
     let mut nodes = 0u64;
     let mut core = Core::default();
+    let mut win_proven = false;
     for d in 1..=max_plies {
         rep.depth.store(d, Ordering::Relaxed);
         for (i, e) in moves.iter_mut().enumerate() {
@@ -595,7 +610,7 @@ fn run_root<W: Write + Send + 'static>(root: &Board, max_plies: usize, multi_pv:
                 continue;
             }
             // odd child depth: the opponent mates, our loss; even: our win
-            let mut length = if res.bound { d as i32 } else { res.length + 1 };
+            let mut length = if res.length == 0 { d as i32 } else { res.length + 1 }; // length 0: only the depth is known
             if (d - 1) % 2 == 1 {
                 length = -length;
             }
@@ -603,7 +618,8 @@ fn run_root<W: Write + Send + 'static>(root: &Board, max_plies: usize, multi_pv:
             e.rm.mate_plies = length;
             e.rm.pv = std::iter::once(e.rm.mv).chain(res.pv.iter().copied()).collect();
             if res.bound {
-                core.note = "proof tree incomplete (table entries replaced), a mate length is an upper bound".to_string();
+                core.note = res.note.clone();
+                win_proven = win_proven || res.length > 0 && length > 0; // a win proven under the win goal: any guaranteed win ends the search
             }
         }
         core.plies = d;
@@ -613,7 +629,7 @@ fn run_root<W: Write + Send + 'static>(root: &Board, max_plies: usize, multi_pv:
         // (anything shorter would have shown up earlier); a longer win the
         // table knows does not end the check for something shorter
         let all_done = moves.iter().all(|e| e.rm.proven || e.draw);
-        if all_done || (multi_pv == 1 && list.first().is_some_and(|f| f.mate_plies > 0 && f.mate_plies <= d as i32)) {
+        if all_done || (multi_pv == 1 && list.first().is_some_and(|f| f.mate_plies > 0 && (f.mate_plies <= d as i32 || win_proven))) {
             core.answered = true; // nothing left to search for: a background generation is not needed any more
             break;
         }
@@ -668,7 +684,7 @@ fn run_mateab<W: Write + Send + 'static, T: TransTable + 'static>(root: &Board, 
     s.progress = Some(Box::new(move |nodes, _| r2.progress(nodes)));
     let core = run_root(root, max_plies, multi_pv, rep, known, |c, plies| {
         let r = s.solve_depth(c, plies as u32);
-        ChildResult { proven: r.mate_plies != 0, length: r.mate_plies.abs(), bound: false, pv: r.pv, nodes: r.nodes, aborted: r.aborted }
+        ChildResult { proven: r.mate_plies != 0, length: r.mate_plies.abs(), bound: false, pv: r.pv, nodes: r.nodes, aborted: r.aborted, ..Default::default() }
     });
     (core, s.into_table().expect("the table was given"))
 }
@@ -677,10 +693,13 @@ fn run_mateab<W: Write + Send + 'static, T: TransTable + 'static>(root: &Board, 
 /// the leaf initialisation follows the MatePnMobility option), direct-mapped
 /// table.
 #[allow(clippy::too_many_arguments)]
-fn run_matepn<W: Write + Send + 'static, T: TransTable + 'static>(root: &Board, max_plies: usize, multi_pv: usize, oracle: Tables<'_>, table: T, mobility: &str, known: &[super::RootMove], stop: &Arc<AtomicBool>, rep: &Arc<Reporter<W>>) -> (Core, T) {
+fn run_matepn<W: Write + Send + 'static, T: TransTable + 'static>(root: &Board, max_plies: usize, multi_pv: usize, oracle: Tables<'_>, table: T, mobility: &str, goal: &str, known: &[super::RootMove], stop: &Arc<AtomicBool>, rep: &Arc<Reporter<W>>) -> (Core, T) {
     let bits = matepn::codec_bits(&table);
     let mut s = matepn::Searcher::new(oracle, table, matepn::Saturating { bits }, mobility == "on");
     s.lazy_mobility = mobility == "lazy";
+    if goal == "win" {
+        s.goal = matepn::Goal::Win;
+    }
     s.epsilon = 4;
     s.final_entries = true;
     s.stop = Some(stop.clone());
@@ -690,8 +709,17 @@ fn run_matepn<W: Write + Send + 'static, T: TransTable + 'static>(root: &Board, 
     let core = run_root(root, max_plies, multi_pv, rep, known, |c, plies| {
         let r = s.solve(c, plies);
         // proven with mate_plies 0: the proof tree lost entries, the depth is
-        // an upper bound of the length
-        ChildResult { proven: r.proven, length: r.mate_plies.abs(), bound: r.proven && r.mate_plies == 0, pv: r.pv, nodes: r.nodes, aborted: r.aborted }
+        // an upper bound of the length; with the win goal the length is
+        // plies to the table plus its distance
+        let mut res = ChildResult { proven: r.proven, length: r.mate_plies.abs(), pv: r.pv, nodes: r.nodes, aborted: r.aborted, ..Default::default() };
+        if r.proven && r.mate_plies == 0 {
+            res.bound = true;
+            res.note = "proof tree incomplete (table entries replaced), a mate length is an upper bound".to_string();
+        } else if r.bound {
+            res.bound = true;
+            res.note = "win proven (MatePnGoal win): the mate length is an upper bound, plies to the table plus its distance".to_string();
+        }
+        res
     });
     (core, s.into_table())
 }

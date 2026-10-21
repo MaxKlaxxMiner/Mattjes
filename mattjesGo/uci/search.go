@@ -256,7 +256,7 @@ func (e *Engine) startSearch(p goParams) {
 		e.deadline = time.Now().Add(p.budget)
 		e.timer = time.AfterFunc(p.budget, func() { stop.Store(true) })
 	}
-	root, algo, maxPlies, multiPV, mobility := e.board, e.algo, p.maxPlies, e.multiPV, e.mobility
+	root, algo, maxPlies, multiPV, mobility, goal := e.board, e.algo, p.maxPlies, e.multiPV, e.mobility, e.goal
 	known := append([]rootMove(nil), e.rootTable...)
 	if multiPV == 1 {
 		// one line wanted and the table knows a win in n plies: the open
@@ -303,11 +303,22 @@ func (e *Engine) startSearch(p goParams) {
 			s := matepn.New(oracle, pnTable, matepn.Saturating{Bits: matepn.CodecBits(pnTable)}, mobility == "on")
 			s.LazyMobility = mobility == "lazy"
 			s.Epsilon, s.Final, s.Stop, s.ProgressEvery, s.Progress = 4, true, stop, progressEvery, rep.progress
+			if goal == "win" {
+				s.Goal = matepn.GoalWin
+			}
 			r = runRoot(&root, maxPlies, multiPV, rep, known, func(c *bitboard.Board, plies int) childResult {
 				cr := s.Solve(c, plies)
 				// proven with MatePlies 0: the proof tree lost entries, the
-				// depth is an upper bound of the length
-				return childResult{proven: cr.Proven, length: max(cr.MatePlies, -cr.MatePlies), bound: cr.Proven && cr.MatePlies == 0, pv: cr.PV, nodes: cr.Nodes, aborted: cr.Aborted}
+				// depth is an upper bound of the length; with the win goal
+				// the length is plies to the table plus its distance
+				res := childResult{proven: cr.Proven, length: max(cr.MatePlies, -cr.MatePlies), pv: cr.PV, nodes: cr.Nodes, aborted: cr.Aborted}
+				switch {
+				case cr.Proven && cr.MatePlies == 0:
+					res.bound, res.note = true, "proof tree incomplete (table entries replaced), a mate length is an upper bound"
+				case cr.Bound:
+					res.bound, res.note = true, "win proven (MatePnGoal win): the mate length is an upper bound, plies to the table plus its distance"
+				}
+				return res
 			})
 		case "matelist":
 			r = runMatelist(&root, maxPlies, maxPositions, stop, rep)
@@ -318,15 +329,30 @@ func (e *Engine) startSearch(p goParams) {
 	}()
 }
 
+// defaultGoal is the MatePnGoal default: the shortest mate, depth by depth.
+// "win" takes any won table position as proof (matepn.GoalWin): the mate
+// length is then an upper bound and the first proven win ends the search.
+const defaultGoal = "mate"
+
+func isGoal(s string) bool {
+	switch strings.ToLower(s) {
+	case "mate", "win":
+		return true
+	}
+	return false
+}
+
 // childResult is one root move's answer at one depth from the searchers:
 // proven = the question of the depth holds (odd plies: the side to move at
 // the child mates within plies, even: it is mated), length = the plies of
-// that mate along the proof (bound = only the depth is known), pv = the line
+// that mate along the proof (bound = the length is only an upper bound, or
+// with length 0 only the depth is known; note explains why), pv = the line
 // from the child.
 type childResult struct {
 	proven  bool
 	length  int
 	bound   bool
+	note    string
 	pv      []chess.Move
 	nodes   uint64
 	aborted bool
@@ -369,6 +395,7 @@ func runRoot(root *bitboard.Board, maxPlies, multiPV int, rep *reporter, known [
 	}
 	var nodes uint64
 	end := searchEnd{}
+	winProven := false
 	for d := 1; d <= maxPlies; d++ {
 		rep.depth = d
 		for i := range moves {
@@ -400,8 +427,8 @@ func runRoot(root *bitboard.Board, maxPlies, multiPV int, rep *reporter, known [
 			}
 			// odd child depth: the opponent mates, our loss; even: our win
 			length := res.length + 1
-			if res.bound {
-				length = d
+			if res.length == 0 {
+				length = d // only the depth is known
 			}
 			if (d-1)%2 == 1 {
 				length = -length
@@ -409,7 +436,8 @@ func runRoot(root *bitboard.Board, maxPlies, multiPV int, rep *reporter, known [
 			m.rm.Proven, m.rm.MatePlies = true, length
 			m.rm.PV = append([]chess.Move{m.rm.Move}, res.pv...)
 			if res.bound {
-				end.note = "proof tree incomplete (table entries replaced), a mate length is an upper bound"
+				end.note = res.note
+				winProven = winProven || res.length > 0 && length > 0 // a win proven under the win goal: any guaranteed win ends the search
 			}
 		}
 		end.plies = d
@@ -422,7 +450,7 @@ func runRoot(root *bitboard.Board, maxPlies, multiPV int, rep *reporter, known [
 		// one line wanted: a win proven within this depth is the shortest
 		// (anything shorter would have shown up earlier); a longer win the
 		// table knows does not end the check for something shorter
-		if allDone || (multiPV == 1 && len(list) > 0 && list[0].MatePlies > 0 && list[0].MatePlies <= d) {
+		if allDone || (multiPV == 1 && len(list) > 0 && list[0].MatePlies > 0 && (list[0].MatePlies <= d || winProven)) {
 			end.answered = true // nothing left to search for: a background generation is not needed any more
 			break
 		}
@@ -547,7 +575,7 @@ func (e *Engine) finishSearch(r searchEnd) {
 	}
 	// the replacement balance of df-pn: evicted proofs cost their subtree
 	// again, dropped entries are open estimates that found no room
-	if e.tableAlgo == "matepn" && e.buckets != nil && r.nodes > 0 {
+	if strings.HasPrefix(e.tableAlgo, "matepn") && e.buckets != nil && r.nodes > 0 {
 		st := e.buckets.Counters()
 		e.send("info string tt: %s stores, %s replaced (%s proofs, %s finals), %s dropped", egtb.Group(int(st.Stores)), egtb.Group(int(st.Replaced)), egtb.Group(int(st.Evicted[2])), egtb.Group(int(st.Evicted[3])), egtb.Group(int(st.Dropped)))
 		e.buckets.ResetStats()
@@ -600,6 +628,16 @@ func pvString(pv []chess.Move) string {
 	return strings.Join(parts, " ")
 }
 
+// tableKey names the value layout the table holds: the algorithm, and for
+// matepn also the proof goal (mate and win store different facts under the
+// same keys). A different key clears the table before the next search.
+func (e *Engine) tableKey() string {
+	if e.algo == "matepn" {
+		return e.algo + "/" + e.goal
+	}
+	return e.algo
+}
+
 // directTable returns the direct-mapped table for the current algorithm,
 // allocating it with the current Hash size (the bucket table is dropped: one
 // table at a time). Entries of another algorithm are cleared: the value
@@ -609,10 +647,10 @@ func (e *Engine) directTable() *tt.Table {
 		e.buckets = nil
 		e.direct = tt.New(e.hashMB)
 		e.tableMB = e.hashMB
-	} else if e.tableAlgo != e.algo {
+	} else if e.tableAlgo != e.tableKey() {
 		e.direct.Clear()
 	}
-	e.tableAlgo = e.algo
+	e.tableAlgo = e.tableKey()
 	return e.direct
 }
 
@@ -622,10 +660,10 @@ func (e *Engine) bucketTable() *tt.Buckets {
 		e.direct = nil
 		e.buckets = tt.NewBuckets(e.hashMB)
 		e.tableMB = e.hashMB
-	} else if e.tableAlgo != e.algo {
+	} else if e.tableAlgo != e.tableKey() {
 		e.buckets.Clear()
 	}
-	e.tableAlgo = e.algo
+	e.tableAlgo = e.tableKey()
 	return e.buckets
 }
 

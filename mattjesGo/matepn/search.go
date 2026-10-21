@@ -63,6 +63,23 @@ const MaxCodecBits = 20
 // CodecBits is the width a codec for this table should use.
 func CodecBits(t Table) int { return min(t.ValueBits()-PriorityBits, MaxCodecBits) }
 
+// Goal is what a proof means. GoalMate: the attacker mates within the depth,
+// so a table position counts only when its distance fits the remaining depth.
+// GoalWin: the attacker reaches a won table position (or mates) within the
+// depth, whatever the table's distance; the depth is only a horizon, and the
+// proof tree's length (plies to the table plus the table's longest distance
+// along the tree) is an upper bound of the mate (Result.Bound). The win goal
+// makes positions provable whose mate lies far beyond any depth the search
+// could finish: KQ-KBN is mate in 39, but the win is a capture into KQ-KB or
+// KQ-KN a few plies deep. The two goals store different things under the
+// same keys (depth-salted and final entries): a table holds one goal at a time.
+type Goal int
+
+const (
+	GoalMate Goal = iota
+	GoalWin
+)
+
 // MaxPlies is the deepest proof goal (the depth salt table size).
 const MaxPlies = 127
 
@@ -76,6 +93,9 @@ type Result struct {
 	// is mated (even depths). 0 when the tree is incomplete (entries
 	// overwritten).
 	MatePlies int
+	// Bound: MatePlies is an upper bound, not the shortest mate (GoalWin:
+	// plies to the table plus the table's distance along the proof tree).
+	Bound     bool
 	PV        []chess.Move
 	Nodes     uint64 // node visits (each regenerates its moves)
 	Leaves    uint64 // children seen for the first time (no table entry)
@@ -112,6 +132,8 @@ type Searcher struct {
 	// Mated makes SolveShortest search the even depths too ("the side to
 	// move is mated within d"); off in the experiments.
 	Mated bool
+	// Goal: GoalMate (default) or GoalWin, see Goal.
+	Goal Goal
 	// Progress, if set, is called every ProgressEvery visits of a depth (a
 	// power of two, ProgressNodes unless changed).
 	Progress      func(nodes uint64)
@@ -205,6 +227,7 @@ func (s *Searcher) Solve(root *bitboard.Board, plies int) Result {
 		r.MatePlies = max(0, s.proofLength(root, plies, memo)) // -1 = incomplete tree
 		if r.MatePlies > 0 {
 			r.PV = s.proofLine(root, plies, memo)
+			r.Bound = s.Goal == GoalWin
 			if plies%2 == 0 {
 				r.MatePlies = -r.MatePlies // the side to move is mated
 			}
@@ -263,6 +286,9 @@ func (s *Searcher) terminal(b *bitboard.Board, buf *chess.MoveBuffer, depth int)
 	case v == mateab.Draw, attacker && v == mateab.Loss, !attacker && v == mateab.Win:
 		return Inf, 0, 0, true
 	case attacker && v == mateab.Win, !attacker && v == mateab.Loss:
+		if s.Goal == GoalWin {
+			return 0, Inf, 0, true // won, whatever the distance
+		}
 		if lo > depth {
 			return Inf, 0, 0, true // the mate exists but is too long for this depth
 		}
@@ -535,8 +561,8 @@ func (s *Searcher) proofLength(b *bitboard.Board, depth int, memo map[tt.Key]int
 		return l
 	}
 	attacker := depth%2 == 1
-	if v, _, hi := s.probeOracle(b); hi <= depth && ((attacker && v == mateab.Win) || (!attacker && v == mateab.Loss)) {
-		memo[k] = hi // the oracle (endgame table) ended the line, as in terminal
+	if v, _, hi := s.probeOracle(b); (hi <= depth || s.Goal == GoalWin) && ((attacker && v == mateab.Win) || (!attacker && v == mateab.Loss)) {
+		memo[k] = hi // the oracle (endgame table) ended the line, as in terminal; with GoalWin its upper bound
 		return hi
 	}
 	var buf chess.MoveBuffer

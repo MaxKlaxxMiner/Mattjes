@@ -32,7 +32,11 @@ import (
 // moves, the search resolves the exact distance from the bounds), i =
 // iterative deepening, b = bucket table with priority replacement (proofs
 // and final entries are never evicted for open estimates, m4-mate-search.md
-// step 6) instead of the direct-mapped table that always replaces.
+// step 7) instead of the direct-mapped table that always replaces, T = the
+// four-piece base only as oracle (no cache files, so that a five-piece root
+// is searched), w = proof goal "win" (a won table position proves the node
+// whatever its distance, the depth is only a horizon, the mate length is an
+// upper bound; m4-mate-search.md step 8).
 func matepnSolve(maxMateIn int, sizeMB int, codec string, options string) {
 	runMatepn(chess.MatePositions, func(p chess.MatePosition) bool { return p.MateIn <= maxMateIn }, sizeMB, codec, options)
 }
@@ -60,8 +64,13 @@ type pnTable interface {
 
 func runMatepn(positions []chess.MatePosition, selected func(p chess.MatePosition) bool, sizeMB int, codecName string, options string) {
 	has := func(o byte) bool { return strings.IndexByte(options, o) >= 0 }
-	lazy, final, tables, iterative, mated := has('l'), has('f'), has('t'), has('i'), has('M')
+	lazy, final, tables, iterative, mated := has('l'), has('f'), has('t') || has('T'), has('i'), has('M')
 	mobility := has('m') && !lazy
+	goal := matepn.GoalMate
+	goalName := "mate"
+	if has('w') {
+		goal, goalName = matepn.GoalWin, "win"
+	}
 	mobilityName := "off"
 	switch {
 	case lazy:
@@ -102,15 +111,19 @@ func runMatepn(positions []chess.MatePosition, selected func(p chess.MatePositio
 	var set *egtb.Set
 	if tables {
 		set = egtbLoadOrGenerate(12)
-		egtbLoadForPositions(set, positions, selected)
-		oracle = mateab.Tables{Set: set}
 		title = "endgame tables"
+		if has('T') {
+			title = "four-piece tables only"
+		} else {
+			egtbLoadForPositions(set, positions, selected)
+		}
+		oracle = mateab.Tables{Set: set}
 	}
 	mode := "single depth 2N-1"
 	if iterative {
 		mode = "iterative deepening"
 	}
-	fmt.Printf("=== matepn / df-pn, %s, %s %d MB (%d value bits, %d for the codec), codec %s, mobility %s, epsilon %d/8, final %v, mated %v, %s ===\n", mode, layout, sizeMB, table.ValueBits(), matepn.CodecBits(table), codec.Name(), mobilityName, epsilon, final, mated, title)
+	fmt.Printf("=== matepn / df-pn, %s, goal %s, %s %d MB (%d value bits, %d for the codec), codec %s, mobility %s, epsilon %d/8, final %v, mated %v, %s ===\n", mode, goalName, layout, sizeMB, table.ValueBits(), matepn.CodecBits(table), codec.Name(), mobilityName, epsilon, final, mated, title)
 	ok := true
 	var totalNodes uint64
 	var totalTime time.Duration
@@ -127,7 +140,7 @@ func runMatepn(positions []chess.MatePosition, selected func(p chess.MatePositio
 		table.ResetStats()
 		s := matepn.New(oracle, table, codec, mobility)
 		s.LazyMobility = lazy
-		s.Epsilon, s.Final, s.Mated = epsilon, final, mated
+		s.Epsilon, s.Final, s.Mated, s.Goal = epsilon, final, mated, goal
 		start := time.Now()
 		depthStart := start
 		s.Progress = func(nodes uint64) {
@@ -139,10 +152,12 @@ func runMatepn(positions []chess.MatePosition, selected func(p chess.MatePositio
 			last := uint64(0)
 			r = s.SolveShortest(&b, 2*p.MateIn-1, func(plies int, r matepn.Result) {
 				verdict := "no mate"
-				if r.Proven {
+				if r.Proven && r.Bound {
+					verdict = fmt.Sprintf("win, mate <= %d", (r.MatePlies+1)/2)
+				} else if r.Proven {
 					verdict = fmt.Sprintf("mate in %d", (plies+1)/2)
 				}
-				fmt.Printf("    depth %2d: %-10s %14s nodes %9s\n", plies, verdict, perftGroup(r.Nodes-last), fmtMs(time.Since(depthStart)))
+				fmt.Printf("    depth %2d: %-15s %14s nodes %9s\n", plies, verdict, perftGroup(r.Nodes-last), fmtMs(time.Since(depthStart)))
 				last = r.Nodes
 				depthStart = time.Now()
 			})
@@ -168,7 +183,13 @@ func runMatepn(positions []chess.MatePosition, selected func(p chess.MatePositio
 			}
 			if r.MatePlies > 0 {
 				verdict := "the shortest"
-				if r.MatePlies != 2*p.MateIn-1 {
+				switch {
+				case r.Bound && r.MatePlies < 2*p.MateIn-1:
+					verdict = fmt.Sprintf("FAIL: bound below the shortest %d", 2*p.MateIn-1)
+					ok = false
+				case r.Bound:
+					verdict = fmt.Sprintf("upper bound, the shortest is %d", 2*p.MateIn-1)
+				case r.MatePlies != 2*p.MateIn-1:
 					verdict = fmt.Sprintf("shortest is %d", 2*p.MateIn-1)
 					if iterative {
 						verdict = "FAIL: " + verdict

@@ -39,13 +39,19 @@ pub fn matepn_solve_fen(name: &'static str, fen: &'static str, mate_in: u32, siz
 }
 
 /// Option b: a bucket table with priority replacement (proofs and final
-/// entries are never evicted for open estimates, m4-mate-search.md step 6)
-/// instead of the direct-mapped table that always replaces.
+/// entries are never evicted for open estimates, m4-mate-search.md step 7)
+/// instead of the direct-mapped table that always replaces; T: the four-piece
+/// base only as oracle (no cache files, so that a five-piece root is
+/// searched); w: proof goal "win" (a won table position proves the node
+/// whatever its distance, the depth is only a horizon, the mate length is an
+/// upper bound; step 8).
 fn run_matepn(positions: &[MatePosition], selected: &dyn Fn(&MatePosition) -> bool, size_mb: usize, codec: &str, options: &str) {
-    let tables = options.contains('t');
+    let tables = options.contains('t') || options.contains('T');
     let mut set = if tables { Some(tests_egtb::egtb_load_or_generate(12)) } else { None };
     if let Some(set) = set.as_mut() {
-        tests_egtb::egtb_load_for_positions(set, positions, selected);
+        if !options.contains('T') {
+            tests_egtb::egtb_load_for_positions(set, positions, selected);
+        }
     }
     if options.contains('b') {
         let mut table = tt::Buckets::new(size_mb);
@@ -70,8 +76,9 @@ fn run_with_codec<T: TransTable + 'static>(table: T, codec: &str, set: Option<&e
 #[allow(clippy::too_many_arguments)]
 fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, oracle: O, set: Option<&egtb::Set>, positions: &[MatePosition], selected: &dyn Fn(&MatePosition) -> bool, options: &str) {
     let has = |o: char| options.contains(o);
-    let (lazy, final_entries, tables, iterative, mated) = (has('l'), has('f'), has('t'), has('i'), has('M'));
+    let (lazy, final_entries, tables, iterative, mated) = (has('l'), has('f'), has('t') || has('T'), has('i'), has('M'));
     let mobility = has('m') && !lazy;
+    let goal = if has('w') { matepn::Goal::Win } else { matepn::Goal::Mate };
     let mobility_name = if lazy {
         "lazy"
     } else if mobility {
@@ -86,8 +93,9 @@ fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, 
         }
     }
     println!(
-        "=== matepn / df-pn, {}, {} {} MB ({} value bits, {} for the codec), codec {}, mobility {}, epsilon {}/8, final {}, mated {}, {} ===",
+        "=== matepn / df-pn, {}, goal {}, {} {} MB ({} value bits, {} for the codec), codec {}, mobility {}, epsilon {}/8, final {}, mated {}, {} ===",
         if iterative { "iterative deepening" } else { "single depth 2N-1" },
+        if has('w') { "win" } else { "mate" },
         if has('b') { "bucket TT with priority replacement" } else { "direct-mapped TT" },
         (table.slots() * tt::ENTRY_BYTES) >> 20,
         table.value_bits(),
@@ -97,7 +105,13 @@ fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, 
         epsilon,
         final_entries,
         mated,
-        if tables { "endgame tables" } else { "material oracle" }
+        if has('T') {
+            "four-piece tables only"
+        } else if tables {
+            "endgame tables"
+        } else {
+            "material oracle"
+        }
     );
     let mut ok = true;
     let mut total_nodes = 0u64;
@@ -117,6 +131,7 @@ fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, 
         s.epsilon = epsilon;
         s.final_entries = final_entries;
         s.mated = mated;
+        s.goal = goal;
         let start = Instant::now();
         let depth_start = std::rc::Rc::new(std::cell::Cell::new(start));
         let ds = depth_start.clone();
@@ -128,8 +143,14 @@ fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, 
         let r = if iterative {
             let mut last = 0u64;
             s.solve_shortest(&b, want, |plies, r| {
-                let verdict = if r.proven { format!("mate in {}", plies.div_ceil(2)) } else { "no mate".to_string() };
-                println!("    depth {:>2}: {:<10} {:>14} nodes {:>9}", plies, verdict, group(r.nodes - last), fmt_ms(depth_start.get().elapsed()));
+                let verdict = if r.proven && r.bound {
+                    format!("win, mate <= {}", (r.mate_plies + 1) / 2)
+                } else if r.proven {
+                    format!("mate in {}", plies.div_ceil(2))
+                } else {
+                    "no mate".to_string()
+                };
+                println!("    depth {:>2}: {:<15} {:>14} nodes {:>9}", plies, verdict, group(r.nodes - last), fmt_ms(depth_start.get().elapsed()));
                 last = r.nodes;
                 depth_start.set(Instant::now());
             })
@@ -164,7 +185,12 @@ fn run<T: TransTable + 'static, C: Codec, O: Oracle + Copy>(table: T, codec: C, 
             }
             if r.mate_plies > 0 {
                 let mut verdict = "the shortest".to_string();
-                if r.mate_plies != want as i32 {
+                if r.bound && r.mate_plies < want as i32 {
+                    verdict = format!("FAIL: bound below the shortest {}", want);
+                    ok = false;
+                } else if r.bound {
+                    verdict = format!("upper bound, the shortest is {}", want);
+                } else if r.mate_plies != want as i32 {
                     verdict = format!("shortest is {}", want);
                     if iterative {
                         verdict = format!("FAIL: {}", verdict);

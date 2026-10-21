@@ -46,6 +46,23 @@ pub fn codec_bits<T: TransTable>(t: &T) -> u32 {
     (t.value_bits() - PRIORITY_BITS).min(MAX_CODEC_BITS)
 }
 
+/// What a proof means. `Mate`: the attacker mates within the depth, so a
+/// table position counts only when its distance fits the remaining depth.
+/// `Win`: the attacker reaches a won table position (or mates) within the
+/// depth, whatever the table's distance; the depth is only a horizon, and the
+/// proof tree's length (plies to the table plus the table's longest distance
+/// along the tree) is an upper bound of the mate (`Result::bound`). The win
+/// goal makes positions provable whose mate lies far beyond any depth the
+/// search could finish (KQ-KBN: mate in 39, the win is a capture into KQ-KB
+/// or KQ-KN a few plies deep). The two goals store different things under the
+/// same keys: a table holds one goal at a time.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Goal {
+    #[default]
+    Mate,
+    Win,
+}
+
 /// Result of a search.
 #[derive(Clone, Default)]
 pub struct Result {
@@ -58,6 +75,9 @@ pub struct Result {
     /// shortest. Negative when the side to move is mated (even depths). 0 when
     /// the tree is incomplete (entries overwritten).
     pub mate_plies: i32,
+    /// `mate_plies` is an upper bound, not the shortest mate (`Goal::Win`:
+    /// plies to the table plus the table's distance along the proof tree).
+    pub bound: bool,
     pub pv: Vec<Move>,
     /// Node visits (each regenerates its moves).
     pub nodes: u64,
@@ -137,6 +157,8 @@ pub struct Searcher<O: Oracle, T: TransTable, C: Codec> {
     /// Makes `solve_shortest` search the even depths too ("the side to move
     /// is mated within d"); off in the experiments.
     pub mated: bool,
+    /// `Goal::Mate` (default) or `Goal::Win`, see `Goal`.
+    pub goal: Goal,
     /// Called every `progress_every` visits of a depth (a power of two,
     /// `PROGRESS_NODES` unless changed).
     pub progress: Option<ProgressFn<T>>,
@@ -163,7 +185,7 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
         let shift = table.value_bits() - PRIORITY_BITS; // the class sits in the top bits, whatever the codec uses below
         assert!(codec.pack(INF, INF) >> shift == 0, "matepn: the codec leaves no room for the priority bits (use codec_bits)");
         assert!(shift >= 14, "matepn: final entries need 14 value bits below the priority bits");
-        Searcher { oracle, table, codec, mobility, lazy_mobility: false, epsilon: 0, final_entries: false, mated: false, progress: None, progress_every: PROGRESS_NODES, stop: None, aborted: false, prio_shift: shift, value_mask: (1 << shift) - 1, nodes: 0, leaves: 0, tt_hits: 0, final_hits: 0 }
+        Searcher { oracle, table, codec, mobility, lazy_mobility: false, epsilon: 0, final_entries: false, mated: false, goal: Goal::Mate, progress: None, progress_every: PROGRESS_NODES, stop: None, aborted: false, prio_shift: shift, value_mask: (1 << shift) - 1, nodes: 0, leaves: 0, tt_hits: 0, final_hits: 0 }
     }
 
     /// Polls the stop flag every `STOP_NODES` visits.
@@ -207,6 +229,7 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
             let l = self.proof_length(root, plies, &mut memo); // -1 = incomplete tree
             if l > 0 {
                 r.mate_plies = if plies.is_multiple_of(2) { -l } else { l }; // even: the side to move is mated
+                r.bound = self.goal == Goal::Win;
                 r.pv = self.proof_line(root, plies, &memo);
             }
         }
@@ -256,6 +279,7 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
             Verdict::Draw => return (Some((INF, 0)), 0),
             Verdict::Loss if attacker => return (Some((INF, 0)), 0),
             Verdict::Win if !attacker => return (Some((INF, 0)), 0),
+            Verdict::Win | Verdict::Loss if self.goal == Goal::Win => return (Some((0, INF)), 0), // won, whatever the distance
             Verdict::Win | Verdict::Loss if lo as usize > depth => {
                 return (Some((INF, 0)), 0); // the mate exists but is too long for this depth
             }
@@ -470,8 +494,8 @@ impl<O: Oracle, T: TransTable, C: Codec> Searcher<O, T, C> {
         }
         let attacker = depth % 2 == 1;
         let (v, _, hi) = self.oracle.probe(b);
-        if hi as usize <= depth && ((attacker && v == Verdict::Win) || (!attacker && v == Verdict::Loss)) {
-            memo.insert(k, hi as i32); // the oracle (endgame table) ended the line, as in terminal
+        if (hi as usize <= depth || self.goal == Goal::Win) && ((attacker && v == Verdict::Win) || (!attacker && v == Verdict::Loss)) {
+            memo.insert(k, hi as i32); // the oracle (endgame table) ended the line, as in terminal; with Goal::Win its upper bound
             return hi as i32;
         }
         let mut buf = new_buffer();

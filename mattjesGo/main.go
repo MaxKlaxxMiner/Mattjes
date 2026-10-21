@@ -130,7 +130,12 @@ func experiments() {
 	// matepnSolveFEN("KRR-KN after Nh2", "8/8/4k3/8/8/8/RK5n/2R5 w - - 2 2", 7, 256, "sat", "mEft") // 9,988 visits, 3,997 of 14,784 blocks touched (Go = Rust)
 	_ = egtb.CacheBytes
 	// --- replacement by value (docs/m4-mate-search.md, step 7): b = buckets with priority classes (open < disproven < proven < final), the direct table for comparison; visits must match Rust ---
-	matepnSolve(15, 256, "sat", "mEfb") // 1,370,235 visits in total (KQ-KN 271,120, KR-KR 1,023,102), 0 proofs evicted, every proof tree complete; identical from 256 MB up (KR-KR 1,022,904 from 1 GB)
+	// --- proof goal "win" (docs/m4-mate-search.md, step 8): w = a won table position proves the node whatever its distance, T = four-piece base only; without tables the goals coincide (same 1,370,235 visits) ---
+	matepnSolve(15, 256, "sat", "mEfbw")
+	// matepnSolveNamed("KQ-KBN", 1024, "sat", "mEfbTwi") // five pieces with the four-piece tables as oracle: no forced capture into a won table within 21 plies (5.6 M visits, 32 s, Go = Rust), the cost grows 1.8x per two plies; the author runs it further
+	matepnSolveFEN("KRR-KN after Nh2", "8/8/4k3/8/8/8/RK5n/2R5 w - - 2 2", 7, 256, "sat", "mEfbTwi") // the knight must fall: win proven at depth 11 after 294,072 visits, mate in at most 37 plies (one defence ends in a won KR-KN), Go = Rust
+	matepnSolveFEN("KRR-KN after Nh2", "8/8/4k3/8/8/8/RK5n/2R5 w - - 2 2", 7, 256, "sat", "mEfbTi")  // the mate goal for comparison: mate in 13 plies at depth 13 after 1,243,719 visits
+	// matepnSolve(15, 256, "sat", "mEfb") // 1,370,235 visits in total (KQ-KN 271,120, KR-KR 1,023,102), 0 proofs evicted, every proof tree complete; identical from 256 MB up (KR-KR 1,022,904 from 1 GB)
 	// matepnSolve(15, 256, "sat", "mEf") // the direct table: 1,156,948 visits, 772 proofs and 3,285 final entries of KR-KR evicted, its proof tree incomplete; swings 5x with the size
 	// for _, mb := range []int{64, 128, 256, 512, 1024, 2048} { matepnSolveNamed("KQ-KN", mb, "sat", "mEfb"); matepnSolveNamed("KR-KR", mb, "sat", "mEfb") } // the size series of step 7
 	// matepnSolveNamed("pawns", 64, "sat", "mEfiM") // M = even depths too (the side to move is mated), the UCI setting: 7,933 nodes instead of 7,800

@@ -793,3 +793,82 @@ Value, die klassische df-pn-Ersetzung) statt den mit den kleineren Zahlen; und
 Alterung über Suchen hinweg (die Tabelle bleibt zwischen `go`-Kommandos, nur
 `ucinewgame` leert sie; Beweise einer alten Wurzel bleiben gültig, offene
 Einträge anderer Tiefen nicht). Nächster Schritt: Beweisziel "Gewinn".
+
+Nachtrag aus dem UCI-Lauf (KRR-KN nach Nh2, 256 MB, 27 Wurzelzüge bis Tiefe
+13): 20 Beweise und 197 Endeinträge von 5 Mio. Einträgen wurden trotzdem
+verdrängt. Die Klassenregel verhindert nur, dass eine *niedrigere* Klasse eine
+höhere verdrängt; sind alle vier Slots eines Buckets Beweise, fliegt der
+kleinste von ihnen für den nächsten Beweis. Bei 16 GB verschwindet das, bei
+kleinen Tabellen ist es die Grenze des Speichers, nicht der Regel.
+
+## Schritt 8: Beweisziel "Gewinn" (2026-10-16)
+
+Das Ziel aus dem Engine-Vergleich (Schritt 4): Eine gewonnene Tabellenstellung
+ist ein Beweis, egal mit welcher Distanz. `matepn.Goal` kennt `GoalMate`
+(bisher: die Tabellen-Distanz muss in die Resttiefe passen) und `GoalWin`:
+`terminal` beendet einen Knoten mit Gewinn-Verdikt (Angreifer gewinnt,
+Verteidiger verliert) als bewiesen, ohne die Schranken `lo`/`hi` anzusehen;
+die Resttiefe ist nur noch Horizont. Der Beweis heißt dann: "Der Angreifer
+erzwingt innerhalb von d Halbzügen eine gewonnene Tabellenstellung oder das
+Matt." `proofLength` nimmt am Tabellenblatt dessen obere Schranke `hi`, das
+Ergebnis `MatePlies` ist damit "Matt in höchstens k + DTM" (`Result.Bound`),
+mit kompletter Variante bis zum Blatt. Widerlegung bleibt "kein erzwungener
+Gewinn bis d" und verfällt mit der Tiefe, wie bisher. Die beiden Ziele legen
+unter denselben Keys (Tiefensalz und Endeinträge) verschiedene Aussagen ab,
+deshalb hält eine Tabelle nur ein Ziel: Testbank leert pro Stellung, UCI leert
+beim Wechsel der Option (`tableKey` = Algorithmus plus Ziel).
+
+UCI-Option `MatePnGoal` (`mate` Vorgabe, `win`), Testbank-Buchstabe `w`, dazu
+`T` = nur die Vier-Steiner-Basis als Orakel (keine Cache-Dateien, damit eine
+Fünf-Steiner-Wurzel überhaupt gesucht wird). Der Wurzeltreiber meldet einen
+Gewinnbeweis als `score mate N` mit der Schranke und der Zeile `info string
+search: win proven (MatePnGoal win): the mate length is an upper bound ...`;
+bei MultiPV 1 beendet der erste bewiesene Gewinn die Schleife (irgendeine
+garantierte Gewinnvariante, wie vom Autor gewünscht), die Verkürzung bis zum
+kürzesten Matt ist der nächste Schritt (Stufe 2: Mattziel unter der Schranke).
+
+**Messung** (Go = Rust besuchsgenau, Arbeitsrechner, `mEfb` plus Ziel,
+iterativ):
+
+- **Ohne Tabellen fallen die Ziele zusammen:** Testbank bis Matt in 15 mit
+  Material-Orakel liefert unter `w` dieselben 1.370.235 Besuche und dieselben
+  Varianten, nur als "obere Schranke" markiert. Erwartet, aber die Prüfung,
+  dass der Umbau nichts anderes verändert.
+- **KRR-KN nach Nh2, nur Vier-Steiner, Matt in 7 (13 Halbzüge):**
+
+  | Ziel | bewiesen bei Tiefe | Besuche gesamt | Zeit (Rust) | Ergebnis |
+  |---|---|---|---|---|
+  | `mate` | 13 | 1.243.719 | 4,1 s | Matt in 13 Halbzügen, exakt, Rc5 |
+  | `win` | 11 | 294.072 | 1,0 s | Matt in höchstens 37 Halbzügen, Ra3 |
+
+  Die Gewinnlinie `Ra3 Ke5 Rg1 Kf5 Rh3 Ng4 Rxg4` schlägt den Springer nach
+  sieben Halbzügen; die 37 entstehen aus einer anderen Verteidigung, in der der
+  Springer einen Turm nimmt und KR-KN gewonnen bleibt (bis 31 Halbzüge). Die
+  Schranke ist wahr, aber fast dreimal so lang wie das kürzeste Matt: Der
+  Angreifer nimmt im Beweisbaum den *schnellsten Gewinn*, nicht das schnellste
+  Matt. Im UCI (27 Wurzelzüge, der Treiber sucht jeden einzeln) kostet `win`
+  1,67 Mio. gegen 3,33 Mio. Knoten für `mate` und meldet `mate 19` statt
+  `mate 7`.
+- **KQ-KBN, nur Vier-Steiner (die eigentliche Zielstellung, Matt in 39):**
+  bis Horizont 21 kein erzwungener Schlag in eine gewonnene Tabelle, Tiefe 21
+  allein 5,6 Mio. Besuche (26 s Rust), die Kosten wachsen um Faktor 1,8 je zwei
+  Halbzüge. Hochgerechnet liegt Tiefe 31 bei rund 100 Mio. Besuchen (zehn
+  Minuten), Tiefe 41 bei einer Stunde. Ob und wann der Gewinn erzwingbar wird,
+  misst der Autor (`matepnSolveNamed("KQ-KBN", 1024, "sat", "mEfbTwi")`).
+
+Lesart: Das Gewinnziel ersetzt die Mattlänge durch den **Horizont des
+erzwungenen Materialgewinns**, und der ist in KQ-KBN selbst tief: Der
+Verteidiger hält Läufer und Springer lange zusammen, und jede Tiefe muss
+erschöpfend widerlegt werden, bevor die nächste beginnt. Das ist genau die
+Beobachtung des Autors an den anderen Engines: Erst nach 15 bis 20
+vorgespielten Zügen ist der Gewinn nah genug für einen Beweis. Daraus folgt
+die Reihenfolge der nächsten Schritte:
+
+1. **Stufe 2, Verkürzen:** nach dem Gewinnbeweis mit Schranke L das Mattziel
+   unter L weitersuchen (der Treiber kennt die Schranke schon als `known`-Wert).
+2. **Vorgespielte Linien** (Stufe 1 und 2 der Pipeline): den Horizont nicht
+   von der Wurzel aus erschöpfen, sondern entlang einer gespielten Linie
+   Beweise sammeln, die rückwärts die früheren Stellungen beweisbar machen.
+3. **Syzygy-WDL** als Gewinn-Orakel für alles bis sieben Steine: Mit dem
+   Gewinnziel ist jede WDL-Antwort "Gewinn" ein Beweisblatt, ohne eigene
+   Tabelle; `hi` wäre dann `Unbounded`, die Schranke "Gewinn ohne Mattlänge".

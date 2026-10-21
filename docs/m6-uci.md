@@ -384,11 +384,28 @@ Beweiszahlen); und `boardSignature` lief bei vier gleichen Steinen über (K + 4 
 gegen K sah aus wie KNK und ließ den Index-Code abstürzen), jetzt melden vier gleiche
 Steine "keine Tabelle".
 
+## Option MatePnGoal (2026-10-16)
+
+`MatePnGoal` (Combo, `mate` Vorgabe, `win`) wählt das Beweisziel von `matepn`
+(`docs/m4-mate-search.md`, Schritt 8). Mit `win` gilt jede gewonnene
+Tabellenstellung als Beweis, egal wie lang ihr Matt ist; die Suchtiefe ist nur
+noch der Horizont, bis zu dem der Angreifer den Tabellengewinn erzwingen muss.
+Der Wurzeltreiber meldet den Beweis wie ein Matt (`score mate N` mit der
+Schranke "Halbzüge bis zur Tabelle plus deren Distanz" als Länge, die Variante
+bis ins Matt verlängert) und dazu `info string search: win proven (MatePnGoal
+win): the mate length is an upper bound ...`; bei MultiPV 1 beendet der erste
+bewiesene Gewinn die Suche. Der Wechsel der Option leert die Tabelle vor der
+nächsten Suche (`tableKey`: Algorithmus plus Ziel, die beiden Ziele speichern
+verschiedene Aussagen unter denselben Keys). KRR-KN nach Nh2 nur mit den
+Vier-Steinern: `win` liefert `mate 19` nach 1,67 Mio. Knoten bei Tiefe 11,
+`mate` das exakte `mate 7` nach 3,33 Mio. Knoten bei Tiefe 13.
+
 ## Offen
 
-- `matepn` beweist nur "Matt in ≤ N"; der vorgemerkte Schritt (Beweisziel "Gewinn":
-  gewonnene Tabellenstellung = bewiesen, Ergebnis "Matt in höchstens k + DTM") macht
-  KQ-KBN ohne Fünf-Steiner-Datei erst lösbar.
+- Mit `MatePnGoal win` endet die Suche beim ersten Gewinnbeweis; die Verkürzung
+  bis zum kürzesten Matt (Mattziel unter der Schranke) fehlt noch, und
+  `score mate N` zeigt die Schranke, nicht das kürzeste Matt (GUIs können die
+  `info string`-Zeile nicht unterscheiden).
 - MultiPV gilt nur für Tabellenantworten, die Suche liefert eine Variante.
 - Fünfzig-Züge-Regel und Zugwiederholung kennt die Tabelle nicht; DTM-Linien über
   50 Züge (KBBKN, KNNKP) würden in einer Partie remis enden.
