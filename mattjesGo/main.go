@@ -57,6 +57,15 @@ func main() {
 	runCommand(os.Args[1:])
 }
 
+// testArg returns the i-th argument after "test" (or def), so that an
+// experiment can take its parameters from the command line.
+func testArg(i int, def string) string {
+	if len(os.Args) > 2+i {
+		return os.Args[2+i]
+	}
+	return def
+}
+
 // experiments is the console test bench: enable one line at a time, build,
 // then start the binary with "test".
 func experiments() {
@@ -131,10 +140,15 @@ func experiments() {
 	_ = egtb.CacheBytes
 	// --- replacement by value (docs/m4-mate-search.md, step 7): b = buckets with priority classes (open < disproven < proven < final), the direct table for comparison; visits must match Rust ---
 	// --- proof goal "win" (docs/m4-mate-search.md, step 8): w = a won table position proves the node whatever its distance, T = four-piece base only; without tables the goals coincide (same 1,370,235 visits) ---
-	matepnSolve(15, 256, "sat", "mEfbw")
+	// matepnSolve(15, 256, "sat", "mEfbw")
 	// matepnSolveNamed("KQ-KBN", 1024, "sat", "mEfbTwi") // five pieces with the four-piece tables as oracle: no forced capture into a won table within 21 plies (5.6 M visits, 32 s, Go = Rust), the cost grows 1.8x per two plies; the author runs it further
-	matepnSolveFEN("KRR-KN after Nh2", "8/8/4k3/8/8/8/RK5n/2R5 w - - 2 2", 7, 256, "sat", "mEfbTwi") // the knight must fall: win proven at depth 11 after 294,072 visits, mate in at most 37 plies (one defence ends in a won KR-KN), Go = Rust
-	matepnSolveFEN("KRR-KN after Nh2", "8/8/4k3/8/8/8/RK5n/2R5 w - - 2 2", 7, 256, "sat", "mEfbTi")  // the mate goal for comparison: mate in 13 plies at depth 13 after 1,243,719 visits
+	// matepnSolveFEN("KRR-KN after Nh2", "8/8/4k3/8/8/8/RK5n/2R5 w - - 2 2", 7, 256, "sat", "mEfbTwi") // the knight must fall: win proven at depth 11 after 294,072 visits, mate in at most 37 plies (one defence ends in a won KR-KN), Go = Rust
+	// matepnSolveFEN("KRR-KN after Nh2", "8/8/4k3/8/8/8/RK5n/2R5 w - - 2 2", 7, 256, "sat", "mEfbTi")  // the mate goal for comparison: mate in 13 plies at depth 13 after 1,243,719 visits
+
+	// --- milestone 7: WDL search (docs/m7-wdl-search-design.md), names "" = all chess.WdlPositions, options m mobility, e/E/x/X epsilon, b buckets, T four-piece base as oracle ---
+	// "test <names> <options> <codec>" overrides the arguments from the command line, so variants run without a rebuild
+	// 2026-10-21: epsilon 1 (x) is the setting for disproofs, 1/2 (E) ran forever on KP-K rook pawn; sat beats float (docs/m7-wdl-search.md)
+	wdlpnSolve(testArg(0, ""), 256, testArg(2, "sat"), testArg(1, "mxb"))
 	// matepnSolve(15, 256, "sat", "mEfb") // 1,370,235 visits in total (KQ-KN 271,120, KR-KR 1,023,102), 0 proofs evicted, every proof tree complete; identical from 256 MB up (KR-KR 1,022,904 from 1 GB)
 	// matepnSolve(15, 256, "sat", "mEf") // the direct table: 1,156,948 visits, 772 proofs and 3,285 final entries of KR-KR evicted, its proof tree incomplete; swings 5x with the size
 	// for _, mb := range []int{64, 128, 256, 512, 1024, 2048} { matepnSolveNamed("KQ-KN", mb, "sat", "mEfb"); matepnSolveNamed("KR-KR", mb, "sat", "mEfb") } // the size series of step 7

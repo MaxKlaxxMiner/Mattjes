@@ -187,12 +187,11 @@ MultiPV reicht ein bewiesener Gewinn, oder alle Züge Remis/Verlust.
 - Option `Search fastwdl` (neben `none`/`mateab`/`matepn`/`matelist`).
 - Option `Egtb` (`on`/`off`): schaltet eigene Tabellen (und später Syzygy)
   als Orakel ab; totes Material bleibt immer an.
-- Score-Vorschlag: `cp 9999` Gewinn bewiesen, `cp -9999` Verlust bewiesen,
-  `cp 0` Remis bewiesen und unbekannt (intern unterschieden), `cp 10` für
-  [D, W] und `cp -10` für [L, D] als Zwischenstand. Arena zeigt
-  `info string` im MultiPV-Modus nicht, deshalb tragen die Zahlen die
-  Information. Will der Autor Remis und unbekannt auch in Arena
-  unterscheiden, bleibt `cp 1` für unbekannt als Option.
+- Scores (Entscheidung des Autors, 2026-10-21): `cp 9999` Gewinn bewiesen,
+  `cp -9999` Verlust bewiesen, `cp 0` Remis bewiesen, `cp 1` unbekannt
+  (so sieht man in Arena, ob sich Weiterrechnen lohnt), `cp 10` für [D, W]
+  und `cp -10` für [L, D] als Zwischenstand. Arena zeigt `info string` im
+  MultiPV-Modus nicht, deshalb tragen die Zahlen die Information.
 - `wdl`-Feld und `lowerbound`/`upperbound` zusätzlich, wenn sie nichts
   stören; sie sind Standard-UCI, aber Arena zeigt sie vermutlich nicht.
 - Variante: bis zum Terminal (Matt, Patt, Wiederholung mit Angabe des
