@@ -345,60 +345,71 @@ func (g *Graph) board(i uint32) bitboard.Board {
 // the certificate builder (good at draws) on two threads; the first decision
 // wins and stops the other. One Run of a Solver with Options.MaxPositions.
 func Solve(root *bitboard.Board, sideToMoveAttacks bool, opt Options) Result {
-	return NewSolver(root, sideToMoveAttacks, opt).Run(opt.MaxPositions)
+	extra := opt.MaxPositions
+	if extra <= 0 {
+		extra = 1 << 26
+	}
+	return NewSolver(root, sideToMoveAttacks, opt).Run(extra)
 }
 
-// Solver answers one question in instalments: every Run continues the
-// race up to a position budget per graph and keeps both graphs for the
-// next Run, so that a driver can share its time over several questions
-// (the root moves of a position) without restarting them. Once decided,
-// the graphs are released and Run returns the result again.
+// Solver answers questions on one shared pair of graphs (the descent's
+// and the certificate builder's), rooted at one position: the question
+// node is the root itself (Run) or the position after a root move
+// (RunMove). Every run continues the race until the question is decided,
+// the stop flag is set or each graph has grown by the given number of
+// positions (Aborted, call again), and keeps the graphs, so that the root
+// moves of a position share their transpositions and the wins and safe
+// sets found for one move, and a driver can share its time over them
+// without restarting anything. Options.MaxPositions caps each graph.
 type Solver struct {
-	opt    Options
-	pn     *searcher // the proof-number descent
-	cert   *searcher // the certificate builder (nil without the race)
-	result Result
-	done   bool
-	total  int // positions of both graphs (kept after the release)
+	root bitboard.Board
+	opt  Options
+	pn   *searcher // the proof-number descent
+	cert *searcher // the certificate builder (nil without the race)
 }
 
-// NewSolver prepares the question (the graphs hold only the root).
+// NewSolver prepares the graphs (they hold only the root). With
+// sideToMoveAttacks the side to move at the root is the attacker.
 func NewSolver(root *bitboard.Board, sideToMoveAttacks bool, opt Options) *Solver {
-	s := &Solver{opt: opt, pn: newPNSearcher(root, sideToMoveAttacks, opt)}
+	s := &Solver{root: *root, opt: opt, pn: newPNSearcher(root, sideToMoveAttacks, opt)}
 	if !opt.BruteForce && !opt.NoRace {
 		s.cert = newCertSearcher(root, sideToMoveAttacks, opt)
 	}
 	return s
 }
 
-// Positions is the number of positions in both graphs (the memory of the
-// question); after the decision the last count.
+// Positions is the number of positions in both graphs (the memory).
 func (s *Solver) Positions() int {
-	if s.done {
-		return s.total
-	}
-	s.total = len(s.pn.g.recs)
+	n := len(s.pn.g.recs)
 	if s.cert != nil {
-		s.total += len(s.cert.g.recs)
+		n += len(s.cert.g.recs)
 	}
-	return s.total
+	return n
 }
 
-// Run continues the question until it is decided, the stop flag is set or
-// a graph reaches maxPositions (Aborted, call again with a larger budget).
-// The Result's counts are those of the deciding graph, or of the descent's
-// graph while undecided.
-func (s *Solver) Run(maxPositions int) Result {
-	if s.done {
-		return s.result
-	}
+// Run continues the question of the root itself ("the attacker forces a
+// win from the root"); extra is the number of positions each graph may
+// add. The Result's counts are those of the deciding graph, or of the
+// descent's graph while undecided.
+func (s *Solver) Run(extra int) Result {
+	return s.run(&s.root, extra)
+}
+
+// RunMove continues the question of the position after a root move (the
+// root is expanded in each graph on the first such question).
+func (s *Solver) RunMove(m chess.Move, extra int) Result {
+	c := s.root
+	c.DoMove(m)
+	return s.run(&c, extra)
+}
+
+func (s *Solver) run(q *bitboard.Board, extra int) Result {
 	if s.cert == nil {
-		r := s.pn.runPN(maxPositions)
+		r := s.pn.runPN(q, extra)
 		r.Method = "pn"
 		if s.opt.BruteForce {
 			r.Method = "brute force"
 		}
-		s.finish(r)
 		return r
 	}
 	var stopPN, stopCert atomic.Bool
@@ -422,38 +433,54 @@ func (s *Solver) Run(maxPositions int) Result {
 	s.cert.opt.Stop = &stopCert
 	certResult := make(chan Result, 1)
 	go func() {
-		r := s.cert.runCert(maxPositions)
+		r := s.cert.runCert(q, extra)
 		r.Method = "certificate"
 		stopPN.Store(true)
 		certResult <- r
 	}()
 	s.pn.opt.Stop = &stopPN
-	rp := s.pn.runPN(maxPositions)
+	rp := s.pn.runPN(q, extra)
 	rp.Method = "pn"
 	stopCert.Store(true)
 	rc := <-certResult
 	close(done)
 	switch {
 	case rp.Outcome != Undecided:
-		s.finish(rp)
 		return rp
 	case rc.Outcome != Undecided:
-		s.finish(rc)
 		return rc
 	}
 	rp.Aborted = rp.Aborted || rc.Aborted
 	rp.Stuck = rp.Stuck || rc.Stuck
-	s.finish(rp)
 	return rp
 }
 
-// finish keeps a decision and releases the graphs.
-func (s *Solver) finish(r Result) {
-	s.Positions()
-	if r.Outcome != Undecided || r.Stuck {
-		s.done, s.result = true, r
-		s.pn, s.cert = nil, nil
+// begin starts a run: the budget is the graph's size plus extra, capped
+// by Options.MaxPositions.
+func (s *searcher) begin(extra int) {
+	s.aborted = false
+	capN := s.opt.MaxPositions
+	if capN <= 0 {
+		capN = 1 << 26
 	}
+	s.g.setBudget(max(1, min(len(s.g.recs)+extra, capN)))
+}
+
+// locate finds the question node: the root, or a child of the root after
+// a root move (the root is expanded on the first such question; ok is
+// false when that expansion was cut off by the stop flag or the budget).
+func (s *searcher) locate(q *bitboard.Board) (uint32, bool) {
+	g := s.g
+	if q.Key == g.keys[0] {
+		return 0, true
+	}
+	if g.flags[0]&flExpanded == 0 {
+		s.expand(0)
+		if s.aborted {
+			return 0, false
+		}
+	}
+	return g.Index(q)
 }
 
 // newPNSearcher sets up the proof-number descent of a question.
@@ -469,13 +496,17 @@ func newPNSearcher(root *bitboard.Board, sideToMoveAttacks bool, opt Options) *s
 	return s
 }
 
-// runPN continues the proof-number descent up to maxPositions.
-func (s *searcher) runPN(maxPositions int) Result {
+// runPN continues the proof-number descent for the question node q.
+func (s *searcher) runPN(q *bitboard.Board, extra int) Result {
 	g := s.g
 	opt := s.opt
-	s.aborted = false
-	g.setBudget(maxPositions)
+	s.begin(extra)
 	var r Result
+	n, ok := s.locate(q)
+	if !ok {
+		r.Aborted, r.Positions = true, len(g.recs)
+		return r
+	}
 	if opt.BruteForce {
 		for i := 0; i < len(g.recs) && !s.aborted; i++ {
 			if g.status[i] == stUnknown && g.flags[i]&flExpanded == 0 {
@@ -487,14 +518,14 @@ func (s *searcher) runPN(maxPositions int) Result {
 		}
 	} else {
 		for !s.aborted {
-			pn, dn := s.mid(0, Inf, Inf, 0)
-			if g.AttackerWon(0) || g.defenderHolds(0) {
+			pn, dn := s.mid(n, Inf, Inf, 0)
+			if g.AttackerWon(n) || g.defenderHolds(n) {
 				break
 			}
 			if dn == 0 || pn == 0 {
 				// the heuristic decided, the fixed point has to confirm it
 				g.safeSet()
-				if g.defenderHolds(0) || g.AttackerWon(0) {
+				if g.defenderHolds(n) || g.AttackerWon(n) {
 					break
 				}
 				s.resets++
@@ -503,12 +534,20 @@ func (s *searcher) runPN(maxPositions int) Result {
 		}
 	}
 	r.Aborted, r.Stuck, r.Exhausts, r.Resets = s.aborted, s.stuck, s.exhausts, s.resets
+	g.fillResult(&r, n)
+	s.report(fmt.Sprintf("done: %d positions, %d expansions, %d edges, %d visits, %d won, %d fixed-point runs, %d resets, %s", len(g.recs), g.expansions, g.edges, g.visits, r.Won, g.safeChecks, r.Resets, fmtDur(time.Since(s.start))))
+	return r
+}
+
+// fillResult reads the outcome of the question node n and the graph's
+// counters into r.
+func (g *Graph) fillResult(r *Result, n uint32) {
 	switch {
-	case g.AttackerWon(0):
+	case g.AttackerWon(n):
 		r.Outcome = Proven
-	case g.defenderHolds(0):
+	case g.defenderHolds(n):
 		r.Outcome = Disproven
-		r.Safe = g.reachableSafe()
+		r.Safe = g.reachableSafe(n)
 	}
 	for i := range g.status {
 		if g.AttackerWon(uint32(i)) {
@@ -518,11 +557,9 @@ func (s *searcher) runPN(maxPositions int) Result {
 	r.Positions, r.Expansions, r.Edges, r.Visits, r.SafeChecks = len(g.recs), g.expansions, g.edges, g.visits, g.safeChecks
 	if r.Outcome == Proven {
 		g.levels()
-		r.WinPlies = int(g.level[0])
-		r.PV = g.line(0)
+		r.WinPlies = int(g.level[n])
+		r.PV = g.line(n)
 	}
-	s.report(fmt.Sprintf("done: %d positions, %d expansions, %d edges, %d visits, %d won, %d fixed-point runs, %d resets, %s", len(g.recs), g.expansions, g.edges, g.visits, r.Won, g.safeChecks, r.Resets, fmtDur(time.Since(s.start))))
-	return r
 }
 
 type searcher struct {
@@ -946,10 +983,10 @@ func (g *Graph) safeSet() {
 // reachableSafe counts the positions reachable from the root through
 // defender-holding children only, the attacker with all moves, the defender
 // with one (the draw certificate).
-func (g *Graph) reachableSafe() int {
+func (g *Graph) reachableSafe(from uint32) int {
 	seen := make([]bool, len(g.recs))
-	stack := []uint32{0}
-	seen[0] = true
+	stack := []uint32{from}
+	seen[from] = true
 	count := 0
 	for len(stack) > 0 {
 		i := stack[len(stack)-1]

@@ -53,11 +53,8 @@ type wdlEntry struct {
 	move      chess.Move
 	class     wdlClass
 	pv        []chess.Move // the winning line (ours or the opponent's), the move first
-	positions int          // positions of the move's graphs (both questions, both racers)
+	positions int          // positions the shared graphs grew by while this move was asked
 	method    string
-	// solvers keeps the two questions alive between the rounds: 0 "we
-	// win", 1 "the opponent wins"; nil until asked, dropped with the move
-	solvers [2]*wdllist.Solver
 }
 
 // wdlMaterial is the piece value sum of a side without the king (queen 9,
@@ -76,17 +73,6 @@ func wdlMaterial(b *bitboard.Board, white bool) int {
 		sum += v * bits.OnesCount64(b.Pieces[side][kind])
 	}
 	return sum
-}
-
-// graphPositions is the memory of the move's live and finished questions.
-func (en *wdlEntry) graphPositions() int {
-	n := 0
-	for _, s := range en.solvers {
-		if s != nil {
-			n += s.Positions()
-		}
-	}
-	return n
 }
 
 // wdlBytesPerPosition turns the Hash size into the position budget of one
@@ -148,7 +134,11 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 		last = time.Now()
 		rep.text("wdl: " + line)
 	}
-	opt := wdllist.Options{Epsilon: 8, Stop: stop, Progress: progress, ProgressEvery: 1 << 22}
+	opt := wdllist.Options{Epsilon: 8, MaxPositions: maxPositions, Stop: stop, Progress: progress, ProgressEvery: 1 << 22}
+	// two shared graph pairs for all root moves: 0 "we win after the
+	// move" (we attack), 1 "the opponent wins after it"
+	solvers := [2]*wdllist.Solver{wdllist.NewSolver(root, true, opt), wdllist.NewSolver(root, false, opt)}
+	counted := 0 // positions of all graphs booked so far
 	decided := n - len(open)
 	wins := 0
 	for _, en := range entries {
@@ -165,34 +155,32 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 	}
 	budget := min(wdlFirstBudget, maxPositions)
 	for round := 1; len(open) > 0 && wins < multiPV && !end.aborted; round++ {
-		opt.MaxPositions = budget
-		rep.note(fmt.Sprintf("wdl: round %d, %d positions per graph, %d moves open, %d positions so far", round, budget, len(open), positions))
+		rep.note(fmt.Sprintf("wdl: round %d, %d new positions per graph and question, %d moves open, %d positions so far", round, budget, len(open), positions))
 		stillOpen := open[:0]
+		roundStart := counted
 		for _, i := range open {
 			if stop.Load() {
 				end.aborted = true
 				break
 			}
 			m := &entries[i]
-			c := *root
-			c.DoMove(m.move)
 			rep.current, rep.currentNo = m.move, i+1
 			before := m.class
-			ask := func(q int, attacks bool) wdllist.Result {
-				if m.solvers[q] == nil {
-					m.solvers[q] = wdllist.NewSolver(&c, attacks, opt)
-				}
-				r := m.solvers[q].Run(budget)
-				total := m.graphPositions()
-				positions += uint64(total - m.positions)
-				m.positions = total
+			// asks question q for the move with this round's increment and
+			// books what the shared graphs grew by
+			ask := func(q int) wdllist.Result {
+				r := solvers[q].RunMove(m.move, budget)
+				total := solvers[0].Positions() + solvers[1].Positions()
+				positions += uint64(total - counted)
+				m.positions += total - counted
+				counted = total
 				return r
 			}
 			for _, q := range order {
 				if q == 0 && (m.class == wdlUnknown || m.class == wdlNoLoss) {
 					// we win? (the root is a defender node of the child: the
 					// opponent to move, we attack)
-					r := ask(0, false)
+					r := ask(0)
 					switch r.Outcome {
 					case wdllist.Proven:
 						m.class, m.pv, m.method = wdlWin, append([]chess.Move{m.move}, r.PV...), r.Method
@@ -211,7 +199,7 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 					}
 				} else if q == 1 && (m.class == wdlUnknown || m.class == wdlNoWin) {
 					// the opponent wins? (the root is an attacker node of the child)
-					r := ask(1, true)
+					r := ask(1)
 					switch r.Outcome {
 					case wdllist.Proven:
 						m.class, m.pv, m.method = wdlLoss, append([]chess.Move{m.move}, r.PV...), r.Method
@@ -235,7 +223,6 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 			switch m.class {
 			case wdlWin, wdlDraw, wdlLoss:
 				decided++
-				m.solvers = [2]*wdllist.Solver{}
 			default:
 				stillOpen = append(stillOpen, i)
 			}
@@ -249,14 +236,12 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 		if end.aborted {
 			break
 		}
+		progressed := counted > roundStart || len(stillOpen) < len(open)
 		open = stillOpen
-		if budget >= maxPositions {
-			break // the full budget left them open
+		if !progressed {
+			break // the graphs are full and nothing was decided: the rest stays open
 		}
 		budget = min(budget*wdlBudgetGrowth, maxPositions)
-	}
-	for i := range entries {
-		entries[i].solvers = [2]*wdllist.Solver{} // the open graphs go with the search
 	}
 	end.wdl = orderWdl(entries)
 	end.nodes = positions

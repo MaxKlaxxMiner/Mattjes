@@ -459,11 +459,22 @@ Autors `8/8/4k3/8/8/8/R7/K1RN1n2 w` (KRRN gegen KN): erstes `cp 10`
 nach 0,3 s statt 2,7 s, 25 von 27 Zügen "kann nicht verlieren" nach 30 s
 statt rund fünf (`docs/m7-wdl-search.md`, "Der einsame Springer").
 
+**Ein geteilter Graph je Frage (2026-10-22):** statt je Zug und Frage
+eigener Graphen gibt es zwei `wdllist.Solver` für die ganze Suche (wir
+greifen an, der Gegner greift an), die Wurzel ist ihr Knoten 0 und
+`RunMove` fragt das Kind nach dem Zug. Die Züge teilen Transpositionen,
+Gewinne und sichere Mengen, das Rundenbudget ist ein Zuwachs je Lauf und
+Frage (`info string wdl: round 2, 262144 new positions per graph and
+question, 27 moves open, ...`), die Suche endet, wenn eine Runde weder
+wächst noch entscheidet. KRRN-KN: 9 (Go) bzw. 18 (Rust) bewiesene Gewinne
+in 30 s statt null, KRR-KN alle zwölf Verluste in 7,7 s / 5,4 s statt
+12,7 s / 8,5 s (`docs/m7-wdl-search.md`, "Ein geteilter Graph je Frage").
+Speicher: vier Graphen, jeder bis `Hash`·2^20/64 Stellungen.
+
 Offen daran: `Threads` wird nicht beachtet (zwei Threads je Frage);
 Tabellen als Orakel in der Suche fehlen noch (nur die Tabellenstufe an
-der Wurzel); `Hash` als Gesamtbudget über alle lebenden Graphen; der Stop
-kommt bis zu zwei Sekunden nach dem Zeitende, wenn gerade ein Fixpunkt
-über einen großen Graphen läuft.
+der Wurzel); der Stop kommt bis zu zwei Sekunden nach dem Zeitende, wenn
+gerade ein Fixpunkt über einen großen Graphen läuft.
 
 ## Offen
 

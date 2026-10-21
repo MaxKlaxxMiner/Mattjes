@@ -265,11 +265,11 @@ func newCertSearcher(root *bitboard.Board, sideToMoveAttacks bool, opt Options) 
 // the root through open nodes: the frontier of a resumed run, whose
 // interrupted closure lost its queue (the nodes it had added are in the
 // graph, partially expanded defenders keep their move).
-func (g *Graph) openUnexpanded() []uint32 {
+func (g *Graph) openUnexpanded(from uint32) []uint32 {
 	var out []uint32
-	stack := []uint32{0}
-	marked := []uint32{0}
-	g.flags[0] |= flRegion
+	stack := []uint32{from}
+	marked := []uint32{from}
+	g.flags[from] |= flRegion
 	for len(stack) > 0 {
 		i := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
@@ -293,15 +293,26 @@ func (g *Graph) openUnexpanded() []uint32 {
 }
 
 // runCert continues the certificate builder up to maxPositions.
-func (s *searcher) runCert(maxPositions int) Result {
+func (s *searcher) runCert(q *bitboard.Board, extra int) Result {
 	g := s.g
 	opt := s.opt
-	s.aborted = false
-	g.setBudget(maxPositions)
-	if s.rounds > 0 {
-		s.frontier = g.openUnexpanded()
-	}
+	s.begin(extra)
 	var r Result
+	n, ok := s.locate(q)
+	if !ok {
+		r.Aborted, r.Positions = true, len(g.recs)
+		return r
+	}
+	// the stay-put policy measures displacement from the question node
+	side := 0
+	if g.attackerWhite {
+		side = 1
+	}
+	g.rootDefender = q.Pieces[side]
+	// the queue of an interrupted closure is gone (and another question
+	// may have expanded nodes below this one): start from the open nodes
+	// without children below the question node
+	s.frontier = g.openUnexpanded(n)
 	for !s.aborted {
 		s.rounds++
 		s.closure(s.frontier)
@@ -309,14 +320,14 @@ func (s *searcher) runCert(maxPositions int) Result {
 			break
 		}
 		g.safeSet()
-		if g.AttackerWon(0) || g.defenderHolds(0) {
+		if g.AttackerWon(n) || g.defenderHolds(n) {
 			break
 		}
 		if opt.Stop != nil && opt.Stop.Load() {
 			s.aborted = true
 			break
 		}
-		s.frontier = g.unsafeDefenders()
+		s.frontier = g.unsafeDefenders(n)
 		won, safe := 0, 0
 		for i := range g.status {
 			if g.AttackerWon(uint32(i)) {
@@ -333,24 +344,7 @@ func (s *searcher) runCert(maxPositions int) Result {
 	}
 	r.Rounds = s.rounds
 	r.Aborted, r.Stuck = s.aborted, s.stuck
-	switch {
-	case g.AttackerWon(0):
-		r.Outcome = Proven
-	case g.defenderHolds(0):
-		r.Outcome = Disproven
-		r.Safe = g.reachableSafe()
-	}
-	for i := range g.status {
-		if g.AttackerWon(uint32(i)) {
-			r.Won++
-		}
-	}
-	r.Positions, r.Expansions, r.Edges, r.Visits, r.SafeChecks = len(g.recs), g.expansions, g.edges, g.visits, g.safeChecks
-	if r.Outcome == Proven {
-		g.levels()
-		r.WinPlies = int(g.level[0])
-		r.PV = g.line(0)
-	}
+	g.fillResult(&r, n)
 	return r
 }
 
@@ -424,12 +418,12 @@ func (s *searcher) closure(frontier []uint32) {
 // leak is plugged where it springs, the nodes above it become safe with
 // it, and widening them all would multiply the graph by the number of
 // rounds.
-func (g *Graph) unsafeDefenders() []uint32 {
+func (g *Graph) unsafeDefenders(from uint32) []uint32 {
 	var all []uint32
-	stack := []uint32{0}
+	stack := []uint32{from}
 	var marked []uint32
-	g.flags[0] |= flRegion
-	marked = append(marked, 0)
+	g.flags[from] |= flRegion
+	marked = append(marked, from)
 	minLevel := uint16(1<<16 - 1)
 	for len(stack) > 0 {
 		i := stack[len(stack)-1]

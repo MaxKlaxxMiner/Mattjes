@@ -105,11 +105,11 @@ impl Graph {
     /// Collects the defender nodes that still have untried moves, reachable
     /// from the root through unsafe open nodes, closest to the leak first
     /// (unsafe_level within two of the smallest).
-    fn unsafe_defenders(&mut self) -> Vec<u32> {
+    fn unsafe_defenders(&mut self, from: u32) -> Vec<u32> {
         let mut all = Vec::new();
-        let mut stack = vec![0u32];
-        let mut marked = vec![0u32];
-        self.flags[0] |= FL_REGION;
+        let mut stack = vec![from];
+        let mut marked = vec![from];
+        self.flags[from as usize] |= FL_REGION;
         let mut min_level = u16::MAX;
         let levels = self.unsafe_level.as_ref().expect("certificate graph");
         while let Some(i) = stack.pop() {
@@ -117,16 +117,14 @@ impl Graph {
                 all.push(i);
                 min_level = min_level.min(levels[i as usize]);
             }
-            for &c in &self.children[i as usize] {
+            for ci in 0..self.children[i as usize].len() {
+                let c = self.children[i as usize][ci];
                 if self.flags[c as usize] & FL_REGION != 0 || self.status[c as usize] != ST_UNKNOWN {
                     continue;
                 }
+                self.flags[c as usize] |= FL_REGION;
                 marked.push(c);
                 stack.push(c);
-                // the flag is set below (no mutable borrow while iterating)
-            }
-            for &c in &marked {
-                self.flags[c as usize] |= FL_REGION;
             }
         }
         for &i in &marked {
@@ -273,11 +271,11 @@ impl Graph {
     /// through open nodes: the frontier of a resumed run, whose interrupted
     /// closure lost its queue (the nodes it had added are in the graph,
     /// partially expanded defenders keep their move).
-    fn open_unexpanded(&mut self) -> Vec<u32> {
+    fn open_unexpanded(&mut self, from: u32) -> Vec<u32> {
         let mut out = Vec::new();
-        let mut stack = vec![0u32];
-        let mut marked = vec![0u32];
-        self.flags[0] |= FL_REGION;
+        let mut stack = vec![from];
+        let mut marked = vec![from];
+        self.flags[from as usize] |= FL_REGION;
         while let Some(i) = stack.pop() {
             if self.flags[i as usize] & FL_EXPANDED == 0 {
                 out.push(i);
@@ -310,14 +308,22 @@ impl Searcher {
     }
 
     /// Continues the certificate builder up to `max_positions`.
-    pub(crate) fn run_cert(&mut self, max_positions: usize) -> Result {
+    pub(crate) fn run_cert(&mut self, q: &Board, extra: usize) -> Result {
         let s = self;
-        s.aborted = false;
-        s.g.set_budget(max_positions);
-        if s.rounds > 0 {
-            s.frontier = s.g.open_unexpanded();
-        }
+        s.begin(extra);
         let mut r = Result::default();
+        let Some(n) = s.locate(q) else {
+            r.aborted = true;
+            r.positions = s.g.recs.len();
+            return r;
+        };
+        // the stay-put policy measures displacement from the question node
+        let side = s.g.defender_side();
+        s.g.root_defender = q.pieces[side];
+        // the queue of an interrupted closure is gone (and another question
+        // may have expanded nodes below this one): start from the open
+        // nodes without children below the question node
+        s.frontier = s.g.open_unexpanded(n);
         while !s.aborted {
             s.rounds += 1;
             let frontier = std::mem::take(&mut s.frontier);
@@ -326,14 +332,14 @@ impl Searcher {
                 break;
             }
             s.g.safe_set();
-            if s.g.attacker_won(0) || s.g.defender_holds(0) {
+            if s.g.attacker_won(n) || s.g.defender_holds(n) {
                 break;
             }
             if s.stop_requested() {
                 s.aborted = true;
                 break;
             }
-            s.frontier = s.g.unsafe_defenders();
+            s.frontier = s.g.unsafe_defenders(n);
             let (mut won, mut safe) = (0, 0);
             for i in 0..s.g.status.len() {
                 if s.g.attacker_won(i as u32) {
@@ -353,7 +359,7 @@ impl Searcher {
         r.rounds = s.rounds;
         r.aborted = s.aborted;
         r.stuck = s.stuck;
-        s.g.fill_result(&mut r);
+        s.g.fill_result(&mut r, n);
         r
     }
 }

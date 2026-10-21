@@ -475,14 +475,74 @@ Stellungen jetzt) und `test-positions.md`.
 Offen: der Stop kommt in Rust bis zu zwei Sekunden nach dem Zeitende,
 weil `safeSet` über einen großen Graphen das Flag nicht pollt.
 
+## Ein geteilter Graph je Frage für alle Wurzelzüge (2026-10-22)
+
+Bis hierher baute der Treiber je Wurzelzug und Frage ein eigenes
+Graphenpaar: bei 27 Zügen bis zu 108 Graphen, die alle dasselbe Material
+anlegten (die Kinder von Ta3 und Tc2 überschneiden sich massiv), 46 Mio.
+Stellungen in 30 s für die Springer-Stellung des Autors. Jetzt gibt es
+**zwei `Solver` für die ganze Suche**, einen je Frage ("wir greifen an",
+"der Gegner greift an"), jeder mit seinem Graphenpaar (Abstieg und
+Zertifikat-Bauer), die Wurzel ist Knoten 0 und die Wurzelzüge sind ihre
+Kinder:
+
+- `Solver.Run(extra)` fragt die Wurzel selbst (Testbank, `Solve` ist ein
+  einzelner `Run`), `Solver.RunMove(m, extra)` das Kind nach dem Zug.
+  `locate` findet den Frageknoten über den Key und expandiert die Wurzel
+  in jedem Graphen beim ersten `RunMove` (im Zertifikat-Graphen komplett,
+  nicht mit einem Politik-Zug).
+- Das Budget ist ein **Zuwachs je Lauf**: `begin(extra)` setzt die Grenze
+  auf Größe plus `extra`, gedeckelt durch `Options.MaxPositions` je
+  Graph. Jeder Zug bekommt in einer Runde dieselbe Zahl neuer Stellungen,
+  die Runden wachsen weiter um Faktor 4. Die Suche endet, wenn eine Runde
+  weder den Graphen wachsen ließ noch einen Zug entschied (`progressed`).
+- Alle Knotenfunktionen, die bisher bei 0 begannen, nehmen den
+  Frageknoten: `fillResult(r, n)`, `reachableSafe(from)`,
+  `unsafeDefenders(from)`, `openUnexpanded(from)`, `line(n)`. Der
+  Fixpunkt `safeSet`, `levels` und `resetNumbers` bleiben global, was
+  korrekt ist (sicher ist monoton und gilt für jeden Frageknoten).
+- `rootDefender`, der Bezug der Bleib-stehen-Politik, wird je Lauf auf
+  die Stellung des Frageknotens gesetzt.
+- Die Frontier des Zertifikat-Bauers wird je Lauf aus `openUnexpanded(n)`
+  gebildet, weil eine andere Frage inzwischen Knoten unter n expandiert
+  haben kann.
+
+**Was es bringt** (Arbeitsrechner, Hash 1024, MultiPV 64):
+
+| | je Zug eigene Graphen | geteilt, Go | geteilt, Rust |
+|---|---|---|---|
+| KRRN-KN Springer, bewiesene Gewinne nach 30 s | 0 (Go) / 1 (Rust) | 9 | 18 |
+| erster Gewinn | 23 s (Rust) | 17,2 s | 9,9 s |
+| Stellungen nach 30 s | 26 Mio. | 18 Mio. | 26 Mio. |
+| KRR-KN, alle zwölf Verluste | 12,7 s / 8,5 s | 7,7 s | 5,4 s |
+| Stellungen dafür | 12 Mio. | 6,2 Mio. | 6,3 Mio. |
+| KQ-KRR Dauerschach nach 25 s | 10 Verluste, 1 offen | 10 Verluste, 0 offen | 10 Verluste, 0 offen |
+
+Die Gewinne kommen in Kaskade (Go: 17,2 s, 17,9 s, 19,7 s, 20,3 s, 20,6 s,
+21,0 s, 21,2 s, 21,5 s), weil der zweite Zug die Gewinne des ersten im
+Graphen vorfindet. Der reine Abstieg (`px`) über die 14 schnellen
+Stellungen ist unverändert und zeilenidentisch Go = Rust.
+
+**Falle dabei in Rust:** `unsafe_defenders` setzte die `FL_REGION`-Marke
+nicht beim Einreihen, sondern nach jedem Knoten über die ganze Liste der
+bisher Markierten, um den Borrow-Checker zu umgehen. Das war quadratisch,
+fiel mit kleinen Graphen nicht auf und stand mit dem geteilten Graphen
+nach einer halben Sekunde still (keine zweite Runde, kein `bestmove`).
+Jetzt Index-Schleife und Marke sofort, wie in Go.
+
+Speicher: vier Graphen insgesamt, jeder bis `Hash`·2^20/64 Stellungen;
+damit ist `Hash` zum ersten Mal eine echte Obergrenze (mal vier).
+
 **Nächste Hebel**, nach erwartetem Nutzen:
 
 1. Speicher je Knoten: die Slices/Vecs für Kinder und Eltern kosten
    Allokationen; CSR-Blöcke wie in `matelist` machen den Graphen halb so
-   groß und schneller. Dazu `Hash` als Budget über alle lebenden Graphen.
+   groß und schneller. `wdlBytesPerPosition` = 64 ist zu optimistisch
+   (real rund 200 Byte je Stellung mit Kanten).
 2. Beide Fragen in einem Graphen (die Gewinne der einen Frage sind die
-   Verluste der anderen), spart die zweite Frage bei Verlusten; oder gleich
-   der Wurzelgraph einmal gelöst und der Status der Kinder abgelesen.
-3. Politik mit taktischer Vorschau (Schach-Gabeln), für KR-KB-artige
+   Verluste der anderen), spart die zweite Frage bei Verlusten.
+3. Politik: freie Königsfelder statt Klebens, wenn der Angreifer einen
+   Springer hat; taktische Vorschau (Schach-Gabeln) für KR-KB-artige
    Verteidigungen.
-4. `Threads` beachten (mehr Fragen gleichzeitig statt zwei Threads je Frage).
+4. Stop-Flag im Fixpunkt pollen (Stop bis zu zwei Sekunden verspätet).
+5. `Threads` beachten (die zwei Fragen parallel statt nacheinander).

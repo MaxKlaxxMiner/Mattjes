@@ -130,13 +130,14 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
         *l = Instant::now();
         rep_progress.text(&format!("wdl: {}", line));
     });
-    let mut opt = Options { epsilon: 8, max_positions, stop: Some(stop.clone()), progress: Some(progress), progress_every: 1 << 22, ..Default::default() };
+    let opt = Options { epsilon: 8, max_positions, stop: Some(stop.clone()), progress: Some(progress), progress_every: 1 << 22, ..Default::default() };
+    // two shared graph pairs for all root moves: 0 "we win after the
+    // move" (we attack), 1 "the opponent wins after it"
+    let mut solvers = [wdllist::Solver::new(root, true, opt.clone()), wdllist::Solver::new(root, false, opt.clone())];
+    let mut counted = 0usize; // positions of all graphs booked so far
     let mut decided = n - open.len();
     let mut wins = entries.iter().filter(|en| en.class == WdlClass::Win).count();
     rep.wdl_lines(decided, &entries, positions);
-    // the two questions per move stay alive between the rounds: 0 "we
-    // win", 1 "the opponent wins"; None until asked, dropped with the move
-    let mut solvers: Vec<[Option<wdllist::Solver>; 2]> = (0..n).map(|_| [None, None]).collect();
     // the weaker side's question first (wdl_material): 0 = we win, 1 = the
     // opponent wins
     let order: [usize; 2] = if wdl_material(root, !root.white_move) < wdl_material(root, root.white_move) { [1, 0] } else { [0, 1] };
@@ -144,33 +145,32 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
     let mut round = 0;
     while !open.is_empty() && wins < multi_pv && !core.aborted {
         round += 1;
-        opt.max_positions = budget;
-        rep.note(&format!("wdl: round {}, {} positions per graph, {} moves open, {} positions so far", round, budget, open.len(), positions));
+        rep.note(&format!("wdl: round {}, {} new positions per graph and question, {} moves open, {} positions so far", round, budget, open.len(), positions));
         let mut still_open = Vec::with_capacity(open.len());
+        let round_start = counted;
         for &i in &open {
             if stop.load(Ordering::Relaxed) {
                 core.aborted = true;
                 break;
             }
             let mv = entries[i].mv;
-            let mut c = *root;
-            c.do_move(mv);
             *rep.current.lock().unwrap() = Some((mv, i + 1));
             let before = entries[i].class;
-            // asks question q with this round's budget and books the memory
-            // of the move's graphs
-            let mut ask = |q: usize, attacks: bool, entries: &mut Vec<WdlEntry>, positions: &mut u64| {
-                let r = solvers[i][q].get_or_insert_with(|| wdllist::Solver::new(&c, attacks, opt.clone())).run(budget);
-                let total: usize = solvers[i].iter_mut().flatten().map(|s| s.positions()).sum();
-                *positions += (total - entries[i].positions) as u64;
-                entries[i].positions = total;
+            // asks question q for the move with this round's increment and
+            // books what the shared graphs grew by
+            let mut ask = |q: usize, entries: &mut Vec<WdlEntry>, positions: &mut u64, counted: &mut usize| {
+                let r = solvers[q].run_move(mv, budget);
+                let total = solvers[0].positions() + solvers[1].positions();
+                *positions += (total - *counted) as u64;
+                entries[i].positions += total - *counted;
+                *counted = total;
                 r
             };
             for &q in &order {
                 if q == 0 && matches!(entries[i].class, WdlClass::Unknown | WdlClass::NoLoss) {
                     // we win? (the root is a defender node of the child: the
                     // opponent to move, we attack)
-                    let r = ask(0, false, &mut entries, &mut positions);
+                    let r = ask(0, &mut entries, &mut positions, &mut counted);
                     match r.outcome {
                         Outcome::Proven => {
                             entries[i].class = WdlClass::Win;
@@ -190,7 +190,7 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
                     }
                 } else if q == 1 && matches!(entries[i].class, WdlClass::Unknown | WdlClass::NoWin) {
                     // the opponent wins? (the root is an attacker node of the child)
-                    let r = ask(1, true, &mut entries, &mut positions);
+                    let r = ask(1, &mut entries, &mut positions, &mut counted);
                     match r.outcome {
                         Outcome::Proven => {
                             entries[i].class = WdlClass::Loss;
@@ -214,7 +214,6 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
             }
             if entries[i].class.decided() {
                 decided += 1;
-                solvers[i] = [None, None];
             } else {
                 still_open.push(i);
             }
@@ -228,13 +227,14 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
         if core.aborted {
             break;
         }
+        let progressed = counted > round_start || still_open.len() < open.len();
         open = still_open;
-        if budget >= max_positions {
-            break; // the full budget left them open
+        if !progressed {
+            break; // the graphs are full and nothing was decided: the rest stays open
         }
         budget = (budget * WDL_BUDGET_GROWTH).min(max_positions);
     }
-    drop(solvers); // the open graphs go with the search
+    drop(solvers); // the graphs go with the search
     core.nodes = positions;
     core.answered = !core.aborted;
     core.wdl = Some(order_wdl(&entries));
