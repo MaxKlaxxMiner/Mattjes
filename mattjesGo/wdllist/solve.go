@@ -274,7 +274,15 @@ func (g *Graph) add(b *bitboard.Board) uint32 {
 	g.flags = append(g.flags, 0)
 	attacker := b.WhiteMove == g.attackerWhite
 	status, n := stUnknown, 0
-	if v, _, _ := (mateab.Material{}).Probe(b); v == mateab.Draw {
+	attackerSide := 1
+	if g.attackerWhite {
+		attackerSide = 0
+	}
+	// a bare king never gives check, so the attacker can never mate: a
+	// terminal hold, sound without any search (dead material is the
+	// general FIDE 5.2.2 case, this one is the attacker's half of it)
+	bareAttacker := b.ByColor[attackerSide] == b.Pieces[attackerSide][0]
+	if v, _, _ := (mateab.Material{}).Probe(b); v == mateab.Draw || bareAttacker {
 		status = stDrawT
 	} else {
 		var buf chess.MoveBuffer
@@ -480,13 +488,13 @@ func (s *searcher) runPN(maxPositions int) Result {
 	} else {
 		for !s.aborted {
 			pn, dn := s.mid(0, Inf, Inf, 0)
-			if g.AttackerWon(0) || g.status[0] == stSafe {
+			if g.AttackerWon(0) || g.defenderHolds(0) {
 				break
 			}
 			if dn == 0 || pn == 0 {
 				// the heuristic decided, the fixed point has to confirm it
 				g.safeSet()
-				if g.status[0] == stSafe || g.AttackerWon(0) {
+				if g.defenderHolds(0) || g.AttackerWon(0) {
 					break
 				}
 				s.resets++
@@ -498,7 +506,7 @@ func (s *searcher) runPN(maxPositions int) Result {
 	switch {
 	case g.AttackerWon(0):
 		r.Outcome = Proven
-	case g.status[0] == stSafe:
+	case g.defenderHolds(0):
 		r.Outcome = Disproven
 		r.Safe = g.reachableSafe()
 	}

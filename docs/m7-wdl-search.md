@@ -413,6 +413,68 @@ was ohne Abbruch unmöglich wäre). Das war ein Fehlbericht und hätte mit
 dem Solver die Frage fälschlich beendet; jetzt wird nach dem `exhaust` erst
 auf Abbruch geprüft.
 
+## Der einsame Springer: Fragereihenfolge und blanker König (2026-10-21)
+
+Frage des Autors an `8/8/4k3/8/8/8/R7/K1RN1n2 w - - 0 1` (KRRN gegen KN,
+Weiß am Zug, alle 27 Züge gewinnen laut Stockfish/Syzygy): warum steht da
+lange `cp 1`, wo Schwarz mit einem Springer doch nicht gewinnen kann?
+Müsste es nicht sofort `cp 10` sein?
+
+Die Antwort hat einen Grundsatz und zwei Hebel. Der Grundsatz: `cp 10`
+zeigt die Engine nur, wenn "der Gegner gewinnt nicht" **bewiesen** ist,
+und das ist beim einsamen Springer kein Materialsatz. Ein Springer kann
+mattsetzen, wenn die eigenen Figuren dem König die Felder nehmen
+(ersticktes Matt: Ka1 mit eigenen Steinen auf a2, b1, b2, Sc2#); mit zwei
+Türmen und Springer neben dem König ist das sogar nah. Der Terminal "totes
+Material" (FIDE 5.2.2) greift nicht, der Zertifikat-Bauer muss die
+geschlossene Menge wirklich finden. Das ist billig: nach Ne3 widerlegt der
+Abstieg "Schwarz gewinnt" mit 160 Tsd. Stellungen in 0,18 s, die sichere
+Menge hat 1.003 Stellungen. Im UCI dauerte es trotzdem, aus zwei Gründen:
+
+1. **Fragereihenfolge.** Der Treiber fragte je Zug zuerst "gewinnen wir"
+   (KRRN gegen KN: 2,2 Mio. Stellungen, Matt in 108 Halbzügen) und erst
+   dann "gewinnt der Gegner". Die teure Frage fraß je Runde das Budget,
+   bevor die billige drankam. Jetzt kommt **die Frage der materiell
+   schwächeren Seite zuerst** (`wdlMaterial`: Dame 9, Turm 5, Läufer und
+   Springer 3, Bauer 1, ohne König; bei Gleichstand wie bisher "gewinnen
+   wir" zuerst). Beim KRR-KN-Benchmark mit Schwarz am Zug war das schon
+   die alte Reihenfolge.
+2. **Blanker König als Terminal.** Ein Angreifer, der nur noch den König
+   hat, kann nie Schach geben, also nie mattsetzen: `add` setzt solche
+   Knoten auf `stDrawT` ("Verteidiger hält"), ohne Suche, in beiden
+   Sprachen. Vorher musste der Fixpunkt für jede Stellung nach dem
+   Springerverlust eine geschlossene Menge aus Königswanderungen und
+   Turm-Pendeln bauen. Der Beweis nach Ne3 kostet damit 44.781 statt
+   160.291 Stellungen (331 statt 1.003 sichere), und die Fragen mit
+   blankem König an der Wurzel (KP-K Randbauer, Opposition, Frage 2) sind
+   eine Stellung groß.
+
+Dabei fiel ein latenter Fehler: eine Wurzel, die selbst Terminal ist
+(jetzt der blanke König, vorher schon eine mattgesetzte Wurzel), ließ
+`runPN` endlos kreisen, weil die Schleife nur `stSafe` als Abbruch
+kannte, und `runCert` meldete STUCK. Beide prüfen jetzt `defenderHolds`,
+wie das Ergebnis.
+
+Messung (Arbeitsrechner, `go movetime 30000`, Hash 1024, MultiPV 64):
+
+| | vorher | jetzt Go | jetzt Rust |
+|---|---|---|---|
+| erstes `cp 10` | 2,7 s | 0,34 s | 0,17 s |
+| "kann nicht verlieren" nach 4,5 s | 1 Zug | 10 Züge | |
+| nach 30 s | ~5 von 27 | 25 von 27 | 25 von 27 |
+| erster bewiesener Gewinn (Rc3) | – | – | 23 s |
+
+Die zwei übrigen Züge brauchen mehr als 1 Mi Stellungen je Graph für die
+Widerlegung; dort kleben die Türme nach der Politik am König
+(`gluedPieces` +400), was gegen einen Springer das erstickte Matt
+vorbereitet. Die Politik braucht für Springer-Angreifer ein Maß für freie
+Königsfelder statt Klebens; notiert, nicht gebaut. Die zwei Stellungen
+stehen als "KRRN-KN lone knight, white/black" in `WdlPositions` (31
+Stellungen jetzt) und `test-positions.md`.
+
+Offen: der Stop kommt in Rust bis zu zwei Sekunden nach dem Zeitende,
+weil `safeSet` über einen großen Graphen das Flag nicht pollt.
+
 **Nächste Hebel**, nach erwartetem Nutzen:
 
 1. Speicher je Knoten: die Slices/Vecs für Kinder und Eltern kosten

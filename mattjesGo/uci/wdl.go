@@ -2,6 +2,7 @@ package uci
 
 import (
 	"fmt"
+	"math/bits"
 	"sort"
 	"sync/atomic"
 	"time"
@@ -57,6 +58,24 @@ type wdlEntry struct {
 	// solvers keeps the two questions alive between the rounds: 0 "we
 	// win", 1 "the opponent wins"; nil until asked, dropped with the move
 	solvers [2]*wdllist.Solver
+}
+
+// wdlMaterial is the piece value sum of a side without the king (queen 9,
+// rook 5, bishop and knight 3, pawn 1), to ask the weaker side's question
+// first: refuting the win of a lone knight is a small certificate, proving
+// the win of two rooks against it is deep, and the cheap answer ("we
+// cannot lose", cp 10) should not wait behind the expensive one.
+func wdlMaterial(b *bitboard.Board, white bool) int {
+	side := 1
+	if white {
+		side = 0
+	}
+	values := [6]int{0, 9, 5, 3, 3, 1} // kind order K, Q, R, B, N, P
+	sum := 0
+	for kind, v := range values {
+		sum += v * bits.OnesCount64(b.Pieces[side][kind])
+	}
+	return sum
 }
 
 // graphPositions is the memory of the move's live and finished questions.
@@ -138,6 +157,12 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 		}
 	}
 	rep.wdlLines(decided, entries, positions, nil)
+	// the weaker side's question first (wdlMaterial): 0 = we win, 1 = the
+	// opponent wins
+	order := [2]int{0, 1}
+	if wdlMaterial(root, !root.WhiteMove) < wdlMaterial(root, root.WhiteMove) {
+		order = [2]int{1, 0}
+	}
 	budget := min(wdlFirstBudget, maxPositions)
 	for round := 1; len(open) > 0 && wins < multiPV && !end.aborted; round++ {
 		opt.MaxPositions = budget
@@ -163,45 +188,49 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 				m.positions = total
 				return r
 			}
-			// we win? (the root is a defender node of the child: the opponent
-			// to move, we attack); open unless the first question is answered
-			if m.class == wdlUnknown || m.class == wdlNoLoss {
-				r := ask(0, false)
-				switch r.Outcome {
-				case wdllist.Proven:
-					m.class, m.pv, m.method = wdlWin, append([]chess.Move{m.move}, r.PV...), r.Method
-					wins++
-				case wdllist.Disproven:
-					if m.class == wdlNoLoss {
-						m.class = wdlDraw
-					} else {
-						m.class = wdlNoWin
+			for _, q := range order {
+				if q == 0 && (m.class == wdlUnknown || m.class == wdlNoLoss) {
+					// we win? (the root is a defender node of the child: the
+					// opponent to move, we attack)
+					r := ask(0, false)
+					switch r.Outcome {
+					case wdllist.Proven:
+						m.class, m.pv, m.method = wdlWin, append([]chess.Move{m.move}, r.PV...), r.Method
+						wins++
+					case wdllist.Disproven:
+						if m.class == wdlNoLoss {
+							m.class = wdlDraw
+						} else {
+							m.class = wdlNoWin
+						}
+						m.method = r.Method
 					}
-					m.method = r.Method
-				}
-				if r.Aborted && stop.Load() {
-					end.aborted = true
-					break
+					if r.Aborted && stop.Load() {
+						end.aborted = true
+						break
+					}
+				} else if q == 1 && (m.class == wdlUnknown || m.class == wdlNoWin) {
+					// the opponent wins? (the root is an attacker node of the child)
+					r := ask(1, true)
+					switch r.Outcome {
+					case wdllist.Proven:
+						m.class, m.pv, m.method = wdlLoss, append([]chess.Move{m.move}, r.PV...), r.Method
+					case wdllist.Disproven:
+						if m.class == wdlNoWin {
+							m.class = wdlDraw
+						} else {
+							m.class = wdlNoLoss
+						}
+						m.method = r.Method
+					}
+					if r.Aborted && stop.Load() {
+						end.aborted = true
+						break
+					}
 				}
 			}
-			// the opponent wins? (the root is an attacker node of the child)
-			if m.class == wdlUnknown || m.class == wdlNoWin {
-				r := ask(1, true)
-				switch r.Outcome {
-				case wdllist.Proven:
-					m.class, m.pv, m.method = wdlLoss, append([]chess.Move{m.move}, r.PV...), r.Method
-				case wdllist.Disproven:
-					if m.class == wdlNoWin {
-						m.class = wdlDraw
-					} else {
-						m.class = wdlNoLoss
-					}
-					m.method = r.Method
-				}
-				if r.Aborted && stop.Load() {
-					end.aborted = true
-					break
-				}
+			if end.aborted {
+				break
 			}
 			switch m.class {
 			case wdlWin, wdlDraw, wdlLoss:

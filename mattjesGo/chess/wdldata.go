@@ -49,6 +49,8 @@ var WdlPositions = []WdlPosition{
 	{"KQ-KP knight pawn", "7K/8/8/1Q6/8/8/1p6/k7 w - - 0 1", Win, 4, 21, 0, "only four of 25 moves win"},
 	{"KQQ-KN", "7k/5n2/8/8/8/8/Q4Q2/K7 w - - 0 1", Win, 37, 2, 0, ""},
 	{"KRR-KN benchmark, black", "8/8/4k3/8/8/8/RK6/2R2n2 b - - 1 1", Loss, 0, 0, 12, "all twelve moves lose"},
+	{"KRRN-KN lone knight, white", "8/8/4k3/8/8/8/R7/K1RN1n2 w - - 0 1", Win, 27, 0, 0, "the author's position: every move wins, the lone knight never does"},
+	{"KRRN-KN lone knight, black", "8/8/4k3/8/8/4N3/R7/K1R2n2 b - - 1 1", Loss, 0, 0, 10, "after Ne3: the cost of disproving the lone knight's win"},
 	{"KQ-KBN", "8/8/4k3/3bn3/8/4Q3/8/K7 w - - 0 1", Win, 19, 1, 4, "mate in 39, out of reach without tables so far"},
 	{"KQ-KRR", "k7/8/8/8/8/2r5/1r6/K5Q1 w - - 0 1", Win, 3, 8, 10, "only Kb2, Qg8, Qh1 win"},
 	{"KQ-KRB", "k7/8/8/8/8/8/5rb1/K2Q4 w - - 0 1", Win, 2, 12, 7, "only Qd8 and Qa4 win"},

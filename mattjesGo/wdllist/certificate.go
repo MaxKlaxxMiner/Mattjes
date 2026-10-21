@@ -309,7 +309,7 @@ func (s *searcher) runCert(maxPositions int) Result {
 			break
 		}
 		g.safeSet()
-		if g.AttackerWon(0) || g.status[0] == stSafe {
+		if g.AttackerWon(0) || g.defenderHolds(0) {
 			break
 		}
 		if opt.Stop != nil && opt.Stop.Load() {
@@ -336,7 +336,7 @@ func (s *searcher) runCert(maxPositions int) Result {
 	switch {
 	case g.AttackerWon(0):
 		r.Outcome = Proven
-	case g.status[0] == stSafe:
+	case g.defenderHolds(0):
 		r.Outcome = Disproven
 		r.Safe = g.reachableSafe()
 	}

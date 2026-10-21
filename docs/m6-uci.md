@@ -450,9 +450,20 @@ bzw. 11 s (Rust); KQ-KRR Dauerschach nach 25 s zehn Verluste und drei
 "kann nicht gewinnen" (Rust). Speicher: jede offene Frage hält zwei
 Graphen, das `Hash`-Budget gilt je Graph, nicht insgesamt.
 
+**Fragereihenfolge nach Material (2026-10-21):** je Zug kommt die Frage
+der materiell schwächeren Seite zuerst (`wdlMaterial`: Dame 9, Turm 5,
+Läufer/Springer 3, Bauer 1; Gleichstand: "gewinnen wir" zuerst), weil
+deren Widerlegung ein kleines Zertifikat ist und die teure Gewinnfrage
+sie sonst hinter dem Rundenbudget versteckt. Anlass war die Stellung des
+Autors `8/8/4k3/8/8/8/R7/K1RN1n2 w` (KRRN gegen KN): erstes `cp 10`
+nach 0,3 s statt 2,7 s, 25 von 27 Zügen "kann nicht verlieren" nach 30 s
+statt rund fünf (`docs/m7-wdl-search.md`, "Der einsame Springer").
+
 Offen daran: `Threads` wird nicht beachtet (zwei Threads je Frage);
 Tabellen als Orakel in der Suche fehlen noch (nur die Tabellenstufe an
-der Wurzel); `Hash` als Gesamtbudget über alle lebenden Graphen.
+der Wurzel); `Hash` als Gesamtbudget über alle lebenden Graphen; der Stop
+kommt bis zu zwei Sekunden nach dem Zeitende, wenn gerade ein Fixpunkt
+über einen großen Graphen läuft.
 
 ## Offen
 

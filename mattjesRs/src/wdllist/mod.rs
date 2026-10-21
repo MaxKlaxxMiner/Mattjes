@@ -303,7 +303,12 @@ impl Graph {
         let attacker = b.white_move == self.attacker_white;
         let mut status = ST_UNKNOWN;
         let mut n = 0;
-        if Material.probe(b).0 == Verdict::Draw {
+        let attacker_side = if self.attacker_white { 0 } else { 1 };
+        // a bare king never gives check, so the attacker can never mate: a
+        // terminal hold, sound without any search (dead material is the
+        // general FIDE 5.2.2 case, this one is the attacker's half of it)
+        let bare_attacker = b.by_color[attacker_side] == b.pieces[attacker_side][0];
+        if Material.probe(b).0 == Verdict::Draw || bare_attacker {
             status = ST_DRAW_T;
         } else {
             let mut buf = new_buffer();
@@ -603,7 +608,7 @@ impl Graph {
     fn fill_result(&mut self, r: &mut Result) {
         if self.attacker_won(0) {
             r.outcome = Outcome::Proven;
-        } else if self.status[0] == ST_SAFE {
+        } else if self.defender_holds(0) {
             r.outcome = Outcome::Disproven;
             r.safe = self.reachable_safe();
         }
@@ -771,13 +776,13 @@ fn run_pn(&mut self, max_positions: usize) -> Result {
     } else {
         while !s.aborted {
             let (pn, dn) = s.mid(0, INF, INF, 0);
-            if s.g.attacker_won(0) || s.g.status[0] == ST_SAFE {
+            if s.g.attacker_won(0) || s.g.defender_holds(0) {
                 break;
             }
             if dn == 0 || pn == 0 {
                 // the heuristic decided, the fixed point has to confirm it
                 s.g.safe_set();
-                if s.g.status[0] == ST_SAFE || s.g.attacker_won(0) {
+                if s.g.defender_holds(0) || s.g.attacker_won(0) {
                     break;
                 }
                 s.resets += 1;

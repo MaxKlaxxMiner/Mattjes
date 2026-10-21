@@ -163,6 +163,8 @@ muss jeden Wurzelzug einzeln beweisen.
 | KQ-KP Springerbauer | 4 | `7K/8/8/1Q6/8/8/1p6/k7 w - - 0 1` | Gewinn | 4/21/0 | nur vier von 25 Zügen gewinnen, der Rest remis |
 | KQQ-KN | 5 | `7k/5n2/8/8/8/8/Q4Q2/K7 w - - 0 1` | Gewinn | 37/2/0 | Suchfall aus der ersten Tabelle |
 | KRR-KN Benchmark, Schwarz | 5 | `8/8/4k3/8/8/8/RK6/2R2n2 b - - 1 1` | Verlust | 0/0/12 | alle zwölf Züge verlieren; Zeit gegen die 70 s mit Mattdistanz |
+| KRRN-KN einsamer Springer, Weiß | 6 | `8/8/4k3/8/8/8/R7/K1RN1n2 w - - 0 1` | Gewinn | 27/0/0 | Stellung des Autors; alle Züge gewinnen, der Springer allein gewinnt nie, aber das muss die Suche beweisen (ersticktes Matt ist legal) |
+| KRRN-KN einsamer Springer, Schwarz | 6 | `8/8/4k3/8/8/4N3/R7/K1R2n2 b - - 1 1` | Verlust | 0/0/10 | nach Ne3, Matt in höchstens 8; misst die Kosten des Beweises "der Springer gewinnt nicht" |
 | KQ-KBN | 5 | `8/8/4k3/3bn3/8/4Q3/8/K7 w - - 0 1` | Gewinn | 19/1/4 | Matt in 39, ohne Tabelle bisher unerreichbar |
 | KQ-KRR | 5 | `k7/8/8/8/8/2r5/1r6/K5Q1 w - - 0 1` | Gewinn | 3/8/10 | nur `Kb2`, `Dg8`, `Dh1` gewinnen, zehn Züge verlieren |
 | KQ-KRB | 5 | `k7/8/8/8/8/8/5rb1/K2Q4 w - - 0 1` | Gewinn | 2/12/7 | nur `Dd8` und `Da4` gewinnen |

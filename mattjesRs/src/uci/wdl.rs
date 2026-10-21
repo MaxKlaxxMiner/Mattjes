@@ -61,6 +61,17 @@ pub struct WdlEntry {
 /// the author ignores memory for now).
 pub const WDL_BYTES_PER_POSITION: usize = 64;
 
+/// The piece value sum of a side without the king (queen 9, rook 5,
+/// bishop and knight 3, pawn 1), to ask the weaker side's question first:
+/// refuting the win of a lone knight is a small certificate, proving the
+/// win of two rooks against it is deep, and the cheap answer ("we cannot
+/// lose", cp 10) should not wait behind the expensive one.
+fn wdl_material(b: &Board, white: bool) -> u32 {
+    let side = if white { 0 } else { 1 };
+    const VALUES: [u32; 6] = [0, 9, 5, 3, 3, 1]; // kind order K, Q, R, B, N, P
+    VALUES.iter().zip(b.pieces[side].iter()).map(|(v, bb)| v * bb.count_ones()).sum()
+}
+
 /// The optional table extension of a line (the main loop has it, the
 /// search thread does not).
 pub type Extend<'a> = Option<&'a mut dyn FnMut(&[Move]) -> Vec<Move>>;
@@ -126,6 +137,9 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
     // the two questions per move stay alive between the rounds: 0 "we
     // win", 1 "the opponent wins"; None until asked, dropped with the move
     let mut solvers: Vec<[Option<wdllist::Solver>; 2]> = (0..n).map(|_| [None, None]).collect();
+    // the weaker side's question first (wdl_material): 0 = we win, 1 = the
+    // opponent wins
+    let order: [usize; 2] = if wdl_material(root, !root.white_move) < wdl_material(root, root.white_move) { [1, 0] } else { [0, 1] };
     let mut budget = WDL_FIRST_BUDGET.min(max_positions);
     let mut round = 0;
     while !open.is_empty() && wins < multi_pv && !core.aborted {
@@ -152,47 +166,51 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
                 entries[i].positions = total;
                 r
             };
-            // we win? (the root is a defender node of the child: the opponent
-            // to move, we attack); open unless the first question is answered
-            if matches!(entries[i].class, WdlClass::Unknown | WdlClass::NoLoss) {
-                let r = ask(0, false, &mut entries, &mut positions);
-                match r.outcome {
-                    Outcome::Proven => {
-                        entries[i].class = WdlClass::Win;
-                        entries[i].pv = std::iter::once(mv).chain(r.pv.iter().copied()).collect();
-                        entries[i].method = r.method;
-                        wins += 1;
+            for &q in &order {
+                if q == 0 && matches!(entries[i].class, WdlClass::Unknown | WdlClass::NoLoss) {
+                    // we win? (the root is a defender node of the child: the
+                    // opponent to move, we attack)
+                    let r = ask(0, false, &mut entries, &mut positions);
+                    match r.outcome {
+                        Outcome::Proven => {
+                            entries[i].class = WdlClass::Win;
+                            entries[i].pv = std::iter::once(mv).chain(r.pv.iter().copied()).collect();
+                            entries[i].method = r.method;
+                            wins += 1;
+                        }
+                        Outcome::Disproven => {
+                            entries[i].class = if entries[i].class == WdlClass::NoLoss { WdlClass::Draw } else { WdlClass::NoWin };
+                            entries[i].method = r.method;
+                        }
+                        Outcome::Undecided => {}
                     }
-                    Outcome::Disproven => {
-                        entries[i].class = if entries[i].class == WdlClass::NoLoss { WdlClass::Draw } else { WdlClass::NoWin };
-                        entries[i].method = r.method;
+                    if r.aborted && stop.load(Ordering::Relaxed) {
+                        core.aborted = true;
+                        break;
                     }
-                    Outcome::Undecided => {}
-                }
-                if r.aborted && stop.load(Ordering::Relaxed) {
-                    core.aborted = true;
-                    break;
+                } else if q == 1 && matches!(entries[i].class, WdlClass::Unknown | WdlClass::NoWin) {
+                    // the opponent wins? (the root is an attacker node of the child)
+                    let r = ask(1, true, &mut entries, &mut positions);
+                    match r.outcome {
+                        Outcome::Proven => {
+                            entries[i].class = WdlClass::Loss;
+                            entries[i].pv = std::iter::once(mv).chain(r.pv.iter().copied()).collect();
+                            entries[i].method = r.method;
+                        }
+                        Outcome::Disproven => {
+                            entries[i].class = if entries[i].class == WdlClass::NoWin { WdlClass::Draw } else { WdlClass::NoLoss };
+                            entries[i].method = r.method;
+                        }
+                        Outcome::Undecided => {}
+                    }
+                    if r.aborted && stop.load(Ordering::Relaxed) {
+                        core.aborted = true;
+                        break;
+                    }
                 }
             }
-            // the opponent wins? (the root is an attacker node of the child)
-            if matches!(entries[i].class, WdlClass::Unknown | WdlClass::NoWin) {
-                let r = ask(1, true, &mut entries, &mut positions);
-                match r.outcome {
-                    Outcome::Proven => {
-                        entries[i].class = WdlClass::Loss;
-                        entries[i].pv = std::iter::once(mv).chain(r.pv.iter().copied()).collect();
-                        entries[i].method = r.method;
-                    }
-                    Outcome::Disproven => {
-                        entries[i].class = if entries[i].class == WdlClass::NoWin { WdlClass::Draw } else { WdlClass::NoLoss };
-                        entries[i].method = r.method;
-                    }
-                    Outcome::Undecided => {}
-                }
-                if r.aborted && stop.load(Ordering::Relaxed) {
-                    core.aborted = true;
-                    break;
-                }
+            if core.aborted {
+                break;
             }
             if entries[i].class.decided() {
                 decided += 1;

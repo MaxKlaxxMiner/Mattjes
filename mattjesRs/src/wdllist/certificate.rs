@@ -326,7 +326,7 @@ impl Searcher {
                 break;
             }
             s.g.safe_set();
-            if s.g.attacker_won(0) || s.g.status[0] == ST_SAFE {
+            if s.g.attacker_won(0) || s.g.defender_holds(0) {
                 break;
             }
             if s.stop_requested() {
