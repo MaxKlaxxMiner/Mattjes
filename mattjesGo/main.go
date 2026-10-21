@@ -148,7 +148,9 @@ func experiments() {
 	// --- milestone 7: WDL search (docs/m7-wdl-search-design.md), names "" = all chess.WdlPositions, options m mobility, e/E/x/X epsilon, b buckets, T four-piece base as oracle ---
 	// "test <names> <options> <codec>" overrides the arguments from the command line, so variants run without a rebuild
 	// 2026-10-21: epsilon 1 (x) is the setting for disproofs, 1/2 (E) ran forever on KP-K rook pawn; sat beats float (docs/m7-wdl-search.md)
-	wdlpnSolve(testArg(0, ""), 256, testArg(2, "sat"), testArg(1, "mxb"))
+	// wdlpnSolve(testArg(0, ""), 256, testArg(2, "sat"), testArg(1, "mxb"))
+	// --- step 2: explicit graph (docs/m7-wdl-search.md), "test <names> <options>": B brute force (reachable graph), e/E/x/X epsilon, v progress lines ---
+	wdllistSolve(testArg(0, ""), testArg(1, "x"))
 	// matepnSolve(15, 256, "sat", "mEfb") // 1,370,235 visits in total (KQ-KN 271,120, KR-KR 1,023,102), 0 proofs evicted, every proof tree complete; identical from 256 MB up (KR-KR 1,022,904 from 1 GB)
 	// matepnSolve(15, 256, "sat", "mEf") // the direct table: 1,156,948 visits, 772 proofs and 3,285 final entries of KR-KR evicted, its proof tree incomplete; swings 5x with the size
 	// for _, mb := range []int{64, 128, 256, 512, 1024, 2048} { matepnSolveNamed("KQ-KN", mb, "sat", "mEfb"); matepnSolveNamed("KR-KR", mb, "sat", "mEfb") } // the size series of step 7

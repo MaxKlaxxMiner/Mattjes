@@ -140,20 +140,155 @@ der von der Wurzel erreichbare Teil keine offene Front mehr hat, ist alles,
 was nicht gewonnen ist, remis oder besser. Zyklen kosten nichts, es gibt
 keine GHI, keine Schwellen, keine Neu-Expansion.
 
-Vorschlag für Schritt 2 (`wdllist`, Arbeitstitel):
+Vorschlag für Schritt 2 (`wdllist`, Arbeitstitel): erst die
+unbeschnittene Fassung als Referenz, dann Beschneidung für kleine Beweise,
+`wdlpn` bleibt die Messlatte. Was daraus wurde, steht im nächsten
+Abschnitt.
 
-1. Erst die unbeschnittene Fassung: erreichbaren Graphen von der Wurzel
-   aufbauen (Breitensuche mit `ttstore`, wie `matelist`), WDL retrograd
-   über Zähler, beide Fragen in einem Durchgang. Für alle Teststellungen
-   bis vier Steine passt der Raum in den Speicher (KNN-K rund 1 Mio.
-   Stellungen); das ist die exakte, schnelle Referenz und zugleich der
-   Zähler für den Remis-Beweisgraphen.
-2. Dann die Beschneidung, aus der die kleinen Beweise kommen: der
-   Verteidiger expandiert zuerst nur seine Politik-Züge (Wiederholung,
-   Abtausch, Blockade), der Angreifer alle; wird die Wurzel trotzdem
-   gewonnen, bekommen die Verteidigerknoten auf dem Gewinnweg ihre
-   nächsten Züge, und die Propagation läuft inkrementell weiter. Für
-   Gewinne umgekehrt (Angreifer Politik-Züge, Verteidiger alle). Das ist
-   Beweiszahl-Suche auf dem expliziten Graphen, ohne die Zahlen.
-3. `wdlpn` bleibt für die Gewinnseite als Vergleich (und ist dort schon
-   gut), und als Messlatte für Schritt 2.
+## Schritt 2: `wdllist`, der explizite Graph (2026-10-21)
+
+Package `wdllist`, Testbank `wdllistSolve(names, options)` in
+`tests_wdllist.go`, Aufruf `./runMattjesGo.exe test <names> <options>`
+(Buchstaben: `B` Brute Force, `p` nur Beweiszahl-Abstieg, `e/E/x/X` ε,
+`w` weite gespeicherte Zahlen, `l` Log-Maßstab, `v` Fortschrittszeilen;
+Vorgabe `x`). Go, ein Thread je Suche; Rust folgt.
+
+**Was gebaut ist.** Knoten (32-Byte-Satz, Status, Seite, Zugzahl, offene
+Züge, pn/dn) und Kanten (Kinder- und Elternlisten) liegen im Speicher,
+`ttstore` bildet Key auf Index ab. Drei Mechanismen teilen sich den
+Graphen:
+
+- **Gewinne exakt und inkrementell:** ein Knoten ist gewonnen, sobald ein
+  Kind verloren ist, verloren, sobald alle legalen Züge gewonnen sind
+  (Zähler `remaining`, nicht ausprobierte Züge bleiben offen, darum ist
+  jeder Zwischenstand korrekt). `propagate` schiebt Entscheidungen zu den
+  Eltern.
+- **Remis exakt als Fixpunkt (`safeSet`):** unsicher ist, was der Angreifer
+  noch gewinnen könnte, die kleinste Menge aus gewonnenen Knoten,
+  unexpandierten Knoten und Angreiferknoten mit offenen Zügen, nach oben
+  propagiert (Angreifer: ein unsicheres Kind reicht, Verteidiger: alle
+  Kinder unsicher). Der Rest ist sicher, bleibt es für immer und wird
+  Status. **Keine Wiederholungserkennung, keine GHI:** ein Zyklus ohne
+  Gewinn ist einfach nie gewonnen.
+- **Zwei Sucher, die sich den Fall teilen**, je Frage als Wettrennen auf
+  zwei Threads, der erste Beweis stoppt den anderen:
+  1. **Beweiszahl-Abstieg** (`solvePN`): `mid` wie in `wdlpn`, die Kinder
+     aus dem Graphen statt aus der TT, Kinder auf dem Pfad zählen als
+     Remis (pn ∞, dn 0), gespeicherte Zahlen bei 1022 gestutzt wie der
+     `sat`-Codec, lebende Summen und Schwellen nicht. Gut bei Gewinnen.
+  2. **Zertifikat-Bauer** (`solveCertificate`): jeder Verteidigerknoten
+     bekommt einen Politik-Zug, jeder Angreiferknoten alle; der
+     Breitensuche-Abschluss davon ist ein Kandidat, der Fixpunkt prüft ihn;
+     hält er nicht, bekommen nur die unsicheren Verteidigerknoten
+     (erreichbar über unsichere Knoten) ihren nächsten Zug. Politik
+     (`policyScore`): bekannte sichere Stellung oder Terminal-Remis zuerst,
+     bekannte Gewinne und Matt zuletzt, dann **bleib stehen** (Chebyshev-
+     Abstand jedes eigenen Steins zum nächsten Wurzelfeld seiner Art, −300
+     je Schritt), nichts hängen lassen (−2000 je Angreifer-Schlagzug),
+     bekannte Stellungen und oft benutzte eigene Platzierungen (+500,
+     +Zähler), Schläge +300. Gut bei Remis mit kleiner sicherer Menge.
+
+**Fallen auf dem Weg** (jede hat gemessen Zeit gekostet):
+
+1. Breiten-Widening beider Seiten ohne Fokus = Brute Force mit 40 Runden
+   Fixpunkt obendrauf (KQ-K 107 Tsd. Stellungen, 2 s, gegen 17 Tsd.
+   Besuche in `wdlpn`). Verworfen.
+2. Die Politik darf "ausprobiert" nicht an einer Position in ihrer
+   Reihenfolge festmachen, die Reihenfolge ändert sich mit dem Graphen;
+   doppelte Kanten ließen den Verlustzähler zu früh feuern (Opposition
+   "gewonnen"). Ausprobiert ist die Kindmenge.
+3. Die Breitensuche des Abschlusses muss einen Knoten je Welle einmal
+   einreihen: ein Verteidiger, der in einer Welle über mehrere Angreifer
+   erreicht wird, bekam je Ankunft einen Zug, der Verteidiger war faktisch
+   unbeschnitten (falscher Läufer: 3,6 Mio. Stellungen, König auf 64
+   Feldern).
+4. **Beweiszahlen überzählen auf dem DAG exponentiell** (ein Kind über
+   viele Eltern wird jedes Mal summiert): Summen erreichten 2^30 in
+   Graphen von 80 Tsd. Knoten. Folgen: `satAdd` darf endliche Summen nie zu
+   Inf machen; wo Zahl und Schwelle beide sättigen, gibt es keinen
+   Fortschritt mehr (Kind kommt mit denselben Zahlen zurück, Elternknoten
+   wählt es wieder). Ein Deckel auf den lebenden Summen (1022) ließ den
+   Randbauer hängen (Verteidigerzahlen ununterscheidbar), nur auf den
+   gespeicherten Zahlen (wie der Codec) nicht; Log-Maßstab sättigt nie,
+   war aber bei Gewinnen zwei- bis dreimal schlechter (KQ-KN 389 Tsd.
+   statt 137 Tsd. Expansionen) und sprengte KRR-KN. Rest-Sicherung: erkennt
+   `mid` ein Kind, das zweimal mit denselben Zahlen unter denselben
+   Schwellen zurückkommt, wird dessen Teilgraph komplett expandiert
+   (`exhaust`, Brute Force lokal) und vom Fixpunkt entschieden.
+5. Ein Rückgabewert des Kindes (etwa vom Tiefendeckel) muss den
+   Elternknoten für die laufende Schleife überstimmen (`local`), sonst
+   liest er die unveränderten gespeicherten Zahlen und steigt endlos ab.
+6. Beim Wettrennen muss der Verlierer sein Stop-Flag in jeder Expansion
+   sehen, nicht nur zwischen Runden, sonst wartet `Solve` auf einen
+   Abschluss von Millionen Stellungen.
+
+**Messung** (Arbeitsrechner, Wettrennen, ε = 1, Store 16 Mi Stellungen je
+Sucher; "Expansionen" sind Stellungen, deren Kinder erzeugt wurden, das
+Gegenstück zu den Besuchen von `wdlpn`):
+
+| Stellung | Ergebnis | Sucher | Expansionen | Stellungen | Zeit | `wdlpn` Besuche |
+|---|---|---|---|---|---|---|
+| KQ-KQ Dame hängt | Gewinn | pn | 6.079 | 32.192 | 0,25 s | 8.337 |
+| KQ-K | Gewinn | pn | 5.446 | 29.062 | 0,24 s | 17.575 |
+| KR-K | Gewinn | pn | 57.565 | 129.677 | 0,29 s | 147.822 |
+| KQ-KN | Gewinn | pn | 136.751 | 687.451 | 0,92 s | 128.760 |
+| KBB-K | Gewinn | pn | 305.441 | 881.137 | 2,3 s | 888.614 |
+| KP-K König vor Bauer, Weiß | Gewinn | pn | 8.987 | 41.966 | 74 ms | 16.958 |
+| KP-K König vor Bauer, Schwarz | Verlust | pn | 24 + 19.000 | 83.916 | 0,2 s | 88 + 66.509 |
+| KBP-K richtiger Läufer | Gewinn | pn | 446 | 2.141 | 53 ms | 446 |
+| KQ-KR | Gewinn | pn | 4.794 | 25.077 | 64 ms | 10.337 |
+| KQ-KP Springerbauer | Gewinn | pn | 60.126 | 287.702 | 0,6 s | 149.982 |
+| KQQ-KN | Gewinn | pn | 4 | 130 | 39 ms | 4 |
+| KRR-KN Benchmark, Schwarz | Verlust | pn | 243.459 + 355.435 | 5,1 Mio. | 5,7 s | 406.136 + 442.859 |
+| KQ-KRR | Gewinn | pn | 1.756.347 | 5,4 Mio. | 17,4 s | nicht gemessen |
+| KP-K Randbauer | Remis | Zertifikat | 1.313 + 896 | 2.294 | 0,3 s | 2.509.289 + 29 |
+| KP-K Opposition | Remis | pn | 25.186 + 14.362 | 87.700 | 0,3 s | 2.720.916 + 26.591 |
+| KBP-K falscher Läufer | Remis | Zertifikat | 51.597 + 1 | 55.295 | 0,25 s | nicht in 100 s |
+| KQ-KP c-Bauer | Remis | pn | 1.765.769 + 54 | 5,6 Mio. | 18 bis 28 s | nicht gemessen |
+| KQ-KP a-Bauer | Remis | pn | 1.942.114 + 19 | 5,6 Mio. | 21 s | nicht gemessen |
+
+Die Zeiten der kleinen Fälle enthalten rund 150 ms für das Anlegen der
+beiden Stores (je 512 MB), die Messgröße sind die Expansionen.
+
+Lesart:
+
+- **Gewinne:** der Graph braucht etwa gleich viele oder weniger
+  Expansionen als `wdlpn` Besuche (KBB-K ein Drittel), weil nichts neu
+  erzeugt wird; die Zeit ist ähnlich, der Graph zahlt mit Speicher.
+- **Remis mit kleiner sicherer Menge** sind jetzt billig: der Randbauer
+  kostet 1.313 Expansionen statt 2,5 Mio. Besuche, das ist exakt die
+  sichere Menge (1.378 Stellungen); der falsche Läufer, bei dem `wdlpn`
+  scheiterte und Brute Force 25 Mio. Stellungen gegenüberstand, fällt in
+  0,25 s mit 55 Tsd. Stellungen. Das ist die Idee des Autors in Zahlen:
+  der König pendelt, der Angreifer darf alles, und mehr ist nicht zu
+  beweisen.
+- **Remis mit großer sicherer Menge** (KQ-KP: 155 Tsd. bis 234 Tsd. sichere
+  Stellungen, die Dame treibt den König, der Verteidiger hat viele
+  Zustände) löst noch der Beweiszahl-Abstieg in 20 s mit Millionen
+  Stellungen; der Bauer verliert dort, weil der Abschluss seiner Politik
+  Millionen Stellungen umfasst (die Dame zwingt den König über das halbe
+  Brett).
+
+**Offen (nicht in 50 bis 100 s):** KR-KB in beiden Formen (der
+Bauer-Abschluss hat 2,6 Mio. Stellungen mit 17 Tsd. Gewinnen, der Läufer
+hängt zu oft), KQ-KRB (Gewinn, Stellungslimit 16 Mi erreicht), KBN-K,
+KQ-KBN, KNN-K (Brute Force 12,7 Mio. je Frage, 44 s), und die
+Fünf-Steiner-Remis KBP-KB ungleiche Läufer, KQ-KRP Festung, KRB-KR
+Philidor, KNN-KP. KQ-KRR Dauerschach: die erste Frage (Weiß gewinnt nicht)
+widerlegt der Abstieg nach 27 s mit 1,1 Mio. Expansionen (17 Tsd. sichere
+Stellungen), die zweite blieb offen. Das sind die Fälle mit großer
+sicherer Menge und vielen Verteidigerzuständen; die Testbank hat damit
+eine klare Trennlinie: alles bis vier Steine außer KR-KB und KBN-K fällt
+in unter einer Sekunde, fünf Steine brauchen die nächsten Hebel.
+
+**Nächste Hebel**, nach erwartetem Nutzen:
+
+1. Politik mit Tauschbewertung (ein hängender Stein ist nur dann schlecht,
+   wenn der Schlag nicht zurückgeschlagen wird) und mit "Angreifer-
+   Mobilität klein halten"; das trifft KR-KB.
+2. Speicher je Knoten: die Go-Slices für Kinder und Eltern kosten
+   Allokationen; CSR-Blöcke wie in `matelist` machen den Graphen halb so
+   groß und schneller.
+3. Beide Fragen in einem Graphen (die Gewinne der einen Frage sind die
+   Verluste der anderen), spart die zweite Frage bei Verlusten.
+4. Rust-Port, dann die Besuche und Expansionen als Regressionswerte.
