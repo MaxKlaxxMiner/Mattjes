@@ -92,6 +92,12 @@ type Options struct {
 	// after every fixed-point run.
 	Progress      func(line string)
 	ProgressEvery int
+	// Oracle (optional) decides positions without a search: the endgame
+	// tables (mateab.Tables) make every capture into a table a terminal,
+	// which a draw certificate needs wherever the attacker can give up
+	// material (the certificate builder cannot prove the defender's wins
+	// itself). nil = mateab.Material (dead material only).
+	Oracle mateab.Oracle
 }
 
 // Inf is the infinite proof or disproof number.
@@ -159,6 +165,16 @@ type Graph struct {
 	// to the leak it is unsafe from (a won or open node), so the widening
 	// can start where the leak is instead of everywhere above it
 	unsafeLevel []uint16
+	// oracle decides positions on sight (tables or dead material)
+	oracle mateab.Oracle
+}
+
+// oracleOf is the option's oracle or the material fallback.
+func oracleOf(opt Options) mateab.Oracle {
+	if opt.Oracle != nil {
+		return opt.Oracle
+	}
+	return mateab.Material{}
 }
 
 // defenderConfig hashes the placement of the defender's pieces (colour
@@ -184,8 +200,8 @@ func (g *Graph) Index(b *bitboard.Board) (uint32, bool) {
 
 // newGraph sets up the store for maxPositions (grown on demand) and adds
 // the root.
-func newGraph(root *bitboard.Board, sideToMoveAttacks bool, log bool, maxPositions int) *Graph {
-	g := &Graph{attackerWhite: root.WhiteMove == sideToMoveAttacks, log: log}
+func newGraph(root *bitboard.Board, sideToMoveAttacks bool, log bool, maxPositions int, oracle mateab.Oracle) *Graph {
+	g := &Graph{attackerWhite: root.WhiteMove == sideToMoveAttacks, log: log, oracle: oracle}
 	g.setBudget(maxPositions)
 	g.store = ttstore.NewSlots(min(initialSlots, g.maxSlots))
 	g.store.Put(root.Key, 0)
@@ -282,9 +298,18 @@ func (g *Graph) add(b *bitboard.Board) uint32 {
 	// terminal hold, sound without any search (dead material is the
 	// general FIDE 5.2.2 case, this one is the attacker's half of it)
 	bareAttacker := b.ByColor[attackerSide] == b.Pieces[attackerSide][0]
-	if v, _, _ := (mateab.Material{}).Probe(b); v == mateab.Draw || bareAttacker {
+	// the oracle (tables: win, loss or draw for the side to move; without
+	// tables only dead material) decides a node on sight, it is never
+	// expanded (nmoves 0, which also seeds the win levels)
+	v, _, _ := g.oracle.Probe(b)
+	switch {
+	case v == mateab.Win:
+		status = stWin
+	case v == mateab.Loss:
+		status = stLoss
+	case v == mateab.Draw || bareAttacker:
 		status = stDrawT
-	} else {
+	default:
 		var buf chess.MoveBuffer
 		n = b.GenMoves(&buf)
 		if n == 0 {
@@ -485,7 +510,7 @@ func (s *searcher) locate(q *bitboard.Board) (uint32, bool) {
 
 // newPNSearcher sets up the proof-number descent of a question.
 func newPNSearcher(root *bitboard.Board, sideToMoveAttacks bool, opt Options) *searcher {
-	g := newGraph(root, sideToMoveAttacks, opt.LogNumbers, opt.MaxPositions)
+	g := newGraph(root, sideToMoveAttacks, opt.LogNumbers, opt.MaxPositions, oracleOf(opt))
 	s := &searcher{g: g, opt: opt, start: time.Now(), capN: opt.NumberCap}
 	if opt.ProgressEvery <= 0 {
 		s.opt.ProgressEvery = 1 << 20
@@ -1014,17 +1039,28 @@ func (g *Graph) levels() {
 	n := len(g.recs)
 	remaining := make([]uint8, n)
 	done := make([]bool, n)
-	var queue []uint32
+	var queue, winSeeds []uint32
 	for i := 0; i < n; i++ {
 		remaining[i] = g.nmoves[i]
 		g.level[i] = 0
-		if g.status[i] == stLoss && g.nmoves[i] == 0 {
+		if g.nmoves[i] != 0 {
+			continue
+		}
+		switch g.status[i] {
+		case stLoss: // mate, or a table loss: level 0
 			done[i] = true
 			queue = append(queue, uint32(i))
+		case stWin: // a table win: level 1, joins the first wave of wins
+			done[i] = true
+			g.level[i] = 1
+			winSeeds = append(winSeeds, uint32(i))
 		}
 	}
-	for lvl := 0; len(queue) > 0; lvl++ {
+	for lvl := 0; len(queue) > 0 || (lvl == 0 && len(winSeeds) > 0); lvl++ {
 		var next []uint32
+		if lvl == 0 {
+			next = append(next, winSeeds...)
+		}
 		for _, c := range queue {
 			for _, p := range g.parents[c] {
 				if done[p] {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mateab"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/wdllist"
 )
 
@@ -75,10 +76,17 @@ func wdlMaterial(b *bitboard.Board, white bool) int {
 	return sum
 }
 
-// wdlBytesPerPosition turns the Hash size into the position budget of one
-// graph (record, store slot, edges, counters and the second searcher's
-// graph, roughly); the author ignores memory for now, so this is generous.
-const wdlBytesPerPosition = 64
+// wdlBytesPerPosition is the measured memory of a graph position (record,
+// key, store slot, edges with their slice headers and growth, counters:
+// 240 to 255 bytes on KQ-KP with 4 million positions, 2026-10-22), and
+// wdlGraphs the number of graphs the search holds (two questions, each
+// racing the descent against the certificate builder). Hash is the hard
+// cap over all of them: Hash·2^20 / (wdlGraphs·wdlBytesPerPosition)
+// positions per graph, so Hash 16384 allows 16 Mi positions per graph.
+const (
+	wdlBytesPerPosition = 256
+	wdlGraphs           = 4
+)
 
 // wdlFirstBudget is the position budget of the first round (per question).
 const wdlFirstBudget = 1 << 16
@@ -97,7 +105,7 @@ const wdlBudgetGrowth = 4
 // reported after every decision; the search ends when every move is
 // decided, when the top multiPV moves are proven wins (nothing can rank
 // above them), when the full budget left moves open, or on stop.
-func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, stop *atomic.Bool, maxPositions int) searchEnd {
+func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, stop *atomic.Bool, maxPositions int, oracle mateab.Oracle) searchEnd {
 	var buf chess.MoveBuffer
 	n := root.GenMoves(&buf)
 	entries := make([]wdlEntry, n)
@@ -134,7 +142,7 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 		last = time.Now()
 		rep.text("wdl: " + line)
 	}
-	opt := wdllist.Options{Epsilon: 8, MaxPositions: maxPositions, Stop: stop, Progress: progress, ProgressEvery: 1 << 22}
+	opt := wdllist.Options{Epsilon: 8, MaxPositions: maxPositions, Stop: stop, Progress: progress, ProgressEvery: 1 << 22, Oracle: oracle}
 	// two shared graph pairs for all root moves: 0 "we win after the
 	// move" (we attack), 1 "the opponent wins after it"
 	solvers := [2]*wdllist.Solver{wdllist.NewSolver(root, true, opt), wdllist.NewSolver(root, false, opt)}

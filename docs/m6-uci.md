@@ -471,10 +471,21 @@ in 30 s statt null, KRR-KN alle zwölf Verluste in 7,7 s / 5,4 s statt
 12,7 s / 8,5 s (`docs/m7-wdl-search.md`, "Ein geteilter Graph je Frage").
 Speicher: vier Graphen, jeder bis `Hash`·2^20/64 Stellungen.
 
-Offen daran: `Threads` wird nicht beachtet (zwei Threads je Frage);
-Tabellen als Orakel in der Suche fehlen noch (nur die Tabellenstufe an
-der Wurzel); der Stop kommt bis zu zwei Sekunden nach dem Zeitende, wenn
-gerade ein Fixpunkt über einen großen Graphen läuft.
+**Hash ehrlich und Tabellen als Orakel (2026-10-22):** gemessen kostet
+eine Graphstellung rund 250 Byte (`docs/m7-wdl-search.md`, "Ehrliches
+Hash"), das Budget je Graph ist jetzt `Hash`·2^20 / (4 · 256), also
+Hash 16384 für 16 Mi Stellungen je Graph; die Vorgabe 256 MB ist für die
+WDL-Suche zu klein. Die Suche bekommt das Set als Orakel
+(`wdllist.Options.Oracle` = `mateab.Tables`, Vier-Steiner-Basis plus die
+vorher geladenen Cache-Dateien): Tabellenstellungen sind Terminals.
+KRR-KN mit `5-KRRKN.bin` im Cache: zwölf Verluste mit 52 Stellungen
+sofort; KRRN-KN Springer: alle 27 Gewinne in 3,0 s (vorher 18 nach
+30 s); KQ-KRR Dauerschach: elf Verluste in der ersten Runde, die vier
+Remis bleiben "kann nicht gewinnen" (Befund im M7-Doc).
+
+Offen daran: `Threads` wird nicht beachtet (zwei Threads je Frage); der
+Stop kommt bis zu zwei Sekunden nach dem Zeitende, wenn gerade ein
+Fixpunkt über einen großen Graphen läuft; Dauerschach-Remis fehlen.
 
 ## Offen
 

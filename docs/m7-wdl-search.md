@@ -533,16 +533,95 @@ Jetzt Index-Schleife und Marke sofort, wie in Go.
 Speicher: vier Graphen insgesamt, jeder bis `Hash`·2^20/64 Stellungen;
 damit ist `Hash` zum ersten Mal eine echte Obergrenze (mal vier).
 
+## Ehrliches Hash, Tabellen-Orakel und der Dauerschach-Befund (2026-10-22)
+
+**Speicher gemessen:** ein Einzelgraph (reiner Abstieg, KQ-KP c-Bauer,
+4,05 Mio. Stellungen) belegt 1.037 MB in Go und 968 MB in Rust, also
+rund **250 Byte je Stellung** (32 Byte Satz, 16 Byte Key, 48 Byte
+Slice-Köpfe für Kinder und Eltern an jedem Knoten, Kanten mit
+Wachstumsreserve, Store mit 16 Byte je Slot bei 75 % und Faktor-4-Sprung).
+Das Budget rechnete mit 64. Jetzt ist `Hash` die harte Obergrenze:
+`Hash`·2^20 / (4 Graphen · 256 Byte) Stellungen je Graph
+(`wdlBytesPerPosition`, `wdlGraphs`), Hash 16384 erlaubt 16 Mi je Graph.
+Die Vorgabe 256 MB reicht für die WDL-Suche damit nicht mehr; in Arena
+Hash auf 8192 oder 16384 setzen. Die Bytes zu senken (Key aus dem Satz
+rekonstruieren, Kanten-Arena statt Slices, Store ohne Sprung; Ziel rund
+150) ist notiert, nicht gebaut.
+
+**Tabellen als Orakel in `wdllist`** (`Options.Oracle`, nil = totes
+Material): `add` nimmt das Verdikt der Tabellen für die Seite am Zug als
+Terminal (`stWin`/`stLoss`/`stDrawT`, nie expandiert), `levels` nimmt
+Tabellengewinne als Saat der Ebene 1, die Politik bewertet
+Tabellenstellungen mit ±100000. Im UCI ist das `mateab.Tables` mit dem
+geladenen Set, also die Vier-Steiner-Basis plus die erreichbaren
+Cache-Dateien; Testbank-Buchstabe `t` (Basis). Wirkung:
+
+| | ohne Orakel | mit Orakel |
+|---|---|---|
+| KQ-KRR Dauerschach, Frage "Weiß gewinnt" | 1,6 Mio. Stellungen per Abstieg | **1.179 per Zertifikat** |
+| KQ-KRR Dauerschach im UCI, elf Verluste | nach 25 s | in Runde 1 |
+| KRR-KN Benchmark im UCI (Tabelle `5-KRRKN.bin` im Cache) | 7,7 s / 5,4 s | **52 Stellungen, 0,0 s** |
+| KRRN-KN Springer im UCI, alle 27 Gewinne | 18 von 27 nach 30 s (Rust) | **27 in 3,0 s** |
+
+Die Fünf-Steiner-Tabellen im Cache (KRRKN, KRNKN, KRRKB...) sind für die
+Sechs-Steiner-Stellung das, was die Basis für Fünf-Steiner ist: jeder
+Schlag landet in einem Terminal, der Graph der Springer-Stellung schrumpft
+von 26 Mio. auf 1 Mio. Stellungen.
+
+**Politik: Schachs** bekommen +1500 (`policyScore`), damit der Zirkel
+eines Dauerschachs die Kleb- und Bleib-stehen-Terme schlägt. Ohne
+Wirkung auf Randbauer, Opposition, falschen Läufer (1.358 / 25.186 /
+49.398 Expansionen wie vorher, Go = Rust).
+
+**Der Dauerschach-Befund.** Die vier Remiszüge von `3k4/8/8/8/8/8/5rr1/K6Q
+w` (Dh4+, Dh8+, Dd1+, Db1 laut Stockfish/Syzygy) bleiben offen, auch mit
+Orakel: die Frage "Schwarz gewinnt nach Dh8+" läuft in beiden Suchern bis
+16 Mi Stellungen. Der Dump des Zertifikat-Graphen zeigt, dass die Politik
+richtig schacht (jeder weiße Knoten hat ein Schach gewählt und weitere
+untried), das Leck aber 9 bis 25 Halbzüge tief in der Schachkette liegt:
+der schwarze König wandert, die Türme ziehen zwischen, die Region hat
+hunderttausende Stellungen, und irgendwo ist der gewählte Schach der
+falsche. Drei Versuche an einem Nachmittag, alle wieder ausgebaut:
+
+1. **Begrenzte Wellen** (Breitensuche bis 2^16 Expansionen, dann
+   Fixpunkt): der Bauer erreicht Fixpunkte (nach Runde 1 1.882 sichere
+   Stellungen), aber die Wurzel wird nie sicher, und der falsche Läufer
+   kostet 83 Tsd. statt 49 Tsd. Expansionen, weil frühe Fixpunkte die
+   Politik umlenken (bekannt-sichere Kinder +100000).
+2. **Expansion nach Kosten** (Heap, Angreiferknoten mit wenigen Antworten
+   zuerst, teure bleiben als Leck unexpandiert) mit Kostenschwelle und
+   Erweiterung am Leck: die Runden halten ihre Grenzen, der Graph wächst
+   trotzdem auf Millionen, weil die Erweiterung in einer Region, in der
+   alles unsicher ist, nicht weiß, welcher Verteidigerknoten den
+   falschen Zug gewählt hat; mit Schwelle 8 blieben außerdem Angreifer mit
+   zehn Zügen (KP-K!) komplett liegen, Randbauer fiel an den Abstieg,
+   falscher Läufer kam in 100 s nicht mehr.
+3. **Erweiterung nach Politik-Score** des nächsten unprobierten Zugs
+   (ein weiteres Schach vor jedem stillen Zug, global): trifft irgendwo,
+   nicht am Leck.
+
+Die Einsicht: ein Dauerschach-Zertifikat ist ein geschlossener Zyklus,
+und das Leck eines Zyklus ist nicht lokal erkennbar; die Reparatur muss
+den Zug finden, nach dem der König entkommt, das ist eine
+Tiefensuche-Frage (wo endet die Schachkette?), keine Breitensuche-Frage.
+Ein Ansatz dafür: den Zertifikat-Bauer von der Schachkette her bauen
+(Schachs als Pfad verfolgen, bei Kettenende zurück und den letzten Schach
+tauschen, df-pn-artig mit Schachs als einzigen Verteidigerzügen), also
+ein eigener "Dauerschach-Sucher" neben Abstieg und Zertifikat. Notiert.
+
+Dazu wieder gelernt: ohne Tabellen ist die Testbank für Fünf-Steiner-Remis
+blind, weil jeder Turmzwischenzug ein KD-KT-Gewinn ist, den der
+Zertifikat-Bauer nicht beweisen kann (er sucht nur Remis); mit `t`
+stimmt die Messung.
+
 **Nächste Hebel**, nach erwartetem Nutzen:
 
-1. Speicher je Knoten: die Slices/Vecs für Kinder und Eltern kosten
-   Allokationen; CSR-Blöcke wie in `matelist` machen den Graphen halb so
-   groß und schneller. `wdlBytesPerPosition` = 64 ist zu optimistisch
-   (real rund 200 Byte je Stellung mit Kanten).
-2. Beide Fragen in einem Graphen (die Gewinne der einen Frage sind die
-   Verluste der anderen), spart die zweite Frage bei Verlusten.
-3. Politik: freie Königsfelder statt Klebens, wenn der Angreifer einen
-   Springer hat; taktische Vorschau (Schach-Gabeln) für KR-KB-artige
-   Verteidigungen.
-4. Stop-Flag im Fixpunkt pollen (Stop bis zu zwei Sekunden verspätet).
-5. `Threads` beachten (die zwei Fragen parallel statt nacheinander).
+1. Dauerschach-Sucher (Schachketten als Pfad, siehe oben), für die
+   Remisseite des Autors.
+2. Speicher je Knoten (Ziel 150 Byte, siehe oben).
+3. Beide Fragen in einem Graphen (die Gewinne der einen Frage sind die
+   Verluste der anderen).
+4. Politik: freie Königsfelder statt Klebens gegen Springer; taktische
+   Vorschau (Schach-Gabeln) für KR-KB-artige Verteidigungen.
+5. Stop-Flag im Fixpunkt pollen (Stop bis zu zwei Sekunden verspätet).
+6. `Threads` beachten (die zwei Fragen parallel statt nacheinander).

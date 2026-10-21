@@ -15,6 +15,7 @@ use super::search::{nps, pv_string, Core, Reporter};
 use super::{RootMove, PROGRESS_INTERVAL};
 use crate::bitboard::Board;
 use crate::chess::{new_buffer, Move};
+use crate::mateab::Tables;
 use crate::wdllist::{self, Options, Outcome};
 
 /// A root move's state, best first.
@@ -57,9 +58,16 @@ pub struct WdlEntry {
     pub method: &'static str,
 }
 
-/// Turns the Hash size into the position budget of one graph (generous:
-/// the author ignores memory for now).
-pub const WDL_BYTES_PER_POSITION: usize = 64;
+/// The measured memory of a graph position (record, key, store slot,
+/// edges with their headers and growth, counters: 240 to 255 bytes on
+/// KQ-KP with 4 million positions, 2026-10-22).
+pub const WDL_BYTES_PER_POSITION: usize = 256;
+
+/// The number of graphs the search holds (two questions, each racing the
+/// descent against the certificate builder). Hash is the hard cap over all
+/// of them: Hash·2^20 / (WDL_GRAPHS·WDL_BYTES_PER_POSITION) positions per
+/// graph, so Hash 16384 allows 16 Mi positions per graph.
+pub const WDL_GRAPHS: usize = 4;
 
 /// The piece value sum of a side without the king (queen 9, rook 5,
 /// bishop and knight 3, pawn 1), to ask the weaker side's question first:
@@ -92,7 +100,7 @@ pub const WDL_BUDGET_GROWTH: usize = 4;
 /// decision; the search ends when every move is decided, when the top
 /// multi_pv moves are proven wins (nothing can rank above them), when the
 /// full budget left moves open, or on stop.
-pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &Arc<Reporter<W>>, known: &[RootMove], stop: &Arc<AtomicBool>, max_positions: usize) -> Core {
+pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &Arc<Reporter<W>>, known: &[RootMove], stop: &Arc<AtomicBool>, max_positions: usize, oracle: Tables<'_>) -> Core {
     let mut buf = new_buffer();
     let n = root.gen_moves(&mut buf);
     let mut entries: Vec<WdlEntry> = Vec::with_capacity(n);
@@ -130,7 +138,7 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
         *l = Instant::now();
         rep_progress.text(&format!("wdl: {}", line));
     });
-    let opt = Options { epsilon: 8, max_positions, stop: Some(stop.clone()), progress: Some(progress), progress_every: 1 << 22, ..Default::default() };
+    let opt = Options { epsilon: 8, max_positions, stop: Some(stop.clone()), progress: Some(progress), progress_every: 1 << 22, oracle: Some(oracle), ..Default::default() };
     // two shared graph pairs for all root moves: 0 "we win after the
     // move" (we attack), 1 "the opponent wins after it"
     let mut solvers = [wdllist::Solver::new(root, true, opt.clone()), wdllist::Solver::new(root, false, opt.clone())];

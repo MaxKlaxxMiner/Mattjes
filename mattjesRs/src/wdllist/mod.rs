@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use crate::bitboard::{packed_fixed_record, Board, Codec, PackedFixed};
 use crate::chess::{new_buffer, Move, MAX_MOVES};
-use crate::mateab::{Material, Oracle, Verdict};
+use crate::mateab::{Material, Oracle, Tables, Verdict};
 use crate::ttstore::{Store, MAX_LOAD_PERCENT};
 
 /// Outcome of one question.
@@ -68,7 +68,12 @@ pub type Progress = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Options of the search.
 #[derive(Clone, Default)]
-pub struct Options {
+pub struct Options<'a> {
+    /// The endgame tables as oracle: every capture into a table is a
+    /// terminal, which a draw certificate needs wherever the attacker can
+    /// give up material (the certificate builder cannot prove the
+    /// defender's wins itself). None = dead material only.
+    pub oracle: Option<Tables<'a>>,
     /// Expands the whole reachable graph, no guidance.
     pub brute_force: bool,
     /// Runs the proof-number descent alone (no certificate builder).
@@ -131,7 +136,9 @@ const FL_REGION: u8 = 8; // scratch flag of exhaust and the closure
 type Record = [u8; PackedFixed::MAX_BYTES];
 
 /// The explicit position graph of one question.
-pub struct Graph {
+pub struct Graph<'a> {
+    /// Decides positions on sight (tables), None = dead material only.
+    oracle: Option<Tables<'a>>,
     attacker_white: bool,
     log: bool,
     store: Store,
@@ -165,10 +172,11 @@ pub struct Graph {
     unsafe_level: Option<Vec<u16>>,
 }
 
-impl Graph {
-    fn new(root: &Board, side_to_move_attacks: bool, log: bool, max_positions: usize, certificate: bool) -> Graph {
+impl<'a> Graph<'a> {
+    fn new(root: &Board, side_to_move_attacks: bool, log: bool, max_positions: usize, certificate: bool, oracle: Option<Tables<'a>>) -> Graph<'a> {
         let attacker_white = root.white_move == side_to_move_attacks;
         let mut g = Graph {
+            oracle,
             attacker_white,
             log,
             store: Store::with_slots(INITIAL_SLOTS),
@@ -241,6 +249,14 @@ impl Graph {
         }
     }
 
+    /// The oracle's verdict for the side to move (tables, or dead material).
+    fn probe(&self, b: &Board) -> Verdict {
+        match self.oracle {
+            Some(t) => t.probe(b).0,
+            None => Material.probe(b).0,
+        }
+    }
+
     /// The position budget is used up, no further expansion starts.
     fn full(&self) -> bool {
         self.recs.len() >= self.max_positions
@@ -308,7 +324,15 @@ impl Graph {
         // terminal hold, sound without any search (dead material is the
         // general FIDE 5.2.2 case, this one is the attacker's half of it)
         let bare_attacker = b.by_color[attacker_side] == b.pieces[attacker_side][0];
-        if Material.probe(b).0 == Verdict::Draw || bare_attacker {
+        // the oracle (tables: win, loss or draw for the side to move; without
+        // tables only dead material) decides a node on sight, it is never
+        // expanded (nmoves 0, which also seeds the win levels)
+        let v = self.probe(b);
+        if v == Verdict::Win {
+            status = ST_WIN;
+        } else if v == Verdict::Loss {
+            status = ST_LOSS;
+        } else if v == Verdict::Draw || bare_attacker {
             status = ST_DRAW_T;
         } else {
             let mut buf = new_buffer();
@@ -527,17 +551,27 @@ impl Graph {
         let mut remaining = vec![0u8; n];
         let mut done = vec![false; n];
         let mut queue: Vec<u32> = Vec::new();
+        let mut win_seeds: Vec<u32> = Vec::new();
         for i in 0..n {
             remaining[i] = self.nmoves[i];
             self.level[i] = 0;
-            if self.status[i] == ST_LOSS && self.nmoves[i] == 0 {
+            if self.nmoves[i] != 0 {
+                continue;
+            }
+            if self.status[i] == ST_LOSS {
+                // mate, or a table loss: level 0
                 done[i] = true;
                 queue.push(i as u32);
+            } else if self.status[i] == ST_WIN {
+                // a table win: level 1, joins the first wave of wins
+                done[i] = true;
+                self.level[i] = 1;
+                win_seeds.push(i as u32);
             }
         }
         let mut lvl = 0u16;
-        while !queue.is_empty() {
-            let mut next = Vec::new();
+        while !queue.is_empty() || (lvl == 0 && !win_seeds.is_empty()) {
+            let mut next: Vec<u32> = if lvl == 0 { std::mem::take(&mut win_seeds) } else { Vec::new() };
             for &c in &queue {
                 for &p in &self.parents[c as usize] {
                     let p = p as usize;
@@ -633,7 +667,7 @@ impl Graph {
 /// node. Unless told otherwise it races the proof-number descent against
 /// the certificate builder on two threads; the first decision wins and
 /// stops the other. One run of a Solver with `Options::max_positions`.
-pub fn solve(root: &Board, side_to_move_attacks: bool, opt: Options) -> Result {
+pub fn solve(root: &Board, side_to_move_attacks: bool, opt: Options<'_>) -> Result {
     let extra = if opt.max_positions == 0 { 1 << 26 } else { opt.max_positions };
     Solver::new(root, side_to_move_attacks, opt).run(extra)
 }
@@ -648,19 +682,19 @@ pub fn solve(root: &Board, side_to_move_attacks: bool, opt: Options) -> Result {
 /// wins and safe sets found for one move, and a driver can share its time
 /// over them without restarting anything. `Options::max_positions` caps
 /// each graph.
-pub struct Solver {
+pub struct Solver<'a> {
     root: Board,
-    opt: Options,
+    opt: Options<'a>,
     /// The proof-number descent.
-    pn: Searcher,
+    pn: Searcher<'a>,
     /// The certificate builder (None without the race).
-    cert: Option<Searcher>,
+    cert: Option<Searcher<'a>>,
 }
 
-impl Solver {
+impl<'a> Solver<'a> {
     /// Prepares the graphs (they hold only the root). With
     /// `side_to_move_attacks` the side to move at the root is the attacker.
-    pub fn new(root: &Board, side_to_move_attacks: bool, opt: Options) -> Solver {
+    pub fn new(root: &Board, side_to_move_attacks: bool, opt: Options<'a>) -> Solver<'a> {
         let pn = Searcher::new_pn(root, side_to_move_attacks, opt.clone());
         let cert = if opt.brute_force || opt.no_race { None } else { Some(Searcher::new_cert(root, side_to_move_attacks, opt.clone())) };
         Solver { root: *root, opt, pn, cert }
@@ -738,7 +772,7 @@ impl Solver {
     }
 }
 
-impl Searcher {
+impl<'a> Searcher<'a> {
     /// Starts a run: the budget is the graph's size plus `extra`, capped by
     /// `Options::max_positions`.
     fn begin(&mut self, extra: usize) {
@@ -769,15 +803,15 @@ fn on_big_stack(f: impl FnOnce() -> Result + Send) -> Result {
     std::thread::scope(|s| std::thread::Builder::new().stack_size(THREAD_STACK).spawn_scoped(s, f).expect("search thread").join().expect("search thread panicked"))
 }
 
-impl Searcher {
+impl<'a> Searcher<'a> {
     /// Sets up the proof-number descent of a question.
-    fn new_pn(root: &Board, side_to_move_attacks: bool, opt: Options) -> Searcher {
-        let g = Graph::new(root, side_to_move_attacks, opt.log_numbers, opt.max_positions, false);
+    fn new_pn(root: &Board, side_to_move_attacks: bool, opt: Options<'a>) -> Searcher<'a> {
+        let g = Graph::new(root, side_to_move_attacks, opt.log_numbers, opt.max_positions, false, opt.oracle);
         Searcher::new(g, opt)
     }
 }
 
-impl Searcher {
+impl<'a> Searcher<'a> {
 /// Continues the proof-number descent for the question node q.
 fn run_pn(&mut self, q: &Board, extra: usize) -> Result {
     let s = self;
@@ -828,9 +862,9 @@ fn run_pn(&mut self, q: &Board, extra: usize) -> Result {
 }
 
 /// The search state around a graph.
-pub(crate) struct Searcher {
-    g: Graph,
-    opt: Options,
+pub(crate) struct Searcher<'a> {
+    g: Graph<'a>,
+    opt: Options<'a>,
     start: Instant,
     cap_n: u32,
     aborted: bool,
@@ -844,8 +878,8 @@ pub(crate) struct Searcher {
     frontier: Vec<u32>,
 }
 
-impl Searcher {
-    fn new(g: Graph, mut opt: Options) -> Searcher {
+impl<'a> Searcher<'a> {
+    fn new(g: Graph<'a>, mut opt: Options<'a>) -> Searcher<'a> {
         if opt.progress_every == 0 {
             opt.progress_every = 1 << 20;
         }
@@ -1131,7 +1165,7 @@ impl Searcher {
     }
 }
 
-fn child_numbers_local(g: &Graph, local: &[(u32, u32, bool); MAX_MOVES], ci: usize, c: u32) -> (u32, u32) {
+fn child_numbers_local(g: &Graph<'_>, local: &[(u32, u32, bool); MAX_MOVES], ci: usize, c: u32) -> (u32, u32) {
     if local[ci].2 {
         (local[ci].0, local[ci].1)
     } else {

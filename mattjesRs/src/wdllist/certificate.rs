@@ -7,7 +7,7 @@ use std::time::Instant;
 use super::*;
 use crate::chess::{Piece, Pos};
 
-impl Graph {
+impl<'a> Graph<'a> {
     /// Orders a defender's moves (see the Go package for the rationale):
     /// known holds and terminal draws first, known attacker wins and mates
     /// last, then stay put, leave nothing en prise, keep the pieces glued to
@@ -25,8 +25,11 @@ impl Graph {
             }
             s += 500;
         }
-        if Material.probe(&c).0 == Verdict::Draw {
-            return 100000; // dead material
+        match self.probe(&c) {
+            Verdict::Draw => return 100000, // dead material, or a table draw
+            Verdict::Loss => return 100000, // the attacker to move loses by the table
+            Verdict::Win => return -100000, // the attacker to move wins by the table
+            Verdict::Unknown => {}
         }
         let mut buf = new_buffer();
         let n = c.gen_moves(&mut buf);
@@ -39,6 +42,12 @@ impl Graph {
             }
         }
         s -= 10 * n as i32; // the attacker's mobility
+        if c.in_check() {
+            // a check leaves the attacker only king moves, captures and
+            // blocks: the certificate of a perpetual check is the loop of
+            // checks, and it must beat the glue and stay-put terms below
+            s += 1500;
+        }
         if b.squares[m.to.idx()] != Piece::NONE {
             s += 300; // the defender captures
         }
@@ -148,7 +157,7 @@ fn chebyshev(a: i32, b: i32) -> i32 {
     ((a & 7) - (b & 7)).abs().max(((a >> 3) - (b >> 3)).abs())
 }
 
-impl Searcher {
+impl<'a> Searcher<'a> {
     /// Adds the next k untried policy moves of a defender node (generation
     /// on the first call); false when the position budget is used up
     /// (checked before the node is touched, as in expand).
@@ -266,7 +275,7 @@ impl Searcher {
     }
 }
 
-impl Graph {
+impl<'a> Graph<'a> {
     /// Collects the open nodes without children reachable from the root
     /// through open nodes: the frontier of a resumed run, whose interrupted
     /// closure lost its queue (the nodes it had added are in the graph,
@@ -298,10 +307,10 @@ impl Graph {
     }
 }
 
-impl Searcher {
+impl<'a> Searcher<'a> {
     /// Sets up the certificate builder of a question.
-    pub(crate) fn new_cert(root: &Board, side_to_move_attacks: bool, opt: Options) -> Searcher {
-        let g = Graph::new(root, side_to_move_attacks, false, opt.max_positions, true);
+    pub(crate) fn new_cert(root: &Board, side_to_move_attacks: bool, opt: Options<'a>) -> Searcher<'a> {
+        let g = Graph::new(root, side_to_move_attacks, false, opt.max_positions, true, opt.oracle);
         let mut s = Searcher::new(g, opt);
         s.start = Instant::now();
         s

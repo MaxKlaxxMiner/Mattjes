@@ -51,8 +51,13 @@ func (g *Graph) policyScore(b *bitboard.Board, m chess.Move) int {
 			s += 500
 		}
 	}
-	if v, _, _ := (mateab.Material{}).Probe(&c); v == mateab.Draw {
-		return 100000 // dead material
+	switch v, _, _ := g.oracle.Probe(&c); v {
+	case mateab.Draw:
+		return 100000 // dead material, or a table draw
+	case mateab.Loss:
+		return 100000 // the attacker to move loses by the table
+	case mateab.Win:
+		return -100000 // the attacker to move wins by the table
 	}
 	var buf chess.MoveBuffer
 	n := c.GenMoves(&buf)
@@ -68,6 +73,12 @@ func (g *Graph) policyScore(b *bitboard.Board, m chess.Move) int {
 		}
 	}
 	s -= 10 * n // the attacker's mobility: quiet positions make small certificates
+	if c.InCheck() {
+		// a check leaves the attacker only king moves, captures and blocks:
+		// the certificate of a perpetual check is the loop of checks, and
+		// it must beat the glue and stay-put terms below
+		s += 1500
+	}
 	if b.Squares[m.To] != chess.None {
 		s += 300 // the defender captures
 	}
@@ -244,7 +255,7 @@ func (g *Graph) fullyTried(i uint32) bool {
 
 // newCertSearcher sets up the certificate builder of a question.
 func newCertSearcher(root *bitboard.Board, sideToMoveAttacks bool, opt Options) *searcher {
-	g := &Graph{attackerWhite: root.WhiteMove == sideToMoveAttacks, defenderConfigs: map[uint64]uint32{}, unsafeLevel: []uint16{}}
+	g := &Graph{attackerWhite: root.WhiteMove == sideToMoveAttacks, defenderConfigs: map[uint64]uint32{}, unsafeLevel: []uint16{}, oracle: oracleOf(opt)}
 	side := 0
 	if g.attackerWhite {
 		side = 1
