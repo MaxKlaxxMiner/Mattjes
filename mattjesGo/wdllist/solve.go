@@ -147,6 +147,10 @@ type Graph struct {
 	// rootDefender is the placement of the defender's pieces in the root
 	// (bitboards per kind), the reference of the stay-put policy
 	rootDefender [6]uint64
+	// unsafeLevel (certificate builder only) is each unsafe node's distance
+	// to the leak it is unsafe from (a won or open node), so the widening
+	// can start where the leak is instead of everywhere above it
+	unsafeLevel []uint16
 }
 
 // defenderConfig hashes the placement of the defender's pieces (colour
@@ -750,6 +754,10 @@ func (g *Graph) safeSet() {
 	g.lastCheck = g.expansions
 	n := len(g.recs)
 	safeChildren := make([]uint16, n)
+	if g.unsafeLevel != nil {
+		g.unsafeLevel = g.unsafeLevel[:0]
+		g.unsafeLevel = append(g.unsafeLevel, make([]uint16, n)...)
+	}
 	var queue []uint32
 	for i := 0; i < n; i++ {
 		g.flags[i] &^= flUnsafe
@@ -768,23 +776,24 @@ func (g *Graph) safeSet() {
 			queue = append(queue, idx)
 		}
 	}
-	for len(queue) > 0 {
-		c := queue[len(queue)-1]
-		queue = queue[:len(queue)-1]
+	// breadth-first, so that unsafeLevel is the distance to the leak
+	for head := 0; head < len(queue); head++ {
+		c := queue[head]
 		for _, p := range g.parents[c] {
 			if g.flags[p]&flUnsafe != 0 || g.status[p] != stUnknown {
 				continue
 			}
-			if g.attackerAt(p) {
-				g.flags[p] |= flUnsafe
-				queue = append(queue, p)
-				continue
+			if !g.attackerAt(p) {
+				safeChildren[p]--
+				if safeChildren[p] != 0 {
+					continue
+				}
 			}
-			safeChildren[p]--
-			if safeChildren[p] == 0 {
-				g.flags[p] |= flUnsafe
-				queue = append(queue, p)
+			g.flags[p] |= flUnsafe
+			if g.unsafeLevel != nil {
+				g.unsafeLevel[p] = g.unsafeLevel[c] + 1
 			}
+			queue = append(queue, p)
 		}
 	}
 	for i := 0; i < n; i++ {

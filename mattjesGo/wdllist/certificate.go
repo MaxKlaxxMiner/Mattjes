@@ -63,41 +63,63 @@ func (g *Graph) policyScore(b *bitboard.Board, m chess.Move) int {
 		return 100000 // stalemate
 	}
 	for _, am := range buf[:n] {
-		if c.Squares[am.To] != chess.None {
-			s -= 2000 // the attacker can capture (no exchange evaluation yet)
+		if c.Squares[am.To] != chess.None && !recapturable(&c, am) {
+			s -= 2000 // the attacker wins material for free
 		}
 	}
+	s -= 10 * n // the attacker's mobility: quiet positions make small certificates
 	if b.Squares[m.To] != chess.None {
 		s += 300 // the defender captures
 	}
 	s -= 300 * g.displacement(&c)
+	s += 400 * g.gluedPieces(&c)
 	s += int(min(g.defenderConfigs[g.defenderConfig(&c)], 200))
 	return s
 }
 
-// displacement sums, over the defender's pieces, the Chebyshev distance to
-// the nearest square its kind occupied in the root position.
+// gluedPieces counts the defender's pieces other than the king that stand
+// next to the king: a piece the king defends cannot be won for free, and
+// a defender that keeps its pieces together has few placements to cover.
+func (g *Graph) gluedPieces(b *bitboard.Board) int {
+	side := 0
+	if g.attackerWhite {
+		side = 1
+	}
+	king := bits.TrailingZeros64(b.Pieces[side][0])
+	n := 0
+	for kind := 1; kind < 6; kind++ {
+		for pieces := b.Pieces[side][kind]; pieces != 0; pieces &= pieces - 1 {
+			if chebyshev(bits.TrailingZeros64(pieces), king) == 1 {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// recapturable: after the capture m on board b, the side then to move can
+// take back on the same square (a one-ply exchange check).
+func recapturable(b *bitboard.Board, m chess.Move) bool {
+	c := *b
+	c.DoMove(m)
+	var buf chess.MoveBuffer
+	n := c.GenMoves(&buf)
+	for _, r := range buf[:n] {
+		if r.To == m.To {
+			return true
+		}
+	}
+	return false
+}
+
+// displacement is the Chebyshev distance of the defender's king from its
+// root square (the other pieces follow the king, see gluedPieces).
 func (g *Graph) displacement(b *bitboard.Board) int {
 	side := 0
 	if g.attackerWhite {
 		side = 1
 	}
-	d := 0
-	for kind, bb := range b.Pieces[side] {
-		root := g.rootDefender[kind]
-		if bb == 0 || root == 0 {
-			continue
-		}
-		for pieces := bb; pieces != 0; pieces &= pieces - 1 {
-			sq := bits.TrailingZeros64(pieces)
-			best := 8
-			for r := root; r != 0; r &= r - 1 {
-				best = min(best, chebyshev(sq, bits.TrailingZeros64(r)))
-			}
-			d += best
-		}
-	}
-	return d
+	return chebyshev(bits.TrailingZeros64(b.Pieces[side][0]), bits.TrailingZeros64(g.rootDefender[0]))
 }
 
 // kingSquares is a diagnostic: the defender king's squares over a sample of
@@ -226,7 +248,7 @@ func solveCertificate(root *bitboard.Board, sideToMoveAttacks bool, opt Options)
 	for slots*ttstore.MaxLoadPercent/100 < maxPositions {
 		slots *= 2
 	}
-	g := &Graph{attackerWhite: root.WhiteMove == sideToMoveAttacks, store: ttstore.NewSlots(slots), defenderConfigs: map[uint64]uint32{}}
+	g := &Graph{attackerWhite: root.WhiteMove == sideToMoveAttacks, store: ttstore.NewSlots(slots), defenderConfigs: map[uint64]uint32{}, unsafeLevel: []uint16{}}
 	side := 0
 	if g.attackerWhite {
 		side = 1
@@ -345,18 +367,24 @@ func (s *searcher) closure(frontier []uint32) {
 }
 
 // unsafeDefenders collects the defender nodes that still have untried
-// moves, reachable from the root through unsafe open nodes.
+// moves, reachable from the root through unsafe open nodes, and keeps
+// those closest to the leak (unsafeLevel within two of the smallest): a
+// leak is plugged where it springs, the nodes above it become safe with
+// it, and widening them all would multiply the graph by the number of
+// rounds.
 func (g *Graph) unsafeDefenders() []uint32 {
-	var out []uint32
+	var all []uint32
 	stack := []uint32{0}
 	var marked []uint32
 	g.flags[0] |= flRegion
 	marked = append(marked, 0)
+	minLevel := uint16(1<<16 - 1)
 	for len(stack) > 0 {
 		i := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 		if !g.attackerAt(i) && !g.fullyTried(i) {
-			out = append(out, i)
+			all = append(all, i)
+			minLevel = min(minLevel, g.unsafeLevel[i])
 		}
 		for _, c := range g.children[i] {
 			if g.flags[c]&flRegion != 0 || g.status[c] != stUnknown {
@@ -369,6 +397,12 @@ func (g *Graph) unsafeDefenders() []uint32 {
 	}
 	for _, i := range marked {
 		g.flags[i] &^= flRegion
+	}
+	var out []uint32
+	for _, i := range all {
+		if g.unsafeLevel[i] <= minLevel+2 {
+			out = append(out, i)
+		}
 	}
 	return out
 }

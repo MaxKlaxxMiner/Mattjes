@@ -62,7 +62,7 @@ const (
 
 func isAlgo(s string) bool {
 	switch strings.ToLower(s) {
-	case "none", "mateab", "matepn", "matelist":
+	case "none", "mateab", "matepn", "matelist", "fastwdl":
 		return true
 	}
 	return false
@@ -150,7 +150,8 @@ type searchEnd struct {
 	elapsed   time.Duration
 	aborted   bool
 	note      string
-	answered  bool // the root driver resolved everything that was asked for (every move, or the shortest win with MultiPV 1): a background generation of the root material is paused, nothing would use it now
+	answered  bool       // the root driver resolved everything that was asked for (every move, or the shortest win with MultiPV 1): a background generation of the root material is paused, nothing would use it now
+	wdl       []wdlEntry // the WDL search's list (Search fastwdl), best first; nil for the mate searches
 }
 
 // reporter prints the per-depth and progress lines of a running search.
@@ -322,6 +323,8 @@ func (e *Engine) startSearch(p goParams) {
 			})
 		case "matelist":
 			r = runMatelist(&root, maxPlies, maxPositions, stop, rep)
+		case "fastwdl":
+			r = runWdl(&root, multiPV, rep, known, stop, e.hashMB<<20/wdlBytesPerPosition)
 		}
 		r.elapsed = time.Since(rep.start)
 		r.aborted = stop.Load()
@@ -539,7 +542,26 @@ func (e *Engine) finishSearch(r searchEnd) {
 		e.send("info string egtb: generation of %s paused, the search answered the position; the next go with this material resumes it", e.job.mat.Name())
 	}
 	ms := r.elapsed.Milliseconds()
-	if r.matePlies != 0 && len(r.root) > 0 {
+	if r.wdl != nil {
+		// the WDL search: the final list (the reporter printed it after
+		// every decision), the best move is the first of the list
+		decided := 0
+		for _, en := range r.wdl {
+			if en.class == wdlWin || en.class == wdlDraw || en.class == wdlLoss {
+				decided++
+			}
+		}
+		rep := &reporter{e: e, start: time.Now().Add(-r.elapsed), multiPV: e.multiPV}
+		rep.wdlLines(decided, r.wdl, r.nodes)
+		what := wdlSummary(r.wdl)
+		if r.aborted {
+			what = "stopped, " + what
+		}
+		e.send("info string search: %s, %s positions in %.1f s", what, egtb.Group(int(r.nodes)), float64(ms)/1000)
+		if len(r.wdl) > 0 && !(e.tableBest && r.wdl[0].method != "table") {
+			e.pendingBest = r.wdl[0].move.UCI()
+		}
+	} else if r.matePlies != 0 && len(r.root) > 0 {
 		// the first MultiPV root moves: proven ones with their lines continued
 		// through the tables, the rest as cp 0 (no mate found behind them);
 		// a negative distance means the engine is mated, the list then holds

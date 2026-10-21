@@ -400,6 +400,45 @@ verschiedene Aussagen unter denselben Keys). KRR-KN nach Nh2 nur mit den
 Vier-Steinern: `win` liefert `mate 19` nach 1,67 Mio. Knoten bei Tiefe 11,
 `mate` das exakte `mate 7` nach 3,33 Mio. Knoten bei Tiefe 13.
 
+## Option Search fastwdl (2026-10-21)
+
+Die WDL-Suche aus Milestone 7 (`docs/m7-wdl-search.md`, Package `wdllist`)
+als vierter Suchalgorithmus: keine Mattdistanz, keine Fünfzig-Züge-Regel,
+nur garantierter Gewinn, Verlust oder Remis. `runWdl` (`uci/wdl.go`) fragt
+je Wurzelzug zuerst "gewinnen wir nach diesem Zug" (die Stellung nach dem
+Zug ist ein Verteidigerknoten, wir greifen an), dann "gewinnt der Gegner";
+jede Frage läuft als Wettrennen von Beweiszahl-Abstieg und Zertifikat-Bauer
+auf zwei Threads. Züge, die die Tabellenstufe exakt kennt, werden
+übernommen (Methode `table`), nur der Rest wird gesucht.
+
+Scores (Entscheidung des Autors): `cp 9999` Gewinn bewiesen, `cp -9999`
+Verlust bewiesen, `cp 0` Remis bewiesen, `cp 1` unbekannt, `cp 10` "kann
+nicht verlieren, Gewinn offen", `cp -10` "kann nicht gewinnen, Verlust
+offen". Nach jeder Entscheidung kommt der komplette MultiPV-Block mit
+`depth` = Zahl der entschiedenen Züge (eine Tiefe pro Block, damit GUIs die
+Zeilen behalten), Gewinn- und Verlustlinien aus dem Beweisgraph, per
+`extendPV` durch die Tabellen verlängert; `nodes` zählt Stellungen in den
+Graphen. Reihenfolge: Gewinne, "kann nicht verlieren", Remis, unbekannt,
+"kann nicht gewinnen", Verluste, innerhalb der Klasse die teuersten zuerst.
+Abschluss: `info string search: wdl: 37 win, 0 cannot lose, 2 draw, 0
+unknown, 0 cannot win, 0 loss, 84,409 positions in 2.7 s`, `bestmove` ist
+der erste der Liste. Das Stellungsbudget je Graph ist `Hash`·2^20/64 (zwei
+Graphen je Frage, Speicher ist in dieser Phase zweitrangig). Fortschritt:
+höchstens alle fünf Sekunden eine `info string wdl:`-Zeile des laufenden
+Suchers, dazu die `currmove`-Zeile des Reporters.
+
+Rauchtest (`tests/uci-wdl.sh ./runMattjesGo.exe tests/uci-smoke.txt 15000
+4 1024`, Arbeitsrechner): KQQ-KN 37 Gewinne und 2 Remis nach 2,7 s;
+Benchmark KRR-KN mit Schwarz am Zug nach 15 s elf Verluste bewiesen, Nh2
+noch offen (`cp 1`); KQ-KRR Dauerschach nach 15 s zwei Verluste und ein
+"kann nicht gewinnen", zwölf Züge offen.
+
+Offen daran: die Zeit geht in Wurzelzug-Reihenfolge weg (der erste Zug
+kann das ganze Budget fressen), ein Budget je Zug oder ein Rundlauf über
+die offenen Züge wäre für MultiPV besser; `Threads` wird nicht beachtet
+(zwei Threads je Frage); Tabellen als Orakel in der Suche fehlen noch
+(nur die Tabellenstufe an der Wurzel); Rust hat `fastwdl` noch nicht.
+
 ## Offen
 
 - Mit `MatePnGoal win` endet die Suche beim ersten Gewinnbeweis; die Verkürzung

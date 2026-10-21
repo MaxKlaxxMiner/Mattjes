@@ -161,7 +161,7 @@ func (e *Engine) command(words []string) bool {
 		e.send("option name MultiPV type spin default 1 min 1 max 256")
 		e.send("option name Threads type spin default %d min 1 max 64", e.workers)
 		e.send("option name Hash type spin default %d min %d max 65536", defaultHashMB, minHashMB)
-		e.send("option name Search type combo default %s var none var mateab var matepn var matelist", defaultAlgo)
+		e.send("option name Search type combo default %s var none var mateab var matepn var matelist var fastwdl", defaultAlgo)
 		e.send("option name MatePnMobility type combo default %s var on var off var lazy", defaultMobility)
 		e.send("option name MatePnGoal type combo default %s var mate var win", defaultGoal)
 		e.send("option name EgtbWriteCache type check default false")

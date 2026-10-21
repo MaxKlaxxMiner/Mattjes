@@ -281,14 +281,40 @@ sicherer Menge und vielen Verteidigerzuständen; die Testbank hat damit
 eine klare Trennlinie: alles bis vier Steine außer KR-KB und KBN-K fällt
 in unter einer Sekunde, fünf Steine brauchen die nächsten Hebel.
 
+**Politik, zweite Fassung (2026-10-21, danach):** Ein-Zug-Tauschprüfung
+(`recapturable`: ein Angreifer-Schlag zählt nur, wenn nicht
+zurückgeschlagen werden kann), Angreifer-Mobilität −10 je Zug, der König
+bleibt stehen (−300 je Schritt), die übrigen Steine **kleben am König**
+(+400 je Stein neben ihm, statt Rückkehr zum Wurzelfeld). Und die
+Erweiterung ist fokussiert: der Fixpunkt läuft als Breitensuche und
+vergibt jedem unsicheren Knoten seinen Abstand zum Leck (`unsafeLevel`),
+erweitert werden nur Verteidigerknoten in den zwei untersten Ebenen über
+dem kleinsten Abstand (58 Tsd. statt 1,2 Mio. je Runde bei KR-KB). Die
+kleinen Fälle bleiben unverändert (Randbauer 1.358 Expansionen, falscher
+Läufer 49 Tsd.).
+
+**KR-KB bleibt offen, und das ist eine Einsicht, kein Fehler:** der
+Abschluss der ersten Runde hat 3 Mio. Stellungen mit 16 Tsd. Gewinnen, und
+jede weitere Runde bringt mehr Gewinne (112 Tsd. nach sechs Runden), weil
+der Turm den Läufer über Schach-Gabeln und Fesselungen gewinnt, was eine
+Ein-Zug-Tauschprüfung nicht sieht; der Verteidiger hat dort viele
+Zustände, weil der Turm den Läufer von überall angreift. Das Zertifikat
+von KR-KB ist inhärent groß (geschätzt mehrere hunderttausend Stellungen),
+und wo der Läufer einmal fällt, füllt der Angreifer den ganzen KR-K-Raum.
+Für Vier-Steiner beantworten das die Tabellen in Mikrosekunden; die Suche
+ist für Festungen und Pendel-Remis mit kleiner sicherer Menge da, und für
+Gewinne. Eine taktische Vorschau in der Politik (Schach-Gabeln) ist
+notiert, nicht gebaut.
+
 **Nächste Hebel**, nach erwartetem Nutzen:
 
-1. Politik mit Tauschbewertung (ein hängender Stein ist nur dann schlecht,
-   wenn der Schlag nicht zurückgeschlagen wird) und mit "Angreifer-
-   Mobilität klein halten"; das trifft KR-KB.
+1. UCI `Search fastwdl` mit `wdllist` (Wettrennen) je Wurzelzug, Scores
+   ±9999 / 0 / 1, damit die Suche in Arena sichtbar wird.
 2. Speicher je Knoten: die Go-Slices für Kinder und Eltern kosten
    Allokationen; CSR-Blöcke wie in `matelist` machen den Graphen halb so
    groß und schneller.
 3. Beide Fragen in einem Graphen (die Gewinne der einen Frage sind die
    Verluste der anderen), spart die zweite Frage bei Verlusten.
 4. Rust-Port, dann die Besuche und Expansionen als Regressionswerte.
+5. Politik mit taktischer Vorschau (Schach-Gabeln), für KR-KB-artige
+   Verteidigungen.
