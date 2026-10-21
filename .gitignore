@@ -20,6 +20,9 @@ mattjesRs/target/
 mattjes-egtb.bin
 mattjes-egtb-cache
 
+# scratch area for scripts, probes and throwaway tables (never committed)
+tests/
+
 # profiling / benchmark dumps
 *.prof
 *.pprof

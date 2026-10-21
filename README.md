@@ -4,8 +4,10 @@ A chess engine specialized in **mate search and draw search**, written in Go and
 
 > **Status: experimental / early development.**
 > Mattjes is a learning and research project. It is being rebuilt from scratch after a
-> five-year pause. There is no playable engine yet, no UCI support, and the public API
-> changes without notice. Expect rough edges, dead ends and benchmark code in `main`.
+> five-year pause. The bare binary speaks UCI (endgame tables up to four pieces,
+> larger ones generated on demand, mate search beyond that), but it is not a playing
+> engine and the public API changes without notice. Expect rough edges, dead ends and
+> benchmark code in `main`.
 
 ## Goal
 

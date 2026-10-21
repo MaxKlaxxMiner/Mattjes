@@ -135,3 +135,56 @@ In Arena die FEN laden und `go infinite` oder `go mate N` geben; `go mate N` beg
 die Suche auf 2N − 1 Halbzüge. Für die Konsole: `mateabSolveNamed("KBN-K", ...)`,
 `matepnSolveNamed(...)` und `matelistSolve(...)` in `experiments()` nehmen die Namen
 der ersten Tabelle.
+
+## WDL-Teststellungen (Milestone 7)
+
+Stellungen für die WDL-Suche (`docs/m7-wdl-search-design.md`): gesucht wird nur
+Gewinn / Remis / Verlust, keine Mattdistanz, Tabellen während der Suche aus.
+Geprüft am 2026-10-21 mit Stockfish 19 und Syzygy (3 bis 6 Steine,
+Fünfzig-Züge-Regel aus, `tests/sf-wdl.sh`, Liste `tests/wdl-positions.txt`):
+`cp 20000` dort ist "Tabellen-Gewinn", `cp 0` "Tabellen-Remis". "Züge" zählt die
+Wurzelzüge nach Ergebnis (G / R / V), das ist die MultiPV-Erwartung: Die Suche
+muss jeden Wurzelzug einzeln beweisen.
+
+### Gewinn oder Verlust der Seite am Zug
+
+| Name | Steine | FEN | Wurzel | Züge G/R/V | Hinweis |
+|---|---|---|---|---|---|
+| KQ-KQ Dame hängt | 4 | `8/8/8/4k3/8/8/4q3/K2Q4 w - - 0 1` | Gewinn | 1/9/8 | Rauchtest, `Dxe2` in einem Halbzug, die übrigen Züge remis oder verloren |
+| KQ-K | 4 | `8/8/8/4k3/8/8/8/K2Q4 w - - 0 1` | Gewinn | 20/3/0 | drei Damenzüge geben den Gewinn her (Patt-Nähe) |
+| KR-K | 4 | `8/8/8/4k3/8/8/8/K2R4 w - - 0 1` | Gewinn | 13/3/0 | |
+| KQ-KN | 4 | `7k/5n2/8/8/8/8/5Q2/K7 w - - 0 1` | Gewinn | 24/1/0 | `Dxf7` ist Patt |
+| KBB-K | 4 | `8/8/4k3/8/8/8/8/K2BB3 w - - 0 1` | Gewinn | 17/0/0 | |
+| KBN-K | 4 | `8/8/8/8/3k4/8/N7/KB6 w - - 0 1` | Gewinn | 7/3/0 | langer Gewinnbeweis ohne Mattdistanz, Vergleich mit `matepn` (29.958 Beweisstellungen für das Matt) |
+| KP-K König vor dem Bauern, Weiß | 3 | `4k3/8/4K3/4P3/8/8/8/8 w - - 0 1` | Gewinn | 2/2/0 | |
+| KP-K König vor dem Bauern, Schwarz | 3 | `4k3/8/4K3/4P3/8/8/8/8 b - - 0 1` | Verlust | 0/0/2 | beide Züge verlieren |
+| KBP-K richtiger Läufer | 4 | `k7/8/K7/8/8/8/P7/5B2 w - - 0 1` | Gewinn | 11/0/0 | Gegenstück zum falschen Läufer unten |
+| KQ-KR | 4 | `8/8/3k4/8/8/8/3r4/K2Q4 w - - 0 1` | Gewinn | 12/0/3 | drei Züge hängen die Dame |
+| KQ-KP Springerbauer | 4 | `7K/8/8/1Q6/8/8/1p6/k7 w - - 0 1` | Gewinn | 4/21/0 | nur vier von 25 Zügen gewinnen, der Rest remis |
+| KQQ-KN | 5 | `7k/5n2/8/8/8/8/Q4Q2/K7 w - - 0 1` | Gewinn | 37/2/0 | Suchfall aus der ersten Tabelle |
+| KRR-KN Benchmark, Schwarz | 5 | `8/8/4k3/8/8/8/RK6/2R2n2 b - - 1 1` | Verlust | 0/0/12 | alle zwölf Züge verlieren; Zeit gegen die 70 s mit Mattdistanz |
+| KQ-KBN | 5 | `8/8/4k3/3bn3/8/4Q3/8/K7 w - - 0 1` | Gewinn | 19/1/4 | Matt in 39, ohne Tabelle bisher unerreichbar |
+| KQ-KRR | 5 | `k7/8/8/8/8/2r5/1r6/K5Q1 w - - 0 1` | Gewinn | 3/8/10 | nur `Kb2`, `Dg8`, `Dh1` gewinnen, zehn Züge verlieren |
+| KQ-KRB | 5 | `k7/8/8/8/8/8/5rb1/K2Q4 w - - 0 1` | Gewinn | 2/12/7 | nur `Dd8` und `Da4` gewinnen |
+
+### Remis der Seite am Zug
+
+| Name | Steine | FEN | Wurzel | Züge G/R/V | Hinweis |
+|---|---|---|---|---|---|
+| KP-K Randbauer | 3 | `k7/8/K7/8/8/8/P7/8 w - - 0 1` | Remis | 0/5/0 | Patt in der Ecke |
+| KP-K Opposition | 3 | `8/8/8/8/8/4k3/4P3/4K3 w - - 0 1` | Remis | 0/2/0 | der schwarze König pendelt vor dem Bauern |
+| KNN-K | 4 | `8/8/8/4k3/8/8/8/K1NN4 w - - 0 1` | Remis | 0/11/0 | Härtetest: die Widerlegung des Gewinns braucht den ganzen erreichbaren Graphen |
+| KBP-K falscher Läufer | 4 | `k7/8/K7/8/8/8/P7/2B5 w - - 0 1` | Remis | 0/12/0 | Festung in der Ecke, der König pendelt a8/b8 |
+| KQ-KP c-Bauer | 4 | `7K/8/8/Q7/8/8/2p5/1k6 w - - 0 1` | Remis | 0/22/2 | Patt-Trick `Ka1`; `Da1+`/`Da2+` verlieren die Dame |
+| KQ-KP a-Bauer | 4 | `7K/8/8/Q7/8/8/p7/1k6 w - - 0 1` | Remis | 0/23/0 | |
+| KR-KB sichere Ecke, Schwarz | 4 | `k7/8/K7/8/8/8/5b2/1R6 b - - 0 1` | Remis | 0/6/3 | drei Läuferzüge lassen `Tb8` matt zu |
+| KR-KB Läufer deckt b6, Weiß | 4 | `k7/8/K7/8/8/4b3/8/1R6 w - - 0 1` | Remis | 0/16/0 | |
+| KBP-KB ungleiche Läufer | 5 | `8/8/8/3k4/8/2K5/2PB4/5b2 w - - 0 1` | Remis | 0/9/0 | Blockade, Kandidat für die Remis-Politik |
+| KQ-KRP Festung | 5 | `8/8/5kp1/5r2/8/8/8/K2Q4 w - - 0 1` | Remis | 0/18/5 | Turm vom Bauern gedeckt; fünf Damenzüge verlieren |
+| KQ-KRR Dauerschach | 5 | `3k4/8/8/8/8/8/5rr1/K6Q w - - 0 1` | Remis | 0/4/11 | nur `Dh4+`, `Dh8+`, `Db1`, `Dd1` halten, der Rest verliert: der Dauerschach-Fall |
+| KRB-KR Philidor-Typ, Schwarz | 5 | `8/8/8/8/8/1k6/4r3/K1BR4 b - - 0 1` | Remis | 0/15/4 | |
+| KNN-KP | 5 | `8/8/8/8/2k5/8/2p5/K1NN4 w - - 0 1` | Remis | 0/4/6 | sechs von zehn Zügen verlieren gegen den Bauern |
+
+Alle Stellungen bis fünf Steine kennen auch unsere eigenen Tabellen (Basis und
+Fünf-Steiner-Cache), sie dienen als zweite Verifikation, wenn die Suche mit
+abgeschalteten Tabellen läuft.
