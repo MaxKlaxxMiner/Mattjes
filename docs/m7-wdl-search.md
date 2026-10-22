@@ -1000,13 +1000,47 @@ und `KQ-KRRPP ein Remis` darüber. Beide bleiben offen; der nächste
 Ansatz muss die Jagd an Politik-Knoten zügeln (kein Budget je Knoten,
 sondern je Runde) und die Welle selbst beobachten.
 
+## Dritter Anlauf an den gemischten Remis: die begrenzte Welle, und warum das Zertifikat groß ist (2026-10-22)
+
+Gebaut als Option `Wave` (Testbank `W`): die Welle einer Runde endet
+nach einem Expansionsbudget (65.536, je Runde verdoppelt), der Fixpunkt
+läuft dazwischen, die nächste Runde setzt die Welle an ihren offenen
+Knoten fort und erweitert nur an Lecks, die von Angreifer-Gewinnen
+kommen (ein Flag `flUnsafeWon` wandert im Fixpunkt mit dem Leck mit,
+die Lecks aus unexpandierten Knoten der Wellengrenze lösen keine
+Erweiterung aus); die Jagd an Politik-Knoten bekam dasselbe Budget je
+Runde. Gemessen, wieder ausgebaut:
+
+| Stellung | Runde 1 | Runde 5 bzw. 6 |
+|---|---|---|
+| KQ-KP c-Bauer (ohne Tabellen) | 90 Tsd. Stellungen, 5.170 sicher | 6,6 Mio. Stellungen, 643 Tsd. sicher, 28.725 gewonnen, 95 s |
+| KQP-KRRP zwei Remis (Syzygy) | 132 Tsd., 10.426 sicher | 3,2 Mio., 233 Tsd. sicher, 91 Tsd. gewonnen, 54 s |
+
+Die Fixpunkte dazwischen markieren ein Zehntel sicher, die Welle wächst
+trotzdem wie zuvor: die Front sind die offenen Knoten der Wellengrenze,
+nicht die Gewinn-Lecks. Dazu verwarfen die Fixpunkte auf der
+angeschnittenen Welle vereinzelt Jagd-Holds (152 von 1.689 Ketten),
+was ohne Budget nie vorkam und nicht weiter verfolgt wurde.
+
+**Der eigentliche Befund.** Das Zertifikat eines solchen Remis ist von
+Natur aus groß. Nach Qb1 in `KQP-KRRP` braucht Weiß vier Tempi für
+h4 bis h7; in jedem davon hat Schwarz rund vierzig Antworten, und das
+Zertifikat muss jede enthalten: Türme und König von Schwarz frei auf
+dem Brett (grob 64 · 2016 Platzierungen), mal die Bauernstufen und die
+wenigen Felder von Dame und König, abzüglich der Schläge in die
+Tabellen. Das sind Millionen von Stellungen, bevor die Linien in Syzygy
+enden; die drei Anläufe scheiterten nicht an der Politik allein,
+sondern an der Menge. Der Abstieg mit 16 Mi Stellungen sieht dieselbe
+Menge von der anderen Seite. Was helfen könnte, wäre eine Abstraktion
+(Platzierungen der Türme, die sich nicht unterscheiden, als eine
+Klasse), und das ist ein eigener Entwurf, kein Hebel.
+
 **Nächste Hebel**, nach erwartetem Nutzen:
 
-1. Gemischte Remis als Zertifikat-Problem: Jagdbudget je Runde statt
-   je Knoten, die Welle begrenzen (Budget je Runde, Fixpunkt dazwischen,
-   Erweiterung nur am Leck), Politik mit Drohung; Maßstab die zwei
-   offenen Sieben-Steiner und die KQ-KP-Pattfallen (heute nur per
-   Abstieg).
+1. Gemischte Remis: nur noch mit einer Abstraktion über die
+   Platzierungen des Angreifers (Entwurf nötig); die Politik allein
+   trägt nicht, die begrenzte Welle auch nicht. Maßstab bleiben die zwei
+   Sieben-Steiner und die KQ-KP-Pattfallen (heute nur per Abstieg).
 2. Beide Fragen in einem Graphen (die Gewinne der einen Frage sind die
    Verluste der anderen).
 3. Politik: freie Königsfelder statt Klebens gegen Springer; taktische
