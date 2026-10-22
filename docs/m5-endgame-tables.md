@@ -968,16 +968,45 @@ die Zeilen beider Testbänke sind bis auf die Zeiten identisch, die Prüfsummen-
 (FNV über den Container) zeigt byteidentische Container; Rust packt rund 15 %
 schneller, eine zufällige Anfrage kostet 200 bis 250 ns statt 300 bis 340 ns.
 
+**Rust-Port von Schreiber und Leser (2026-10-22):** `src/syzygy/write.rs` (`Source`,
+`candidates`, `build`, `Built::write`, `write_wdl`), im Leser `Tables::new`,
+`add_own`, `BaseEntry::describe` (aus `open` herausgelöst), `init_own`,
+`encode::setup` (aus `init_enc_info` herausgelöst), `EncInfo.own` als
+`pairs::Table` mit Offset und Länge im Mapping (der Container bekommt bei jeder
+Anfrage seinen eigenen Ausschnitt, nicht die ganze Datei; der erste Versuch gab die
+ganze Datei weiter und griff daneben). Die Basis-Rückfrage für Materialien ohne Datei
+läuft in Rust nicht über ein gespeichertes `Set` (Lebensdauer), sondern als Parameter:
+`probe_wdl_with(b, Some(set))`, das Orakel `mateab::Tables` ruft das so, `probe_wdl`
+bleibt ohne. Testbank `syzygy_own_write(names, workers, opt, dir)` und
+`syzygy_own_verify`: die sieben Dateien KQK, KBNK, KBBK, KRKN, KPK, KQKQ, KPKP sind
+in Go und Rust **byteidentisch** (`cmp`), die Zeilen der Testbänke bis auf die Zeiten
+gleich, der Rust-Prober liest die Dateien des Go-Laufs ohne Abweichung (50.000
+Zufallsstellungen je Material, 1,0 bis 1,9 Mio. Anfragen/s).
+
+Der Rust-Prober liest alle 35 Dateien des Go-Laufs ohne Abweichung (20.000
+Zufallsstellungen je Material, 1,2 bis 1,4 Mio. Anfragen/s).
+
+**Der Index-Dekoder (`syzygy/decode.go`, 2026-10-22):** die Umkehrung von `encode`
+für eine Reihenfolge, damit Scheiben eines Stroms direkt aufgezählt werden können. Der
+Index ist eine gemischte Radixzahl: Wert der Führungsgruppe mal ihr Faktor plus je
+weiterer Gruppe der Kombinationsrang (Colex-Ordnung über die Felder, die die früher
+gelisteten Steine frei lassen) mal Faktor. Die Führungsgruppe wird über eine einmal je
+Form aufgezählte Tabelle umgekehrt (Königspaar 462, Tripel 31.332, führende Bauern je
+Linienklasse; jede Aufstellung wird wie in `encode` kanonisiert, der erste Treffer je
+Wert bleibt), die weiteren Gruppen per Colex-Unranking und dem r-ten freien Feld (die
+Bauern der anderen Farbe ab Feld 8). `CheckDecoder`/Testbank `syzygyDecodeCheck`:
+alle 35 Materialien, je acht Reihenfolgen und jede Linienklasse, 20.000 Zufallsindizes
+je Strom, jeder Index kommt durch `encode` zurück (2,6 s).
+
 Offen: für Fünf- und Sechs-Steiner eine Vorauswahl der Kandidaten statt
-Durchprobieren (360 Kandidaten bei fünf Einzelsteinen; Idee: die Wechselrate des Werts
-beim Verschieben des schnellsten Steins auf einer Stichprobe schätzen, nur die besten
-drei bauen) und ein Packer, der das Wörterbuch an einer Stichprobe baut und den Strom
-danach in einem Durchlauf tokenisiert (Re-Pair über 250 Mio. Symbole braucht sonst
-hunderte Durchläufe über den ganzen Strom); die Einbindung (UCI legt die
-`syzygy.Tables` immer an: `SyzygyPath` falls gesetzt, dazu `AddOwn` auf den
-Cache-Ordner und `SetBase`; der Hintergrund-Job schreibt nach jeder fertigen
-DTM-Tabelle die WDL-Datei); die DTM-Datei danach mit Remis als Don't-care; der
-Rust-Port von Schreiber und Leser.
+Durchprobieren (360 Kandidaten bei fünf Einzelsteinen; mit dem Dekoder werden
+Scheiben des Stroms als Stichprobe gepackt, nur die besten Kandidaten ganz gebaut) und
+ein Packer, der das Wörterbuch an einer Stichprobe baut und den Strom danach in einem
+Durchlauf tokenisiert (Re-Pair über 250 Mio. Symbole braucht sonst hunderte Durchläufe
+über den ganzen Strom); die Einbindung (UCI legt die `syzygy.Tables` immer an:
+`SyzygyPath` falls gesetzt, dazu `AddOwn` auf den Cache-Ordner und die Basis als
+Rückfrage; der Hintergrund-Job schreibt nach jeder fertigen DTM-Tabelle die
+WDL-Datei); die DTM-Datei danach mit Remis als Don't-care.
 
 ## Offen
 

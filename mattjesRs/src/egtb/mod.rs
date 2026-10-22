@@ -24,7 +24,7 @@ pub use generate::{group, Progress, Stats, TableDone, KNOWN_MAXIMA};
 #[allow(unused_imports)]
 pub use index::{KK_PAWNLESS, KK_PAWNS};
 #[allow(unused_imports)]
-pub use persist::{checksum, default_cache_dir, default_path, recorded_checksum, BASE_FILE_NAME, CACHE_DIR, FILE_CHECKSUM, IO_WORKERS, RAW_SUFFIX, TABLE_CHECKSUMS};
+pub use persist::{checksum, default_cache_dir, default_path, recorded_checksum, BASE_FILE_NAME, CACHE_DIR, DTM_DIR, FILE_CHECKSUM, IO_WORKERS, RAW_SUFFIX, TABLE_CHECKSUMS, WDL_DIR};
 #[allow(unused_imports)]
 pub use table::{missing_tables_of, Set, Table, Value, MAX_PIECES, MAX_PLIES};
 

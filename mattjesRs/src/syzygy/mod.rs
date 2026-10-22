@@ -9,6 +9,7 @@
 mod encode;
 mod mmap;
 mod pairs;
+pub mod write;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,7 @@ use std::sync::OnceLock;
 
 use crate::bitboard::Board;
 use crate::chess::{new_buffer, Move, Piece};
+use crate::egtb::Set;
 use encode::{EncInfo, Shape, ENC_FILE, ENC_PIECE, MAX_PIECES};
 use mmap::Mapping;
 use pairs::PairsData;
@@ -44,13 +46,39 @@ struct Loaded {
 }
 
 /// One table (one material, both colour assignments).
-struct BaseEntry {
-    name: String,
+pub struct BaseEntry {
+    pub(crate) name: String,
     path: PathBuf,
-    shape: Shape,
-    symmetric: bool,
-    has_pawns: bool,
+    pub(crate) shape: Shape,
+    pub(crate) symmetric: bool,
+    pub(crate) has_pawns: bool,
+    /// Our own file (write.rs) instead of a Syzygy file.
+    own: bool,
     loaded: OnceLock<Option<Loaded>>,
+}
+
+impl BaseEntry {
+    /// Describes the table of a material given as piece counts (the first
+    /// side first); None beyond MAX_TABLE_PIECES.
+    pub fn describe(name: String, first: &[u8; 6], second: &[u8; 6]) -> Option<BaseEntry> {
+        let num: usize = first.iter().chain(second.iter()).map(|&c| c as usize).sum();
+        if num > MAX_TABLE_PIECES {
+            return None;
+        }
+        let has_pawns = first[5] + second[5] > 0;
+        let symmetric = material_key(first, second) == material_key(second, first);
+        let mut shape = Shape { num, kk_enc: false, pawns: [0, 0] };
+        if !has_pawns {
+            let singles = first.iter().chain(second.iter()).filter(|&&c| c == 1).count();
+            shape.kk_enc = singles == 2;
+        } else {
+            shape.pawns = [first[5], second[5]];
+            if second[5] != 0 && (first[5] == 0 || first[5] > second[5]) {
+                shape.pawns.swap(0, 1);
+            }
+        }
+        Some(BaseEntry { name, path: PathBuf::new(), shape, symmetric, has_pawns, own: false, loaded: OnceLock::new() })
+    }
 }
 
 /// Points a material key to its table; flip = the board's white is the
@@ -120,7 +148,8 @@ impl Tables {
     /// Scans a directory for *.rtbw files and registers them; the files are
     /// mapped on first use. Files with an incomplete size are skipped.
     pub fn open(dir: &Path) -> std::io::Result<Tables> {
-        let mut t = Tables { dir: dir.to_path_buf(), entries: HashMap::new(), list: Vec::new(), probes: AtomicU64::new(0), hits: AtomicU64::new(0) };
+        let mut t = Tables::new();
+        t.dir = dir.to_path_buf();
         let mut names: Vec<(String, PathBuf, u64)> = Vec::new();
         for de in std::fs::read_dir(dir)? {
             let de = de?;
@@ -138,31 +167,56 @@ impl Tables {
             if size & 63 != 16 {
                 continue; // incomplete file
             }
-            let num: usize = first.iter().chain(second.iter()).map(|&c| c as usize).sum();
-            if num > MAX_TABLE_PIECES {
-                continue;
-            }
-            let has_pawns = first[5] + second[5] > 0;
-            let key = material_key(&first, &second);
-            let key2 = material_key(&second, &first);
-            let mut shape = Shape { num, kk_enc: false, pawns: [0, 0] };
-            if !has_pawns {
-                let singles = first.iter().chain(second.iter()).filter(|&&c| c == 1).count();
-                shape.kk_enc = singles == 2;
-            } else {
-                shape.pawns = [first[5], second[5]];
-                if second[5] != 0 && (first[5] == 0 || first[5] > second[5]) {
-                    shape.pawns.swap(0, 1);
-                }
-            }
-            let idx = t.list.len();
-            t.list.push(BaseEntry { name, path, shape, symmetric: key == key2, has_pawns, loaded: OnceLock::new() });
-            t.entries.insert(key, Lookup { entry: idx, flip: false });
-            if key != key2 {
-                t.entries.insert(key2, Lookup { entry: idx, flip: true });
-            }
+            let Some(mut be) = BaseEntry::describe(name, &first, &second) else { continue };
+            be.path = path;
+            t.register(be, &first, &second);
         }
         Ok(t)
+    }
+
+    /// An empty set of tables (add_own fills it without Syzygy files).
+    pub fn new() -> Tables {
+        Tables { dir: PathBuf::new(), entries: HashMap::new(), list: Vec::new(), probes: AtomicU64::new(0), hits: AtomicU64::new(0) }
+    }
+
+    /// Files a table under both colour assignments.
+    fn register(&mut self, be: BaseEntry, first: &[u8; 6], second: &[u8; 6]) {
+        let key = material_key(first, second);
+        let key2 = material_key(second, first);
+        let idx = self.list.len();
+        self.list.push(be);
+        self.entries.insert(key, Lookup { entry: idx, flip: false });
+        if key != key2 {
+            self.entries.insert(key2, Lookup { entry: idx, flip: true });
+        }
+    }
+
+    /// Scans a directory for our own WDL tables (*.wdl, write.rs) and
+    /// registers those materials that no Syzygy file covers yet: the
+    /// originals win, ours are the fallback. Returns the number added.
+    pub fn add_own(&mut self, dir: &Path) -> std::io::Result<usize> {
+        let mut names: Vec<PathBuf> = Vec::new();
+        for de in std::fs::read_dir(dir)? {
+            let de = de?;
+            let fname = de.file_name().to_string_lossy().to_string();
+            if fname.ends_with(".wdl") && !de.metadata()?.is_dir() {
+                names.push(de.path());
+            }
+        }
+        names.sort();
+        let mut added = 0;
+        for path in names {
+            let Some((first, second)) = read_own_header(&path) else { continue };
+            if self.entries.contains_key(&material_key(&first, &second)) {
+                continue;
+            }
+            let Some(mut be) = BaseEntry::describe(name_of(&first, &second), &first, &second) else { continue };
+            be.path = path;
+            be.own = true;
+            self.register(be, &first, &second);
+            added += 1;
+        }
+        Ok(added)
     }
 
     pub fn dir(&self) -> &Path {
@@ -190,9 +244,18 @@ impl Tables {
     /// care" values where a capture decides, so captures (and en passant)
     /// are resolved by a small search first, as in Fathom's probe_wdl.
     pub fn probe_wdl(&self, b: &Board) -> Option<i32> {
+        self.probe_wdl_with(b, None)
+    }
+
+    /// probe_wdl with the exact base tables for the materials without a WDL
+    /// file: our own WDL tables cover one material each, and a probe resolves
+    /// captures into smaller materials first.
+    pub fn probe_wdl_with(&self, b: &Board, base: Option<&Set>) -> Option<i32> {
         self.probes.fetch_add(1, Ordering::Relaxed);
         let (w, bl) = counts(b);
-        self.entries.get(&material_key(&w, &bl))?;
+        if !self.entries.contains_key(&material_key(&w, &bl)) {
+            return base_wdl(base?, b);
+        }
         let mut buf = new_buffer();
         let n = b.gen_moves(&mut buf);
         let (mut best_cap, mut best_ep) = (-3, -3);
@@ -203,7 +266,7 @@ impl Tables {
             }
             let mut c = *b;
             c.do_move(m);
-            let v = -self.probe_ab(&c, -2, -best_cap)?;
+            let v = -self.probe_ab(&c, -2, -best_cap, base)?;
             if v > best_cap {
                 if v == WIN {
                     self.hits.fetch_add(1, Ordering::Relaxed);
@@ -216,7 +279,7 @@ impl Tables {
                 }
             }
         }
-        let v = self.probe_table(b)?;
+        let v = self.probe_table(b, base)?;
         self.hits.fetch_add(1, Ordering::Relaxed);
         if best_ep > best_cap {
             if best_ep > v {
@@ -239,7 +302,7 @@ impl Tables {
     }
 
     /// Resolves captures below a capture (never with en passant rights).
-    fn probe_ab(&self, b: &Board, mut alpha: i32, beta: i32) -> Option<i32> {
+    fn probe_ab(&self, b: &Board, mut alpha: i32, beta: i32, base: Option<&Set>) -> Option<i32> {
         let mut buf = new_buffer();
         let n = b.gen_moves(&mut buf);
         for &m in &buf[..n] {
@@ -248,7 +311,7 @@ impl Tables {
             }
             let mut c = *b;
             c.do_move(m);
-            let v = -self.probe_ab(&c, -beta, -alpha)?;
+            let v = -self.probe_ab(&c, -beta, -alpha, base)?;
             if v > alpha {
                 if v >= beta {
                     return Some(v);
@@ -256,19 +319,22 @@ impl Tables {
                 alpha = v;
             }
         }
-        let v = self.probe_table(b)?;
+        let v = self.probe_table(b, base)?;
         Some(alpha.max(v))
     }
 
-    /// Looks the position up in its table without capture resolution.
-    fn probe_table(&self, b: &Board) -> Option<i32> {
+    /// Looks the position up in its table without capture resolution (from
+    /// the base tables when the material has no file).
+    fn probe_table(&self, b: &Board, base: Option<&Set>) -> Option<i32> {
         if (b.by_color[0] | b.by_color[1]).count_ones() == 2 {
             return Some(DRAW); // KvK has no table
         }
         let (w, bl) = counts(b);
-        let l = *self.entries.get(&material_key(&w, &bl))?;
+        let Some(&l) = self.entries.get(&material_key(&w, &bl)) else {
+            return base_wdl(base?, b); // exact, captures included
+        };
         let be = &self.list[l.entry];
-        let loaded = be.loaded.get_or_init(|| be.init().ok()).as_ref()?;
+        let loaded = be.loaded.get_or_init(|| if be.own { be.init_own().ok() } else { be.init().ok() }).as_ref()?;
         let d = loaded.mapping.bytes();
         let (flip, bside) = if !be.symmetric { (l.flip, b.white_move == l.flip) } else { (!b.white_move, false) };
         let mut p = [0usize; MAX_PIECES];
@@ -292,9 +358,42 @@ impl Tables {
             let idx = encode::encode(&mut p, ei, shape, ENC_FILE);
             (ei, idx)
         };
+        if let Some((own, off, len)) = &ei.own {
+            return Some(own.value(&d[*off..*off + *len], idx as usize) as i32 * 2 - 2); // our tables store 0 loss, 1 draw, 2 win
+        }
         let w = ei.precomp.as_ref()?.decompress(d, idx);
         Some(w as i32 - 2)
     }
+}
+
+/// Answers from the base tables (no WDL file for the material).
+fn base_wdl(base: &Set, b: &Board) -> Option<i32> {
+    let v = base.lookup(b)?;
+    Some(if v.is_win() {
+        WIN
+    } else if v.is_loss() {
+        LOSS
+    } else {
+        DRAW
+    })
+}
+
+/// Reads the piece counts from the header of one of our files.
+fn read_own_header(path: &Path) -> Option<([u8; 6], [u8; 6])> {
+    use std::io::Read;
+    let mut head = [0u8; write::OWN_HEADER];
+    std::fs::File::open(path).ok()?.read_exact(&mut head).ok()?;
+    if &head[..4] != write::OWN_MAGIC || head[4] != write::OWN_VERSION {
+        return None;
+    }
+    let mut first = [0u8; 6];
+    let mut second = [0u8; 6];
+    first.copy_from_slice(&head[8..14]);
+    second.copy_from_slice(&head[14..20]);
+    if first[0] != 1 || second[0] != 1 {
+        return None;
+    }
+    Some((first, second))
 }
 
 /// The piece counts per kind of both colours.
@@ -400,6 +499,44 @@ impl BaseEntry {
         if !split {
             for t in 0..num {
                 ei[num + t] = ei[t].clone();
+            }
+        }
+        Ok(Loaded { mapping, ei })
+    }
+
+    /// Maps one of our files and opens its streams (the counterpart of init
+    /// for Syzygy files).
+    fn init_own(&self) -> std::io::Result<Loaded> {
+        let bad = |msg: String| std::io::Error::new(std::io::ErrorKind::InvalidData, msg);
+        let mapping = Mapping::open(&self.path)?;
+        let d = mapping.bytes();
+        if d.len() < write::OWN_HEADER || &d[..4] != write::OWN_MAGIC || d[4] != write::OWN_VERSION {
+            return Err(bad(format!("syzygy: {} is not an own WDL table", self.name)));
+        }
+        let (sides, files) = (d[6] as usize, d[7] as usize);
+        let (num, enc) = if self.has_pawns { (4, ENC_FILE) } else { (1, ENC_PIECE) };
+        if files != num || sides != 2 - self.symmetric as usize || d.len() < write::OWN_HEADER + write::OWN_DESCRIPTOR * sides * files {
+            return Err(bad(format!("syzygy: {} does not match its material", self.name)));
+        }
+        let mut ei = vec![EncInfo::default(); 2 * num];
+        for side in 0..sides {
+            for f in 0..files {
+                let desc = &d[write::OWN_HEADER + write::OWN_DESCRIPTOR * (side * files + f)..];
+                let e = &mut ei[side * num + f];
+                e.pieces[..7].copy_from_slice(&desc[..7]);
+                encode::setup(e, &self.shape, desc[7] as usize, desc[8] as usize, f, enc);
+                let off = u64::from_le_bytes(desc[16..24].try_into().unwrap()) as usize;
+                let len = u64::from_le_bytes(desc[24..32].try_into().unwrap()) as usize;
+                if off + len > d.len() {
+                    return Err(bad(format!("syzygy: {}: stream {} beyond the file", self.name, side * files + f)));
+                }
+                let t = crate::pairs::Table::open(&d[off..off + len]).map_err(|e| bad(format!("syzygy: {}: {}", self.name, e)))?;
+                e.own = Some((std::sync::Arc::new(t), off, len));
+            }
+        }
+        if sides == 1 {
+            for f in 0..num {
+                ei[num + f] = ei[f].clone();
             }
         }
         Ok(Loaded { mapping, ei })

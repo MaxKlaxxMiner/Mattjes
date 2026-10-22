@@ -27,6 +27,12 @@ use super::Material;
 use crate::lz;
 
 pub const CACHE_DIR: &str = "mattjes-egtb-cache";
+
+/// The cache folder holds the base file at its root; the tables beyond the
+/// base live in two subfolders: the (quantised) distance tables and our own
+/// WDL tables in Syzygy's structure.
+pub const DTM_DIR: &str = "dtm";
+pub const WDL_DIR: &str = "wdl";
 pub const BASE_FILE_NAME: &str = "4-all.bin";
 const MAGIC: &[u8; 4] = b"MEG3";
 const HEADER_BYTES: usize = 16;
@@ -267,9 +273,24 @@ impl Set {
         h
     }
 
-    /// The cache file of a material beyond the base, e.g. "5-KBNKQ.bin".
+    /// The cache file of a material beyond the base, e.g. "dtm/5-KBNKQ.bin".
     pub fn table_path(&self, t: &Table) -> PathBuf {
-        self.cache_dir.join(format!("{}-{}.bin", t.mat.pieces(), t.mat.name()))
+        self.dtm_path().join(format!("{}-{}.bin", t.mat.pieces(), t.mat.name()))
+    }
+
+    /// The folder of the distance tables beyond the base.
+    pub fn dtm_path(&self) -> PathBuf {
+        self.cache_dir.join(DTM_DIR)
+    }
+
+    /// The folder of our own WDL tables (syzygy::write).
+    pub fn wdl_path(&self) -> PathBuf {
+        self.cache_dir.join(WDL_DIR)
+    }
+
+    /// The own WDL table of a material, e.g. "wdl/5-KBNKQ.wdl".
+    pub fn wdl_file(&self, m: &Material) -> PathBuf {
+        self.wdl_path().join(format!("{}-{}.wdl", m.pieces(), m.name()))
     }
 
     /// The exact cache file of a material beyond the base ("5-KBNKQ.bin.raw",

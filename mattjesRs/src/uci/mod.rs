@@ -905,7 +905,7 @@ impl<W: Write + Send + 'static> Engine<W> {
         if 2 + white.len() + black.len() <= 4 {
             return;
         }
-        let Ok(entries) = std::fs::read_dir(&self.set().cache_dir) else { return };
+        let Ok(entries) = std::fs::read_dir(self.set().dtm_path()) else { return };
         let mut names: Vec<String> = entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         names.sort();
         let (mut loaded, mut step) = (0, 1);

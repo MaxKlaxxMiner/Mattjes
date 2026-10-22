@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -167,8 +168,8 @@ func syzygyVerify(dir string, names string, samples int) {
 }
 
 // syzygyOwnWrite writes our own WDL tables of the named base materials ("" =
-// all) into the cache folder (egtb.WdlDir) and prints the sizes.
-func syzygyOwnWrite(names string, workers int, opt pairs.Options) {
+// all) into dir ("" = the cache folder's wdl subfolder) and prints the sizes.
+func syzygyOwnWrite(names string, workers int, opt pairs.Options, dir string) {
 	set := egtbLoadOrGenerate(workers)
 	start := time.Now()
 	total := 0
@@ -178,6 +179,9 @@ func syzygyOwnWrite(names string, workers int, opt pairs.Options) {
 		}
 		tStart := time.Now()
 		path := set.WdlFile(t.Mat)
+		if dir != "" {
+			path = filepath.Join(dir, filepath.Base(path))
+		}
 		b, err := syzygy.WriteWDL(set, t, path, opt, workers, nil)
 		if err != nil {
 			panic(err)
@@ -186,7 +190,11 @@ func syzygyOwnWrite(names string, workers int, opt pairs.Options) {
 		fmt.Printf("%-6s %4d candidates, %8d bytes in %d streams, file %8d bytes (%.1f s)\n", t.Mat.Name(), b.Candidates, b.Bytes(), len(b.Streams), info.Size(), time.Since(tStart).Seconds())
 		total += int(info.Size())
 	}
-	fmt.Printf("written %d bytes to %s in %.1f s\n\n", total, set.WdlPath(), time.Since(start).Seconds())
+	folder := set.WdlPath()
+	if dir != "" {
+		folder = dir
+	}
+	fmt.Printf("written %d bytes to %s in %.1f s\n\n", total, folder, time.Since(start).Seconds())
 }
 
 // syzygyOwnVerify probes our own WDL tables in the cache folder through the
@@ -212,6 +220,32 @@ func syzygyOwnVerify(names string, samples int) {
 		names = strings.Join(all, ";")
 	}
 	syzygyVerifyTables(tb, set, names, samples)
+}
+
+// syzygyDecodeCheck round-trips random indices of the candidate orders of
+// the base materials ("" = all) through the Syzygy index decoder and the
+// encoder (the decoder enumerates stream slices for the candidate
+// preselection of large tables).
+func syzygyDecodeCheck(names string, maxOrders int, samples int) {
+	start := time.Now()
+	totalBad := 0
+	for _, m := range egtb.All() {
+		if names != "" && !strings.Contains(";"+names+";", ";"+m.Name()+";") {
+			continue
+		}
+		checked, bad := syzygy.CheckDecoder(m, maxOrders, samples, 1, func(line string) { fmt.Println(line) })
+		verdict := "ok"
+		if bad > 0 {
+			verdict = fmt.Sprintf("%d MISMATCHES", bad)
+		}
+		fmt.Printf("%-6s %8d indices round-tripped, %s\n", m.Name(), checked, verdict)
+		totalBad += bad
+	}
+	if totalBad == 0 {
+		fmt.Printf("--- decoder: every index round-trips, %s\n\n", time.Since(start).Round(time.Millisecond))
+	} else {
+		fmt.Printf("--- decoder: %d MISMATCHES\n\n", totalBad)
+	}
 }
 
 // syzygyOwnProbe probes single positions (semicolon separated FENs) in our

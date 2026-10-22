@@ -54,7 +54,7 @@ impl Oracle for Tables<'_> {
             Some(_) => (Verdict::Unknown, 0, 0), // invalid position, cannot happen for legal input
             None => {
                 if let Some(wdl) = self.wdl {
-                    if let Some(v) = wdl.probe_wdl(b) {
+                    if let Some(v) = wdl.probe_wdl_with(b, Some(self.set)) {
                         return if v >= crate::syzygy::CURSED_WIN {
                             (Verdict::Win, 1, UNBOUNDED)
                         } else if v <= crate::syzygy::BLESSED_LOSS {

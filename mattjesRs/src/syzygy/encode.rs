@@ -11,7 +11,7 @@ pub const ENC_RANK: usize = 2;
 
 pub const MAX_PIECES: usize = 7;
 
-const OFF_DIAG: [i8; 64] = [
+pub(super) const OFF_DIAG: [i8; 64] = [
     0, -1, -1, -1, -1, -1, -1, -1, 1, 0, -1, -1, -1, -1, -1, -1, 1, 1, 0, -1, -1, -1, -1, -1, 1, 1, 1, 0, -1, -1, -1, -1, 1, 1, 1, 1, 0, -1, -1, -1, 1, 1, 1, 1, 1, 0, -1, -1, 1, 1, 1, 1, 1, 1, 0, -1, 1, 1, 1, 1, 1, 1, 1, 0,
 ];
 
@@ -19,7 +19,7 @@ const TRIANGLE: [u8; 64] = [
     6, 0, 1, 2, 2, 1, 0, 6, 0, 7, 3, 4, 4, 3, 7, 0, 1, 3, 8, 5, 5, 8, 3, 1, 2, 4, 5, 9, 9, 5, 4, 2, 2, 4, 5, 9, 9, 5, 4, 2, 1, 3, 8, 5, 5, 8, 3, 1, 0, 7, 3, 4, 4, 3, 7, 0, 6, 0, 1, 2, 2, 1, 0, 6,
 ];
 
-const FLIP_DIAG: [u8; 64] = [
+pub(super) const FLIP_DIAG: [u8; 64] = [
     0, 8, 16, 24, 32, 40, 48, 56, 1, 9, 17, 25, 33, 41, 49, 57, 2, 10, 18, 26, 34, 42, 50, 58, 3, 11, 19, 27, 35, 43, 51, 59, 4, 12, 20, 28, 36, 44, 52, 60, 5, 13, 21, 29, 37, 45, 53, 61, 6, 14, 22, 30, 38, 46, 54, 62, 7, 15, 23, 31, 39, 47, 55, 63,
 ];
 
@@ -114,7 +114,10 @@ static INDICES: LazyLock<Indices> = LazyLock::new(|| {
 /// mixed-radix factors.
 #[derive(Clone, Default)]
 pub struct EncInfo {
+    /// A Syzygy file's stream, or our own (write.rs; the mapping's bytes go
+    /// to every lookup).
     pub precomp: Option<super::pairs::PairsData>,
+    pub own: Option<(std::sync::Arc<crate::pairs::Table>, usize, usize)>, // the container and its offset and length in the mapping
     pub factor: [u64; MAX_PIECES],
     pub pieces: [u8; MAX_PIECES],
     pub norm: [u8; MAX_PIECES],
@@ -258,15 +261,27 @@ fn subfactor(k: u64, n: u64) -> u64 {
 /// header bytes tb (nibble shift 0 or 4 for the two sides of a split
 /// table) and computes the factors; returns the table size.
 pub fn init_enc_info(ei: &mut EncInfo, shape: &Shape, tb: &[u8], shift: u32, t: usize, enc: usize) -> u64 {
-    let ix = &*INDICES;
     let more_pawns = enc != ENC_PIECE && shape.pawns[1] > 0;
     let mp = more_pawns as usize;
     for i in 0..shape.num {
         ei.pieces[i] = (tb[i + 1 + mp] >> shift) & 0x0f;
-        ei.norm[i] = 0;
     }
     let order = ((tb[0] >> shift) & 0x0f) as usize;
     let order2 = if more_pawns { ((tb[1] >> shift) & 0x0f) as usize } else { 0x0f };
+    setup(ei, shape, order, order2, t, enc)
+}
+
+/// Computes the groups (norm) and the factors of an encoding from its piece
+/// order (ei.pieces), the chain position of the leading group (order) and
+/// of the other colour's pawns (order2, 0x0f when there are none); t is the
+/// file or rank class of a pawn table. Returns the table size.
+pub fn setup(ei: &mut EncInfo, shape: &Shape, order: usize, order2: usize, t: usize, enc: usize) -> u64 {
+    let ix = &*INDICES;
+    let more_pawns = enc != ENC_PIECE && shape.pawns[1] > 0;
+    for i in 0..shape.num {
+        ei.norm[i] = 0;
+        ei.factor[i] = 0;
+    }
     let mut k = if enc != ENC_PIECE {
         shape.pawns[0] as usize
     } else if shape.kk_enc {

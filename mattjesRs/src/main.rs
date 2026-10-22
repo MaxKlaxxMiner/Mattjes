@@ -188,12 +188,19 @@ fn experiments() {
     // option n = Patricia's net in the certificate builder's policy, i = the descent's numbers from the net (docs/nnue-patricia.md)
     // tests_wdllist::wdllist_solve(&test_arg(0, ""), &test_arg(1, "x"));
     // --- package pairs (Syzygy's scheme, own container) on the WDL streams the Go testbench dumps to tests/wdl: "test <names> <blockBytes> <indexBits> <pairsPerPass> <minCount> <maxSymbols> <maxSymbolLen>"; lines identical to Go (checksum column) ---
-    tests_pairs::pairs_measure(
-        "tests/wdl",
-        &test_arg(0, ""),
-        pairs::Options { block_bytes: test_int(1, 0), index_bits: test_int(2, 0), pairs_per_pass: test_int(3, 64), min_count: test_int(4, 8), max_symbols: test_int(5, 4095), max_symbol_len: test_int(6, 256), workers: 12 },
-        true,
-    );
+    // tests_pairs::pairs_measure(
+    //     "tests/wdl",
+    //     &test_arg(0, ""),
+    //     pairs::Options { block_bytes: test_int(1, 0), index_bits: test_int(2, 0), pairs_per_pass: test_int(3, 64), min_count: test_int(4, 8), max_symbols: test_int(5, 4095), max_symbol_len: test_int(6, 256), workers: 12 },
+    //     true,
+    // );
+    // --- our own WDL files (syzygy/write.rs): "test <names> <dir> <samples> <verifyNames>" writes them (names "all" or omitted = all 35, "-" = none; dir "cache" or omitted = mattjes-egtb-cache/wdl), then probes the cache folder's files against the base (empty arguments do not survive the shell, hence the words) ---
+    let word = |a: String, all: &str| if a == all { String::new() } else { a };
+    let names = word(test_arg(0, "all"), "all");
+    if names != "-" {
+        tests_syzygy::syzygy_own_write(&names, 12, pairs::Options { workers: 12, ..Default::default() }, &word(test_arg(1, "cache"), "cache"));
+    }
+    tests_syzygy::syzygy_own_verify(&word(test_arg(3, "all"), "all"), test_int(2, 20000));
     // --- rollouts (module rollout, docs/nnue-patricia.md): "test <names> <options> <maxPlies>", options t/s oracle, d depth 2, v lines; every root move played out ---
     // tests_rollout::rollout_positions(&test_arg(0, ""), &test_arg(1, "s"), test_int(2, 200)); // 2026-10-22: 561 of 567 root moves with Syzygy, 478 (depth 2: 516) with the four-piece tables, 284 without
     // tests_rollout::rollout_line(&test_arg(0, "8/8/4k3/8/8/8/RK6/2R2n2 b - - 1 1"), &test_arg(1, "s"), test_int(2, 200));

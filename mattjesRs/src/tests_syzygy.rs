@@ -42,7 +42,57 @@ pub fn syzygy_verify(dir: &str, names: &str, samples: usize) {
         }
     };
     println!("syzygy: {} WDL tables in {}, largest {} pieces, scanned in {:?}", tb.count(), dir, tb.largest(), start.elapsed());
-    let mut set: Set = crate::tests_egtb::egtb_load_or_generate(12);
+    let set: Set = crate::tests_egtb::egtb_load_or_generate(12);
+    syzygy_verify_tables(&tb, set, names, samples);
+}
+
+/// Writes our own WDL tables of the named base materials ("" = all) into
+/// dir ("" = the cache folder's wdl subfolder) and prints the sizes (the
+/// lines of the Go testbench; the files are byte-identical).
+pub fn syzygy_own_write(names: &str, workers: usize, opt: crate::pairs::Options, dir: &str) {
+    let set = crate::tests_egtb::egtb_load_or_generate(workers);
+    let start = Instant::now();
+    let mut total = 0u64;
+    let folder = if dir.is_empty() { set.wdl_path() } else { std::path::PathBuf::from(dir) };
+    for t in set.base() {
+        if !names.is_empty() && !format!(";{};", names).contains(&format!(";{};", t.mat.name())) {
+            continue;
+        }
+        let t_start = Instant::now();
+        let path = folder.join(format!("{}-{}.wdl", t.mat.pieces(), t.mat.name()));
+        let b = syzygy::write::write_wdl(&set, t, &path, opt, workers, None).expect("write wdl");
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        println!("{:<6} {:>4} candidates, {:>8} bytes in {} streams, file {:>8} bytes ({:.1} s)", t.mat.name(), b.candidates, b.bytes(), b.streams.len(), size, t_start.elapsed().as_secs_f64());
+        total += size;
+    }
+    println!("written {} bytes to {} in {:.1} s\n", total, folder.display(), start.elapsed().as_secs_f64());
+}
+
+/// Probes our own WDL tables in the cache folder through the Syzygy prober
+/// against the base tables ("" = every material with a file).
+pub fn syzygy_own_verify(names: &str, samples: usize) {
+    let set = crate::tests_egtb::egtb_load_or_generate(12);
+    let mut tb = Tables::new();
+    let n = match tb.add_own(&set.wdl_path()) {
+        Ok(n) => n,
+        Err(e) => {
+            println!("own wdl: {}", e);
+            return;
+        }
+    };
+    println!("own wdl: {} tables in {}", n, set.wdl_path().display());
+    let names = if names.is_empty() {
+        set.base().iter().filter(|t| set.wdl_file(&t.mat).exists()).map(|t| t.mat.name()).collect::<Vec<_>>().join(";")
+    } else {
+        names.to_string()
+    };
+    syzygy_verify_tables(&tb, set, &names, samples);
+}
+
+/// Compares the WDL tables with the own tables of the named materials on
+/// random positions (the base answers captures into materials without a file).
+fn syzygy_verify_tables(tb: &Tables, mut set: Set, names: &str, samples: usize) {
+    let start = Instant::now();
     let mut rng = Rng(0x9E3779B97F4A7C15);
     let mut total_mismatch = 0;
     for name in names.split(';') {
@@ -91,7 +141,7 @@ pub fn syzygy_verify(dir: &str, names: &str, samples: usize) {
                 continue;
             }
             let Some(own) = set.lookup(&b) else { continue };
-            let Some(v) = tb.probe_wdl(&b) else {
+            let Some(v) = tb.probe_wdl_with(&b, Some(&set)) else {
                 no_table += 1;
                 if no_table > 10 {
                     break;
