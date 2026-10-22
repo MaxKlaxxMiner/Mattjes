@@ -1048,6 +1048,25 @@ sondern je Runde) und die Welle selbst beobachten.
    WDL-Gewinn weiter nach seiner Distanz (KQQ-KN findet Matt in 2).
    Nur Sieben-Steiner laufen noch über die Suche. Go und Rust
    zeilenidentisch.
-7. Speicher weiter: `wdlBytesPerPosition` nach Messung an der Spitze
-   senken (Rust 192), Rust-`Vec`s mit Faktor 1,25 wachsen lassen,
-   Kanten mit `uint32`-Paaren in Blöcken ohne Reallokation.
+7. ~~Speicher weiter: `wdlBytesPerPosition` nach Messung an der Spitze
+   senken (Rust 192), Rust-`Vec`s mit Faktor 1,25 wachsen lassen.~~
+   Gemessen (2026-10-22): die Rust-`Vec`s des Graphen wachsen jetzt um
+   ein Viertel statt zu verdoppeln (`push_grow`, wie Go bei großen
+   Slices). A/B Verdopplung gegen Viertel, Abstieg allein, Buchhaltung
+   nach Kapazität und Prozess-Spitze (zugesichert / Arbeitssatz):
+
+   | Stellung | Verdopplung | Viertel |
+   |---|---|---|
+   | KQ-KN, 687 Tsd. Stellungen | 164 B/Stellung, 115 / 92 MB | 138 B, 109 / 100 MB |
+   | KQ-KP c-Bauer, 4,05 Mio. | 161 B, 693 / 639 MB | 177 B, 813 / 738 MB |
+   | KBN-K, 4,85 Mio. | 242 B, 1.142 / 829 MB | 199 B, 1.121 / 988 MB |
+
+   Die Kapazität liegt mit dem Viertel im Schnitt tiefer (die Verdopplung
+   traf bei 4,05 Mio. zufällig 2^22), die Spitze des Prozesses nicht: die
+   Reallokationen kopieren alt und neu nebeneinander, und der Allokator
+   gibt nicht sofort zurück. Behalten, weil die Buchhaltung damit der von
+   Go entspricht. **`wdlBytesPerPosition` bleibt 256:** die Spitze je
+   Stellung liegt im Abstieg bei 200 bis 230 Byte (KQ-KP 201, KBN-K
+   231), die Buchhaltung bei 160 bis 200; 192 hätte die Zusage von Hash
+   an der Spitze um ein Fünftel gebrochen. Kanten in Blöcken ohne
+   Reallokation bleiben die Idee, falls die Spitze je drücken sollte.

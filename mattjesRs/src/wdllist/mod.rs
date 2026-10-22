@@ -169,6 +169,16 @@ pub(super) struct Edge {
 
 pub(super) const NO_EDGE: u32 = u32::MAX;
 
+/// Pushes with a growth of a quarter instead of Vec's doubling (as Go's
+/// slices grow at this size): the capacity slack of the per-node arrays
+/// and the edge arenas is what the Hash cap pays for (docs/m7-wdl-search.md).
+fn push_grow<T>(v: &mut Vec<T>, x: T) {
+    if v.len() == v.capacity() {
+        v.reserve_exact(v.len() / 4 + 1);
+    }
+    v.push(x);
+}
+
 const FL_EXPANDED: u8 = 1; // children added
 const FL_ON_PATH: u8 = 2; // on the current descent path
 const FL_UNSAFE: u8 = 4; // scratch flag of the fixed point
@@ -360,7 +370,7 @@ impl<'a> Graph<'a> {
     /// to the parents of c (newest first).
     fn add_edge(&mut self, i: u32, c: u32) {
         let e = self.cedges.len() as u32;
-        self.cedges.push(Edge { node: c, next: NO_EDGE });
+        push_grow(&mut self.cedges, Edge { node: c, next: NO_EDGE });
         let iu = i as usize;
         if self.last_child[iu] == NO_EDGE {
             self.first_child[iu] = e;
@@ -370,7 +380,8 @@ impl<'a> Graph<'a> {
         self.last_child[iu] = e;
         self.nchildren[iu] += 1;
         let p = self.pedges.len() as u32;
-        self.pedges.push(Edge { node: i, next: self.first_parent[c as usize] });
+        let head = self.first_parent[c as usize];
+        push_grow(&mut self.pedges, Edge { node: i, next: head });
         self.first_parent[c as usize] = p;
         self.edges += 1;
     }
@@ -428,14 +439,14 @@ impl<'a> Graph<'a> {
     /// the leaf numbers from its mobility.
     fn add(&mut self, b: &Board) -> u32 {
         let i = self.recs.len() as u32;
-        self.recs.push(packed_fixed_record(b));
-        self.first_child.push(NO_EDGE);
-        self.last_child.push(NO_EDGE);
-        self.first_parent.push(NO_EDGE);
-        self.nchildren.push(0);
-        self.white.push(b.white_move);
-        self.level.push(0);
-        self.flags.push(0);
+        push_grow(&mut self.recs, packed_fixed_record(b));
+        push_grow(&mut self.first_child, NO_EDGE);
+        push_grow(&mut self.last_child, NO_EDGE);
+        push_grow(&mut self.first_parent, NO_EDGE);
+        push_grow(&mut self.nchildren, 0);
+        push_grow(&mut self.white, b.white_move);
+        push_grow(&mut self.level, 0);
+        push_grow(&mut self.flags, 0);
         let attacker = b.white_move == self.attacker_white;
         let mut status = ST_UNKNOWN;
         let mut n = 0;
@@ -461,9 +472,9 @@ impl<'a> Graph<'a> {
                 status = if b.in_check() { ST_LOSS } else { ST_DRAW_T };
             }
         }
-        self.status.push(status);
-        self.nmoves.push(n as u8);
-        self.remaining.push(n as u8);
+        push_grow(&mut self.status, status);
+        push_grow(&mut self.nmoves, n as u8);
+        push_grow(&mut self.remaining, n as u8);
         if let Some(configs) = self.defender_configs.as_mut() {
             let h = {
                 let mut h: u64 = 0x9E3779B97F4A7C15;
@@ -475,9 +486,9 @@ impl<'a> Graph<'a> {
                 h
             };
             *configs.entry(h).or_insert(0) += 1;
-            self.chase.push(CH_UNKNOWN);
-            self.chase_depth.push(0);
-            self.chase_quiet.push(0);
+            push_grow(&mut self.chase, CH_UNKNOWN);
+            push_grow(&mut self.chase_depth, 0);
+            push_grow(&mut self.chase_quiet, 0);
         }
         let (mut pn, mut dn) = (1u32, 1u32);
         if status == ST_LOSS && !attacker {
@@ -493,8 +504,8 @@ impl<'a> Graph<'a> {
         }
         if self.defender_configs.is_none() {
             // the descent's numbers; the certificate builder's graph has none
-            self.pn.push(pn);
-            self.dn.push(dn);
+            push_grow(&mut self.pn, pn);
+            push_grow(&mut self.dn, dn);
         }
         i
     }
