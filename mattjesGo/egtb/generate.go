@@ -25,6 +25,7 @@ type Stats struct {
 	Overflow                          bool // distances beyond MaxPlies occurred, the table is incomplete
 	Beyond                            int  // positions with distance MaxPlies+1 (or waiting for deeper cross-table children): a lower bound of what is missing
 	Aborted                           bool // the Control aborted the generation, the table is empty
+	Loaded                            bool // the table came from its exact file (RawPath), nothing was computed (GenerateNotify)
 }
 
 // LongestMate is the longest forced mate in moves (the usual way to quote it).
@@ -123,7 +124,8 @@ func (s *Set) GenerateControlled(t *Table, workers int, ctrl *Control, progress 
 }
 
 // TableDone is called by GenerateNotify after every completed table, the
-// dependencies first (each still exact in memory), the requested table last.
+// dependencies first (each still exact in memory), the requested table last;
+// a dependency loaded from its exact file comes with Stats.Loaded set.
 type TableDone func(t *Table, st Stats)
 
 // GenerateNotify is GenerateControlled with a callback per completed table
@@ -146,6 +148,9 @@ func (s *Set) GenerateNotify(t *Table, workers int, ctrl *Control, progress Prog
 			clearTables([]*Table{dt})
 		}
 		if !dt.available() && s.loadRaw(dt, progress) {
+			if done != nil {
+				done(dt, Stats{Loaded: true})
+			}
 			continue
 		}
 		if !dt.available() {

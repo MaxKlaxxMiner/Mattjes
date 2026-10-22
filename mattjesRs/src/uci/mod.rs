@@ -661,30 +661,30 @@ impl<W: Write + Send + 'static> Engine<W> {
                 let _ = writeln!(o, "info string egtb: {}", compact(line));
                 let _ = o.flush();
             };
-            // every table gets its log line; a dependency the job had to
-            // compute is written exactly (raw_path) right away, so that a job
+            // every computed table gets its log line; a dependency the job
+            // had to compute (or found as an exact file) is written right
+            // away, both exactly (raw_path) and quantised, so that a job
             // interrupted before the requested table loses nothing and a
-            // later generation loads it instead of computing it again (the
-            // quantised file below cannot serve as a dependency)
+            // later generation loads the exact file instead of computing it
+            // again (the quantised file cannot serve as a dependency); the
+            // requested table is written below
             let out_done = out.clone();
-            let mut done = move |set: &Set, gi: usize, st: &egtb::Stats| {
-                let say = |line: String| {
+            let mut done = move |set: &mut Set, gi: usize, st: &egtb::Stats| {
+                let say = |line: &str| {
                     let mut o = out_done.lock().unwrap();
-                    let _ = writeln!(o, "info string egtb: {}", line);
+                    let _ = writeln!(o, "info string egtb: {}", line.strip_prefix("egtb: ").unwrap_or(line));
                     let _ = o.flush();
                 };
-                if let Err(e) = egtb::append_log(&set.cache_dir, &set.log_line(gi, st, workers, "uci")) {
-                    say(e.to_string());
+                if !st.loaded {
+                    if let Err(e) = egtb::append_log(&set.cache_dir, &set.log_line(gi, st, workers, "uci")) {
+                        say(&e.to_string());
+                    }
                 }
                 if gi == ti || !write {
                     return;
                 }
-                let path = set.raw_path(&set.tables[gi]);
-                if !path.exists() {
-                    match set.save_raw_table(gi, &path) {
-                        Ok(()) => say(format!("written exact to {}", path.display())),
-                        Err(e) => say(e.to_string()),
-                    }
+                if let Err(e) = set.save_both(gi, &mut |line| say(line)) {
+                    say(&e.to_string());
                 }
             };
             let st = fork.generate_notify(ti, workers, Some(&ctrl), &mut progress, Some(&mut done));
@@ -804,15 +804,33 @@ impl<W: Write + Send + 'static> Engine<W> {
             Some(ti) => ti,
             None => set.add_material(m),
         };
-        // the quantised file first, else the exact twin of an interrupted job
-        // (read block by block like any cache file, only with step 1)
+        // the quantised file first, else the exact twin of an interrupted
+        // job: with EgtbWriteCache the quantised file is made from it now
+        // (loaded whole, written, dropped), otherwise it is read block by
+        // block like any cache file, only with step 1
+        let write_cache = self.write_cache;
+        let set = self.set.as_mut().expect("tables are loaded before searching");
         let mut path = set.table_path(&set.tables[ti]);
         if !path.exists() {
-            path = set.raw_path(&set.tables[ti]);
-            if !path.exists() {
+            let raw = set.raw_path(&set.tables[ti]);
+            if !raw.exists() {
                 return (ti, false);
             }
+            if write_cache {
+                if let Err(e) = set.load_raw_table(ti, &raw) {
+                    self.send(&format!("info string {}: {}", raw.display(), e));
+                    return (ti, false);
+                }
+                if let Err(e) = set.save_table(ti, &path) {
+                    self.send(&format!("info string {}: {}", path.display(), e));
+                    return (ti, false);
+                }
+                self.send(&format!("info string egtb: written to {} (from {})", path.display(), raw.display()));
+            } else {
+                path = raw;
+            }
         }
+        let set = self.set.as_mut().expect("tables are loaded before searching");
         match set.load_table(ti, &path) {
             Ok(()) => (ti, true),
             Err(e) => {

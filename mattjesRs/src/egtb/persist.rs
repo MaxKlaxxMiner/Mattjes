@@ -405,6 +405,30 @@ impl Set {
         Ok(())
     }
 
+    /// Writes the exact file (`raw_path`) and the quantised file
+    /// (`table_path`) of a table that is exact in memory, each only when
+    /// missing, and leaves the table exact: `save_table` quantises in place,
+    /// so the exact file is loaded back afterwards (0.4 s for a five-piece
+    /// table). For a background job's dependencies, which later tables of the
+    /// job still need exactly. `progress` gets a line per written file.
+    /// Returns the first error.
+    pub fn save_both(&mut self, ti: usize, progress: Progress) -> std::io::Result<()> {
+        let (raw, quantised) = (self.raw_path(&self.tables[ti]), self.table_path(&self.tables[ti]));
+        if !self.tables[ti].is_exact() {
+            return Err(io_err(format!("egtb: table {} is quantised (step {}), no exact file", self.tables[ti].mat.name(), self.tables[ti].step())));
+        }
+        if !raw.exists() {
+            self.save_raw_table(ti, &raw)?;
+            progress(&format!("egtb: written exact to {}", raw.display()));
+        }
+        if !quantised.exists() {
+            self.save_table(ti, &quantised)?;
+            progress(&format!("egtb: written to {}", quantised.display()));
+            self.load_raw_table(ti, &raw)?;
+        }
+        Ok(())
+    }
+
     /// Opens one table (a material beyond the base) from path: it stays
     /// compressed in the file and is read block by block (`open_table`).
     /// Checks size and, when recorded, the checksum.

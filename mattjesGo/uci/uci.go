@@ -579,24 +579,23 @@ func (e *Engine) startJobFrom(m egtb.Material, set *egtb.Set) bool {
 			e.send("info string egtb: %s", compact(line))
 			e.flush()
 		}
-		// every table gets its log line; a dependency the job had to compute
-		// is written exactly (RawPath) right away, so that a job interrupted
-		// before the requested table loses nothing and a later generation
-		// loads it instead of computing it again (the quantised file below
-		// cannot serve as a dependency)
+		// every computed table gets its log line; a dependency the job had
+		// to compute (or found as an exact file) is written right away, both
+		// exactly (RawPath) and quantised, so that a job interrupted before
+		// the requested table loses nothing and a later generation loads the
+		// exact file instead of computing it again (the quantised file
+		// cannot serve as a dependency); the requested table is written below
 		done := func(gt *egtb.Table, st egtb.Stats) {
-			if err := egtb.AppendLog(set.CacheDir, set.LogLine(gt, st, workers, "uci")); err != nil {
-				progress(err.Error())
+			if !st.Loaded {
+				if err := egtb.AppendLog(set.CacheDir, set.LogLine(gt, st, workers, "uci")); err != nil {
+					progress(err.Error())
+				}
 			}
 			if gt == t || !write {
 				return
 			}
-			if path := set.RawPath(gt); fileMissing(path) {
-				if err := set.SaveRawTable(gt, path); err != nil {
-					progress(err.Error())
-				} else {
-					progress("written exact to " + path)
-				}
+			if err := set.SaveBoth(gt, func(line string) { progress(strings.TrimPrefix(line, "egtb: ")) }); err != nil {
+				progress(err.Error())
 			}
 		}
 		st := set.GenerateNotify(t, workers, j.ctrl, progress, done)
@@ -756,13 +755,28 @@ func (e *Engine) openTable(m egtb.Material) (*egtb.Table, bool) {
 	if t == nil {
 		t = e.set.AddMaterial(m)
 	}
-	// the quantised file first, else the exact twin of an interrupted job
-	// (read block by block like any cache file, only with step 1)
+	// the quantised file first, else the exact twin of an interrupted job:
+	// with EgtbWriteCache the quantised file is made from it now (loaded
+	// whole, written, dropped), otherwise it is read block by block like
+	// any cache file, only with step 1
 	path := e.set.TablePath(t)
 	if fileMissing(path) {
-		path = e.set.RawPath(t)
-		if fileMissing(path) {
+		raw := e.set.RawPath(t)
+		if fileMissing(raw) {
 			return t, false
+		}
+		if e.writeCache {
+			if err := e.set.LoadRawTable(t, raw); err != nil {
+				e.send("info string %s: %v", raw, err)
+				return t, false
+			}
+			if err := e.set.SaveTable(t, path); err != nil {
+				e.send("info string %s: %v", path, err)
+				return t, false
+			}
+			e.send("info string egtb: written to %s (from %s)", path, raw)
+		} else {
+			path = raw
 		}
 	}
 	if err := e.set.LoadTable(t, path); err != nil {

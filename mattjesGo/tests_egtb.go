@@ -299,18 +299,15 @@ func egtbMeasure(names []string, workers int, verify bool) {
 			if !errors.Is(err, os.ErrNotExist) {
 				progress("egtb: " + err.Error())
 			}
-			// dependencies the generator has to compute are written exactly at
-			// once (RawPath), as the UCI job does; it loads such files itself
+			// dependencies the generator has to compute are written at once,
+			// exactly (RawPath) and quantised, as the UCI job does; it loads
+			// the exact files itself
 			st = set.GenerateNotify(t, workers, nil, progress, func(gt *egtb.Table, _ egtb.Stats) {
 				if gt == t {
 					return
 				}
-				if path := set.RawPath(gt); errors.Is(func() error { _, err := os.Stat(path); return err }(), os.ErrNotExist) {
-					if err := set.SaveRawTable(gt, path); err != nil {
-						progress("egtb: " + err.Error())
-					} else {
-						progress("egtb: written exact to " + path)
-					}
+				if err := set.SaveBoth(gt, progress); err != nil {
+					progress("egtb: " + err.Error())
 				}
 			})
 		}

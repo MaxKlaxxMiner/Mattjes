@@ -462,6 +462,38 @@ func (s *Set) LoadRawTable(t *Table, path string) error {
 	return nil
 }
 
+// SaveBoth writes the exact file (RawPath) and the quantised file (TablePath)
+// of a table that is exact in memory, each only when missing, and leaves the
+// table exact: SaveTable quantises in place, so the exact file is loaded
+// back afterwards (0.4 s for a five-piece table). For a background job's
+// dependencies, which later tables of the job still need exactly. progress
+// gets a line per written file (nil = silent). Returns the first error.
+func (s *Set) SaveBoth(t *Table, progress Progress) error {
+	if progress == nil {
+		progress = func(string) {}
+	}
+	raw, quantised := s.RawPath(t), s.TablePath(t)
+	if !t.Exact() {
+		return fmt.Errorf("egtb: table %s is quantised (step %d), no exact file", t.Mat.Name(), t.Step)
+	}
+	if _, err := os.Stat(raw); err != nil {
+		if err := s.SaveRawTable(t, raw); err != nil {
+			return err
+		}
+		progress("egtb: written exact to " + raw)
+	}
+	if _, err := os.Stat(quantised); err != nil {
+		if err := s.SaveTable(t, quantised); err != nil {
+			return err
+		}
+		progress("egtb: written to " + quantised)
+		if err := s.LoadRawTable(t, raw); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // LoadTable opens one table (a material beyond the base) from path: it
 // stays compressed in the file and is read block by block (openTable).
 // Checks size and, when recorded, the checksum.

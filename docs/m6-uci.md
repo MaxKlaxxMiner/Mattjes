@@ -199,15 +199,22 @@ und `GenerateControlled` bleiben) **lädt eine `.bin.raw`, statt die Abhängigke
 zu rechnen** (`LoadRawTable`, komplett in den RAM, Prüfsumme gegen `TableChecksums`),
 auch in `egtb-measure`, das die Raw-Dateien seiner Abhängigkeiten ebenso schreibt.
 Jede fertige Tabelle bekommt ihre Zeile in `measure.log`, nicht mehr nur das Ziel.
-Ein abgebrochener Job verliert damit höchstens die angefangene Tabelle; die Suche
-öffnet eine `.bin.raw`, wenn die `.bin` fehlt (`openTable`, blockweise wie jede
-Cache-Datei, nur mit Schrittweite 1). Die Raw-Dateien räumt der Autor von Hand weg,
-sobald keine weitere Erzeugung sie braucht (sie sind zwei- bis dreimal so groß wie
-die quantisierten).
+Ein abgebrochener Job verliert damit höchstens die angefangene Tabelle. **Die
+quantisierte Datei folgt sofort** (Nachtrag des Autors am selben Tag, `Set.SaveBoth`):
+direkt nach der Raw-Datei, und ebenso wenn der Generator eine Raw-Datei lädt, deren
+`.bin` noch fehlt. Der einfache Weg statt eines eigenen Packers: `SaveTable`
+quantisiert wie immer in place und schreibt, danach wird die Raw-Datei zurückgeladen
+(0,4 s bei einem Fünf-Steiner), die Tabelle ist wieder exakt. Die Suche öffnet eine
+`.bin.raw`, wenn die `.bin` fehlt (`openTable`): mit `EgtbWriteCache` wird die `.bin`
+dabei gleich daraus erzeugt (ganz laden, schreiben, dann wie üblich blockweise öffnen),
+sonst wird die Raw-Datei blockweise gelesen wie jede Cache-Datei, nur mit Schrittweite 1.
+Die Raw-Dateien räumt der Autor von Hand weg, sobald keine weitere Erzeugung sie
+braucht (sie sind zwei- bis dreimal so groß wie die quantisierten).
 
 ```
 info string egtb: KQQKQ wins 21,929,252, losses 22,725,436, draws 11,340,323, longest mate 59 plies = 30 moves, 19.7 s
 info string egtb: written exact to E:\...\mattjes-egtb-cache\5-KQQKQ.bin.raw
+info string egtb: written to E:\...\mattjes-egtb-cache\5-KQQKQ.bin
 ...
 info string egtb: loaded exact E:\...\mattjes-egtb-cache\5-KQQKQ.bin.raw (231 MB) in 0.4 s     <- nächster Job
 ```

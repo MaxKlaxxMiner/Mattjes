@@ -17,10 +17,11 @@ use crate::chess::{new_buffer, Move, Piece, Pos, WIDTH};
 pub type Progress<'a> = &'a mut dyn FnMut(&str);
 
 /// Called by `generate_notify` after every completed table (set, table
-/// index, its stats).
+/// index, its stats), the dependencies first, the requested table last; a
+/// dependency loaded from its exact file comes with `Stats.loaded` set.
 /// The two lifetimes keep the reborrow for the recursion short while the
 /// closure itself may live longer (`&mut (dyn Trait + 'a)` is invariant).
-pub type TableDone<'r, 'c> = &'r mut (dyn FnMut(&Set, usize, &Stats) + 'c);
+pub type TableDone<'r, 'c> = &'r mut (dyn FnMut(&mut Set, usize, &Stats) + 'c);
 
 /// Describes a generated table.
 #[derive(Clone, Copy, Default, Debug)]
@@ -44,6 +45,9 @@ pub struct Stats {
     pub beyond: usize,
     /// The Control aborted the generation, the table is empty.
     pub aborted: bool,
+    /// The table came from its exact file (`raw_path`), nothing was computed
+    /// (`generate_notify`).
+    pub loaded: bool,
 }
 
 impl Stats {
@@ -166,6 +170,9 @@ impl Set {
                 self.tables[di].clear();
             }
             if !self.tables[di].is_available() && self.load_raw(di, progress) {
+                if let Some(d) = done.as_deref_mut() {
+                    d(self, di, &Stats { loaded: true, ..Stats::default() });
+                }
                 continue;
             }
             if !self.tables[di].is_available() {
