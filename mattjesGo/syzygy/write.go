@@ -381,6 +381,15 @@ type BuildOptions struct {
 	Finalists int
 	// Window: positions per sample window (0 = 4096).
 	Window int
+	// DictAbove: a stream with more positions than this is packed with a
+	// dictionary from a sample of DictSample values (pairs.Options.DictSample)
+	// instead of Re-Pair over the whole stream (0 = 512 Mi; a five-piece
+	// stream of 115 Mi packs completely in half a minute, the sample would
+	// cost 14 % size for no time; a six-piece stream of billions would take
+	// hours).
+	DictAbove int
+	// DictSample: the sample of the dictionary above DictAbove (0 = 16 Mi).
+	DictSample int
 }
 
 func (bo BuildOptions) withDefaults() BuildOptions {
@@ -392,6 +401,12 @@ func (bo BuildOptions) withDefaults() BuildOptions {
 	}
 	if bo.Window <= 0 {
 		bo.Window = 4096
+	}
+	if bo.DictAbove <= 0 {
+		bo.DictAbove = 512 << 20
+	}
+	if bo.DictSample <= 0 {
+		bo.DictSample = 16 << 20
 	}
 	return bo
 }
@@ -457,7 +472,11 @@ func Build(src *Source, opt pairs.Options, bo BuildOptions, workers int, progres
 		for _, o := range chosen {
 			values, sizes := buildSide(src, be, side, o, b.Files, workers)
 			for f := 0; f < b.Files; f++ {
-				packed, st := pairs.PackStats(values[f], 3, opt)
+				po := opt
+				if sizes[f] > uint64(bo.DictAbove) && po.DictSample == 0 {
+					po.DictSample = bo.DictSample
+				}
+				packed, st := pairs.PackStats(values[f], 3, po)
 				s := &b.Streams[side*b.Files+f]
 				if s.Packed == nil || len(packed) < len(s.Packed) {
 					*s = Stream{Order: o, Size: sizes[f], Packed: packed, Stats: st}

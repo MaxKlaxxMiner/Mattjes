@@ -188,17 +188,21 @@ fn experiments() {
     // option n = Patricia's net in the certificate builder's policy, i = the descent's numbers from the net (docs/nnue-patricia.md)
     // tests_wdllist::wdllist_solve(&test_arg(0, ""), &test_arg(1, "x"));
     // --- package pairs (Syzygy's scheme, own container) on the WDL streams the Go testbench dumps to tests/wdl: "test <names> <blockBytes> <indexBits> <pairsPerPass> <minCount> <maxSymbols> <maxSymbolLen>"; lines identical to Go (checksum column) ---
-    // tests_pairs::pairs_measure(
-    //     "tests/wdl",
-    //     &test_arg(0, ""),
-    //     pairs::Options { block_bytes: test_int(1, 0), index_bits: test_int(2, 0), pairs_per_pass: test_int(3, 64), min_count: test_int(4, 8), max_symbols: test_int(5, 4095), max_symbol_len: test_int(6, 256), workers: 12 },
-    //     true,
-    // );
+    if test_arg(0, "") == "pairs" {
+        // "test pairs <names> <blockBytes> <indexBits> <pairsPerPass> <minCount> <maxSymbols> <maxSymbolLen> <dictSample>"
+        tests_pairs::pairs_measure(
+            "tests/wdl",
+            &test_arg(1, ""),
+            pairs::Options { block_bytes: test_int(2, 0), index_bits: test_int(3, 0), pairs_per_pass: test_int(4, 64), min_count: test_int(5, 8), max_symbols: test_int(6, 4095), max_symbol_len: test_int(7, 256), dict_sample: test_int(8, 0), workers: 12 },
+            true,
+        );
+        return;
+    }
     // --- our own WDL files (syzygy/write.rs): "test <names> <dir> <samples> <verifyNames>" writes them (names "all" or omitted = all 35, "-" = none; dir "cache" or omitted = mattjes-egtb-cache/wdl), then probes the cache folder's files against the base (empty arguments do not survive the shell, hence the words) ---
     // "test <names> <dir> <samples> <verifyNames> <sampleTarget> <finalists>"; sampleTarget 0 = 2 Mi (every base stream built completely), 65536 = the preselection on 3 % of a four-piece stream
     let word = |a: String, all: &str| if a == all { String::new() } else { a };
     let names = word(test_arg(0, "all"), "all");
-    let bo = syzygy::write::BuildOptions { sample_target: test_int(4, 0), finalists: test_int(5, 0), window: 0 };
+    let bo = syzygy::write::BuildOptions { sample_target: test_int(4, 0), finalists: test_int(5, 0), ..Default::default() };
     if names == "decode" {
         tests_syzygy::syzygy_decode_check("", test_int(1, 8), test_int(2, 20000)); // the index decoder against encode
         return;

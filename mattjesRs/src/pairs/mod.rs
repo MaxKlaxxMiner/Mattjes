@@ -23,6 +23,10 @@ pub struct Options {
     pub max_symbol_len: usize,
     pub min_count: usize,
     pub pairs_per_pass: usize,
+    /// The dictionary from evenly spaced windows of about this many values
+    /// instead of the whole stream, which is then tokenised in one pass; 0 =
+    /// the whole stream (streams of up to twice the sample always).
+    pub dict_sample: usize,
     pub workers: usize,
 }
 
@@ -57,6 +61,23 @@ const POSITIONS_PER_BLOCK: usize = 1 << 16;
 const TAIL_BYTES: usize = 8;
 const LEAF_MARK: u32 = 0xfff;
 const CHUNK_SYMS: usize = 1 << 16;
+/// The window of the dictionary sample (dict_sample).
+const DICT_WINDOW: usize = 1 << 16;
+
+/// Concatenates evenly spaced windows of the values, about target values in all.
+fn sample_windows(values: &[u8], target: usize, window: usize) -> Vec<u8> {
+    let n = values.len();
+    let count = (target / window).max(1);
+    if window * count >= n {
+        return values.to_vec();
+    }
+    let mut out = Vec::with_capacity(window * count);
+    for w in 0..count {
+        let start = if count > 1 { w * (n - window) / (count - 1) } else { 0 };
+        out.extend_from_slice(&values[start..start + window]);
+    }
+    out
+}
 
 /// What a packed stream looks like.
 #[derive(Clone, Copy, Debug, Default)]
@@ -104,13 +125,25 @@ pub fn pack(values: &[u8], alphabet: usize, opt: Options) -> Vec<u8> {
 
 /// pack with the statistics of the result.
 pub fn pack_stats(values: &[u8], alphabet: usize, opt: Options) -> (Vec<u8>, Stats) {
-    let opt = opt.with_defaults();
+    let mut opt = opt.with_defaults();
     assert!((1..=256).contains(&alphabet), "pairs: alphabet must be 1..256");
-    let mut e = Encoder { alphabet, syms: Vec::with_capacity(values.len()), pat: Vec::with_capacity(opt.max_symbols), sym_len: Vec::with_capacity(opt.max_symbols), passes: 0 };
     for (i, &v) in values.iter().enumerate() {
         assert!((v as usize) < alphabet, "pairs: value {} at {} beyond the alphabet {}", v, i, alphabet);
-        e.syms.push(v as u16);
     }
+    // the dictionary comes from the whole stream, or from windows of it
+    // (dict_sample): then the stream is tokenised afterwards in one pass
+    let sampled = opt.dict_sample > 0 && values.len() > 2 * opt.dict_sample;
+    let window_sample;
+    let source: &[u8] = if sampled {
+        window_sample = sample_windows(values, opt.dict_sample, DICT_WINDOW);
+        // a pair that occurs min_count times in the stream shows up fewer
+        // times in the sample: the threshold shrinks with it (at least 2)
+        opt.min_count = (opt.min_count * window_sample.len() / values.len()).max(2);
+        &window_sample
+    } else {
+        values
+    };
+    let mut e = Encoder { alphabet, syms: source.iter().map(|&v| v as u16).collect(), pat: Vec::with_capacity(opt.max_symbols), sym_len: Vec::with_capacity(opt.max_symbols), passes: 0 };
     e.pat.resize(alphabet, [0, 0]);
     e.sym_len.resize(alphabet, 1);
     while e.sym_len.len() < opt.max_symbols {
@@ -122,7 +155,8 @@ pub fn pack_stats(values: &[u8], alphabet: usize, opt: Options) -> (Vec<u8>, Sta
         e.replace(&chosen, opt.workers);
         e.passes += 1;
     }
-    let c = e.code();
+    let tokens = if sampled { e.tokenize(values, opt.workers) } else { std::mem::take(&mut e.syms) };
+    let c = e.code(&tokens);
     if opt.block_bytes > 0 {
         return c.container(opt.block_bytes, opt.index_bits);
     }
@@ -320,11 +354,80 @@ impl Encoder {
         self.syms.truncate(out);
     }
 
+    /// Rewrites the whole stream with the dictionary of the sample: greedily
+    /// the longest symbol whose expansion matches at the position, found by a
+    /// trie over the expansions. Fixed chunks (no match crosses a border), so
+    /// the result does not depend on the workers.
+    fn tokenize(&self, values: &[u8], workers: usize) -> Vec<u16> {
+        let num_syms = self.sym_len.len();
+        let alphabet = self.alphabet;
+        let mut expansions: Vec<Vec<u8>> = vec![Vec::new(); num_syms];
+        for s in 0..num_syms {
+            if s < alphabet {
+                expansions[s] = vec![s as u8];
+            } else {
+                let (l, r) = (self.pat[s][0] as usize, self.pat[s][1] as usize);
+                let mut x = expansions[l].clone(); // pairs refer to older symbols: already expanded
+                x.extend_from_slice(&expansions[r]);
+                expansions[s] = x;
+            }
+        }
+        // the trie: children dense per node (alphabet entries), terminal =
+        // the symbol whose expansion ends at the node (the lowest number)
+        let mut children: Vec<i32> = vec![-1; alphabet];
+        let mut terminal: Vec<i32> = vec![-1];
+        for (s, x) in expansions.iter().enumerate() {
+            let mut node = 0usize;
+            for &v in x {
+                let slot = node * alphabet + v as usize;
+                if children[slot] < 0 {
+                    children[slot] = terminal.len() as i32;
+                    terminal.push(-1);
+                    children.extend(std::iter::repeat_n(-1, alphabet));
+                }
+                node = children[slot] as usize;
+            }
+            if terminal[node] < 0 {
+                terminal[node] = s as i32;
+            }
+        }
+        let n = values.len();
+        let num_chunks = n.div_ceil(CHUNK_SYMS);
+        let parts: Vec<std::sync::Mutex<Vec<u16>>> = (0..num_chunks).map(|_| std::sync::Mutex::new(Vec::new())).collect();
+        let (children, terminal) = (&children, &terminal);
+        chunks(n, workers, &|_, lo, hi| {
+            let mut out: Vec<u16> = Vec::with_capacity((hi - lo) / 8 + 16);
+            let mut i = lo;
+            while i < hi {
+                let (mut node, mut best, mut best_len) = (0i32, values[i] as i32, 1usize);
+                for j in i..hi {
+                    node = children[node as usize * alphabet + values[j] as usize];
+                    if node < 0 {
+                        break;
+                    }
+                    let t = terminal[node as usize];
+                    if t >= 0 {
+                        best = t;
+                        best_len = j - i + 1;
+                    }
+                }
+                out.push(best as u16);
+                i += best_len;
+            }
+            *parts[lo / CHUNK_SYMS].lock().unwrap() = out;
+        });
+        let mut tokens = Vec::new();
+        for p in parts {
+            tokens.extend_from_slice(&p.into_inner().unwrap());
+        }
+        tokens
+    }
+
     /// Assigns the Huffman code and renumbers the symbols by code length.
-    fn code(&self) -> Coded {
+    fn code(&self, tokens: &[u16]) -> Coded {
         let num_syms = self.sym_len.len();
         let mut freq = vec![0u64; num_syms];
-        for &s in &self.syms {
+        for &s in tokens {
             freq[s as usize] += 1;
         }
         let old_lengths = huffman_lengths(&freq, MAX_CODE_LEN);
@@ -358,7 +461,7 @@ impl Encoder {
         if c.max_len == 0 {
             c.min_len = 0;
         }
-        c.tokens = self.syms.iter().map(|&s| new_id[s as usize]).collect();
+        c.tokens = tokens.iter().map(|&s| new_id[s as usize]).collect();
         c
     }
 }

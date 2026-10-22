@@ -53,6 +53,13 @@ type Options struct {
 	// disjoint in their symbols, so the counts stay exact); 1 is textbook
 	// Re-Pair, more is faster.
 	PairsPerPass int
+	// DictSample: the dictionary is built by Re-Pair over evenly spaced
+	// windows of about this many values instead of the whole stream, which
+	// is then tokenised in one pass (the longest matching expansion at every
+	// position); 0 = the whole stream, used on streams of up to twice the
+	// sample. Hundreds of passes over a stream of a billion positions would
+	// take hours.
+	DictSample int
 	Workers      int
 }
 
@@ -135,11 +142,23 @@ func PackStats(values []byte, alphabet int, opt Options) ([]byte, Stats) {
 	if alphabet <= 0 || alphabet > 256 {
 		panic("pairs: alphabet must be 1..256")
 	}
-	e := &encoder{alphabet: alphabet, syms: make([]uint16, len(values))}
 	for i, v := range values {
 		if int(v) >= alphabet {
 			panic(fmt.Sprintf("pairs: value %d at %d beyond the alphabet %d", v, i, alphabet))
 		}
+	}
+	// the dictionary comes from the whole stream, or from windows of it
+	// (DictSample): then the stream is tokenised afterwards in one pass
+	source := values
+	sampled := opt.DictSample > 0 && len(values) > 2*opt.DictSample
+	if sampled {
+		source = sampleWindows(values, opt.DictSample, dictWindow)
+		// a pair that occurs MinCount times in the stream shows up fewer
+		// times in the sample: the threshold shrinks with it (at least 2)
+		opt.MinCount = max(2, opt.MinCount*len(source)/len(values))
+	}
+	e := &encoder{alphabet: alphabet, syms: make([]uint16, len(source))}
+	for i, v := range source {
 		e.syms[i] = uint16(v)
 	}
 	e.pat = make([][2]uint16, alphabet, opt.MaxSymbols)
@@ -164,10 +183,15 @@ func PackStats(values []byte, alphabet int, opt Options) ([]byte, Stats) {
 		tReplace += t3.Sub(t2)
 		e.passes++
 	}
-	if os.Getenv("MATTJES_PAIRS_PROFILE") != "" {
-		fmt.Printf("pairs: %d passes, count %v, choose %v, replace %v\n", e.passes, tCount, tChoose, tReplace)
+	tokens := e.syms
+	t0 := time.Now()
+	if sampled {
+		tokens = e.tokenize(values, opt.Workers)
 	}
-	c := e.code()
+	if os.Getenv("MATTJES_PAIRS_PROFILE") != "" {
+		fmt.Printf("pairs: %d passes, count %v, choose %v, replace %v, tokenise %v (sampled %v)\n", e.passes, tCount, tChoose, tReplace, time.Since(t0), sampled)
+	}
+	c := e.code(tokens)
 	if opt.BlockBytes > 0 {
 		return c.container(opt.BlockBytes, opt.IndexBits)
 	}
@@ -387,11 +411,125 @@ type coded struct {
 	symbols int
 }
 
+// dictWindow is the window of the dictionary sample (DictSample).
+const dictWindow = 1 << 16
+
+// sampleWindows concatenates evenly spaced windows of the values, about
+// target values in all.
+func sampleWindows(values []byte, target, window int) []byte {
+	n := len(values)
+	count := max(1, target/window)
+	if window*count >= n {
+		return values
+	}
+	out := make([]byte, 0, window*count)
+	for w := 0; w < count; w++ {
+		start := 0
+		if count > 1 {
+			start = w * (n - window) / (count - 1)
+		}
+		out = append(out, values[start:start+window]...)
+	}
+	return out
+}
+
+// tokenize rewrites the whole stream with the dictionary of the sample:
+// greedily the longest symbol whose expansion matches at the position, found
+// by a trie over the expansions. Fixed chunks (no match crosses a border), so
+// the result does not depend on the workers.
+func (e *encoder) tokenize(values []byte, workers int) []uint16 {
+	numSyms := len(e.symLen)
+	// the expansions, longest first does not matter for a trie
+	expansions := make([][]byte, numSyms)
+	var expand func(s int) []byte
+	expand = func(s int) []byte {
+		if expansions[s] != nil {
+			return expansions[s]
+		}
+		var x []byte
+		if s < e.alphabet {
+			x = []byte{byte(s)}
+		} else {
+			x = append(append([]byte(nil), expand(int(e.pat[s][0]))...), expand(int(e.pat[s][1]))...)
+		}
+		expansions[s] = x
+		return x
+	}
+	// the trie: children dense per node (alphabet entries), terminal = the
+	// symbol whose expansion ends at the node (the lowest number)
+	children := make([]int32, e.alphabet) // node 0 = root
+	for i := range children {
+		children[i] = -1
+	}
+	terminal := []int32{-1}
+	for s := 0; s < numSyms; s++ {
+		node := int32(0)
+		for _, v := range expand(s) {
+			slot := int(node)*e.alphabet + int(v)
+			if children[slot] < 0 {
+				children[slot] = int32(len(terminal))
+				terminal = append(terminal, -1)
+				for k := 0; k < e.alphabet; k++ {
+					children = append(children, -1)
+				}
+			}
+			node = children[slot]
+		}
+		if terminal[node] < 0 {
+			terminal[node] = int32(s)
+		}
+	}
+	n := len(values)
+	numChunks := (n + chunkSyms - 1) / chunkSyms
+	parts := make([][]uint16, numChunks)
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for w := 0; w < max(1, min(workers, numChunks)); w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				c := int(next.Add(1) - 1)
+				if c >= numChunks {
+					return
+				}
+				lo, hi := c*chunkSyms, min(n, (c+1)*chunkSyms)
+				out := make([]uint16, 0, (hi-lo)/8+16)
+				for i := lo; i < hi; {
+					node, best, bestLen := int32(0), int32(int(values[i])), 1
+					for j := i; j < hi; j++ {
+						node = children[int(node)*e.alphabet+int(values[j])]
+						if node < 0 {
+							break
+						}
+						if t := terminal[node]; t >= 0 {
+							best, bestLen = t, j-i+1
+						}
+					}
+					out = append(out, uint16(best))
+					i += bestLen
+				}
+				parts[c] = out
+			}
+		}()
+	}
+	wg.Wait()
+	total := 0
+	for _, p := range parts {
+		total += len(p)
+	}
+	tokens := make([]uint16, 0, total)
+	for _, p := range parts {
+		tokens = append(tokens, p...)
+	}
+	return tokens
+}
+
 // code assigns the Huffman code and renumbers the symbols.
-func (e *encoder) code() *coded {
+func (e *encoder) code(tokens []uint16) *coded {
 	numSyms := len(e.symLen)
 	freq := make([]uint64, numSyms)
-	for _, s := range e.syms {
+	for _, s := range tokens {
 		freq[s]++
 	}
 	oldLengths := huffmanLengths(freq, MaxCodeLen)
@@ -439,8 +577,8 @@ func (e *encoder) code() *coded {
 	if c.maxLen == 0 {
 		c.minLen = 0
 	}
-	c.tokens = make([]uint16, len(e.syms))
-	for i, s := range e.syms {
+	c.tokens = make([]uint16, len(tokens))
+	for i, s := range tokens {
 		c.tokens[i] = newID[s]
 	}
 	return c

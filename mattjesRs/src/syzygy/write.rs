@@ -446,6 +446,12 @@ pub struct BuildOptions {
     pub finalists: usize,
     /// Positions per sample window (0 = 4096).
     pub window: usize,
+    /// A stream with more positions than this is packed with a dictionary
+    /// from a sample of dict_sample values instead of Re-Pair over the whole
+    /// stream (0 = 512 Mi; see the Go package).
+    pub dict_above: usize,
+    /// The sample of the dictionary above dict_above (0 = 16 Mi).
+    pub dict_sample: usize,
 }
 
 impl BuildOptions {
@@ -458,6 +464,12 @@ impl BuildOptions {
         }
         if self.window == 0 {
             self.window = 4096;
+        }
+        if self.dict_above == 0 {
+            self.dict_above = 512 << 20;
+        }
+        if self.dict_sample == 0 {
+            self.dict_sample = 16 << 20;
         }
         self
     }
@@ -506,7 +518,11 @@ pub fn build(src: &Source, opt: pairs::Options, bo: BuildOptions, workers: usize
         for o in chosen {
             let (values, sizes) = build_side(src, &be, side, o, files, workers);
             for f in 0..files {
-                let (packed, st) = pairs::pack_stats(&values[f], 3, opt);
+                let mut po = opt;
+                if sizes[f] > bo.dict_above as u64 && po.dict_sample == 0 {
+                    po.dict_sample = bo.dict_sample;
+                }
+                let (packed, st) = pairs::pack_stats(&values[f], 3, po);
                 let slot = &mut streams[side * files + f];
                 if slot.as_ref().is_none_or(|s| packed.len() < s.packed.len()) {
                     *slot = Some(Stream { order: o.clone(), size: sizes[f], packed, stats: st });

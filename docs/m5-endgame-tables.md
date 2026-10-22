@@ -1050,8 +1050,23 @@ Worker neben der Suche): Go erzeugt KBNKQ in 71 s, schreibt die WDL-Datei nach
 Stellung, die die WDL-Suche selbst entscheidet (KRR-KN: alle zwölf Züge verlieren in
 1,2 s), pausiert den Job wie entworfen, der Treiber wartet dann vergebens.
 
-Offen: ein Packer, der das Wörterbuch an einer Stichprobe baut und den Strom danach in
-einem Durchlauf tokenisiert (siehe unten), und
+**Das Stichproben-Wörterbuch (2026-10-22, `pairs.Options.DictSample`):** Re-Pair
+läuft nur über gleichmäßig verteilte Fenster des Stroms (64 Ki je Fenster, zusammen
+`DictSample` Werte; die Paarschwelle `MinCount` schrumpft mit dem Anteil, mindestens
+2), danach wird der ganze Strom in einem Durchlauf tokenisiert: ein Trie über die
+Expansionen aller Symbole, an jeder Stelle das längste passende Symbol, feste Chunks,
+also unabhängig von der Worker-Zahl (Go und Rust byteidentisch). Die Tokenisierung von
+11 Mio. Werten kostet 8 ms. Gemessen an den Vier-Steiner-Strömen gegen Re-Pair über
+alles (1.847.468 Byte für KPKP, KRKN, KRKP, KNKP in der Tabellenordnung): 1 Mi
+Stichprobe 2.064.080 (+12 %), 4 Mi 1.978.144 (+7 %); an KQKBN (115 Mio. je Strom, 4 Mi
+= 3,5 %) 1.353.702 statt 1.188.612 Byte (+14 %) bei **gleicher Zeit** (228 statt 240 s):
+das Packen der Finalisten ist bei fünf Steinen nicht der Engpass, die Stichprobe der
+360 Kandidaten ist es. Deshalb nimmt `Build` das Wörterbuch aus der Stichprobe nur
+für Ströme über `BuildOptions.DictAbove` (Vorgabe 512 Mi, Stichprobe 16 Mi): für
+Sechs-Steiner mit Milliarden Stellungen, wo hunderte Re-Pair-Durchläufe Stunden
+kosten würden; Fünf-Steiner packen weiterhin vollständig.
+
+Offen:
 ein Packer, der das Wörterbuch an einer Stichprobe baut und den Strom danach in einem
 Durchlauf tokenisiert (Re-Pair über 250 Mio. Symbole braucht sonst hunderte Durchläufe
 über den ganzen Strom); die Einbindung (UCI legt die `syzygy.Tables` immer an:
