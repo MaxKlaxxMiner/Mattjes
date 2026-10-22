@@ -6,6 +6,7 @@
 //! and blessed losses are reported as such, the fifty-move rule is the
 //! caller's business.
 
+pub mod decode;
 mod encode;
 mod mmap;
 mod pairs;

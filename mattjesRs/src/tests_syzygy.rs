@@ -49,7 +49,7 @@ pub fn syzygy_verify(dir: &str, names: &str, samples: usize) {
 /// Writes our own WDL tables of the named base materials ("" = all) into
 /// dir ("" = the cache folder's wdl subfolder) and prints the sizes (the
 /// lines of the Go testbench; the files are byte-identical).
-pub fn syzygy_own_write(names: &str, workers: usize, opt: crate::pairs::Options, dir: &str) {
+pub fn syzygy_own_write(names: &str, workers: usize, opt: crate::pairs::Options, bo: syzygy::write::BuildOptions, dir: &str) {
     let set = crate::tests_egtb::egtb_load_or_generate(workers);
     let start = Instant::now();
     let mut total = 0u64;
@@ -60,12 +60,33 @@ pub fn syzygy_own_write(names: &str, workers: usize, opt: crate::pairs::Options,
         }
         let t_start = Instant::now();
         let path = folder.join(format!("{}-{}.wdl", t.mat.pieces(), t.mat.name()));
-        let b = syzygy::write::write_wdl(&set, t, &path, opt, workers, None).expect("write wdl");
+        let b = syzygy::write::write_wdl(&set, t, &path, opt, bo, workers, None).expect("write wdl");
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         println!("{:<6} {:>4} candidates, {:>8} bytes in {} streams, file {:>8} bytes ({:.1} s)", t.mat.name(), b.candidates, b.bytes(), b.streams.len(), size, t_start.elapsed().as_secs_f64());
         total += size;
     }
     println!("written {} bytes to {} in {:.1} s\n", total, folder.display(), start.elapsed().as_secs_f64());
+}
+
+/// Round-trips random indices of the candidate orders of the base materials
+/// ("" = all) through the Syzygy index decoder and the encoder.
+pub fn syzygy_decode_check(names: &str, max_orders: usize, samples: usize) {
+    let start = Instant::now();
+    let mut total_bad = 0;
+    for m in Material::all() {
+        if !names.is_empty() && !format!(";{};", names).contains(&format!(";{};", m.name())) {
+            continue;
+        }
+        let (checked, bad) = syzygy::decode::check_decoder(&m, max_orders, samples, 0x9E3779B97F4A7C15, &|line| println!("{}", line));
+        let verdict = if bad > 0 { format!("{} MISMATCHES", bad) } else { "ok".to_string() };
+        println!("{:<6} {:>8} indices round-tripped, {}", m.name(), checked, verdict);
+        total_bad += bad;
+    }
+    if total_bad == 0 {
+        println!("--- decoder: every index round-trips, {:?}\n", start.elapsed());
+    } else {
+        println!("--- decoder: {} MISMATCHES\n", total_bad);
+    }
 }
 
 /// Probes our own WDL tables in the cache folder through the Syzygy prober

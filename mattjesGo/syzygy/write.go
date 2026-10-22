@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
@@ -100,6 +101,7 @@ const (
 // to the real one (anything at all when a capture wins).
 type Source struct {
 	Table   *egtb.Table
+	Set     *egtb.Set // the tables the captures lead into (the sampling looks positions up here)
 	Symbols []byte
 	Legal   int // legal, canonical positions
 	Decided int // of them decided by a capture
@@ -123,7 +125,7 @@ func NewSource(set *egtb.Set, t *egtb.Table, workers int) *Source {
 	}
 	pieces := piecesOf(t.Mat)
 	n := t.Size
-	src := &Source{Table: t, Symbols: make([]byte, n)}
+	src := &Source{Table: t, Set: set, Symbols: make([]byte, n)}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	chunk := (n + workers - 1) / workers
@@ -146,24 +148,9 @@ func NewSource(set *egtb.Set, t *egtb.Table, workers int) *Source {
 					continue
 				}
 				legal++
-				own := symbolOf(t.Values[idx])
-				best, hasCapture := byte(0), false
-				for _, m := range buf[:b.GenMoves(&buf)] {
-					if m.Capture == chess.None {
-						continue
-					}
-					c := b
-					c.DoMove(m)
-					v, ok := set.Lookup(&c)
-					if !ok {
-						panic("syzygy: no table after " + c.FEN())
-					}
-					hasCapture = true
-					best = max(best, 2-symbolOf(v)) // the child's value is the opponent's
-				}
-				if hasCapture && best == own {
+				own := captureBound(set, &b, &buf, symbolOf(t.Values[idx]))
+				if own >= bounded {
 					decided++
-					own += bounded
 				}
 				src.Symbols[idx] = own
 			}
@@ -381,10 +368,40 @@ func (b *Built) Bytes() int {
 	return n
 }
 
-// Build packs the WDL of a source, trying every candidate order per side
-// and keeping the smallest stream per side and file. progress (optional)
-// gets a line per candidate.
-func Build(src *Source, opt pairs.Options, workers int, progress func(string)) *Built {
+// BuildOptions control the candidate preselection: a large stream is not
+// built for every candidate order; instead windows spread over the stream
+// are enumerated with the decoder, looked up and packed, and only the best
+// candidates of that sample are built completely.
+type BuildOptions struct {
+	// SampleTarget: positions sampled per stream (0 = 2 Mi); a stream with
+	// fewer than twice that many positions is built completely for every
+	// candidate.
+	SampleTarget int
+	// Finalists: candidates built completely per stream after the sampling (0 = 3).
+	Finalists int
+	// Window: positions per sample window (0 = 4096).
+	Window int
+}
+
+func (bo BuildOptions) withDefaults() BuildOptions {
+	if bo.SampleTarget <= 0 {
+		bo.SampleTarget = 2 << 20
+	}
+	if bo.Finalists <= 0 {
+		bo.Finalists = 3
+	}
+	if bo.Window <= 0 {
+		bo.Window = 4096
+	}
+	return bo
+}
+
+// Build packs the WDL of a source: every candidate order per side on small
+// streams, the finalists of the sampled windows on large ones (BuildOptions),
+// keeping the smallest stream per side and file. progress (optional) gets a
+// line per candidate.
+func Build(src *Source, opt pairs.Options, bo BuildOptions, workers int, progress func(string)) *Built {
+	bo = bo.withDefaults()
 	first, second := countsOf(src.Table.Mat)
 	be := newEntry(Name(first, second), first, second)
 	if be == nil {
@@ -400,8 +417,44 @@ func Build(src *Source, opt pairs.Options, workers int, progress func(string)) *
 	b.Streams = make([]Stream, b.Sides*b.Files)
 	cands := Candidates(be, first, second)
 	b.Candidates = len(cands)
+	set := src.Set
 	for side := 0; side < b.Sides; side++ {
-		for _, o := range cands {
+		chosen := cands
+		var ei encInfo
+		copy(ei.pieces[:], cands[0].Pieces)
+		enc := encPiece
+		if be.hasPawns {
+			enc = encFile
+		}
+		if size := ei.setup(be, cands[0].Order, cands[0].Order2, 0, enc); set != nil && size > 2*uint64(bo.SampleTarget) && len(cands) > bo.Finalists {
+			// the sample: per candidate and file the packed size of the windows
+			scores := make([][]int, len(cands))
+			for c, o := range cands {
+				scores[c] = sampleSide(set, be, side, o, b.Files, bo, opt, workers)
+				if progress != nil {
+					progress(fmt.Sprintf("%s side %d order %-12s sample %v bytes", be.name, side, o, scores[c]))
+				}
+			}
+			// the finalists: the best of every file, as a set
+			picked := map[int]bool{}
+			for f := 0; f < b.Files; f++ {
+				order := make([]int, len(cands))
+				for c := range order {
+					order[c] = c
+				}
+				sort.SliceStable(order, func(x, y int) bool { return scores[order[x]][f] < scores[order[y]][f] })
+				for _, c := range order[:bo.Finalists] {
+					picked[c] = true
+				}
+			}
+			chosen = nil
+			for c, o := range cands {
+				if picked[c] {
+					chosen = append(chosen, o)
+				}
+			}
+		}
+		for _, o := range chosen {
 			values, sizes := buildSide(src, be, side, o, b.Files, workers)
 			for f := 0; f < b.Files; f++ {
 				packed, st := pairs.PackStats(values[f], 3, opt)
@@ -416,6 +469,142 @@ func Build(src *Source, opt pairs.Options, workers int, progress func(string)) *
 		}
 	}
 	return b
+}
+
+// pieceOfCode is the coloured piece of a Syzygy code.
+func pieceOfCode(c uint8) chess.Piece {
+	var p chess.Piece
+	switch c & 7 {
+	case 1:
+		p = chess.Pawn
+	case 2:
+		p = chess.Knight
+	case 3:
+		p = chess.Bishop
+	case 4:
+		p = chess.Rook
+	case 5:
+		p = chess.Queen
+	default:
+		p = chess.King
+	}
+	if c&8 != 0 {
+		return chess.Black | p
+	}
+	return chess.White | p
+}
+
+// captureBound returns the symbol as the stream stores it: own, or
+// bounded+own when the best capture already achieves it (DontCare never).
+func captureBound(set *egtb.Set, b *bitboard.Board, buf *chess.MoveBuffer, own byte) byte {
+	best, hasCapture := byte(0), false
+	for _, m := range buf[:b.GenMoves(buf)] {
+		if m.Capture == chess.None {
+			continue
+		}
+		c := *b
+		c.DoMove(m)
+		v, ok := set.Lookup(&c)
+		if !ok {
+			panic("syzygy: no table after " + c.FEN())
+		}
+		hasCapture = true
+		best = max(best, 2-symbolOf(v))
+	}
+	if hasCapture && best == own {
+		return own + bounded
+	}
+	return own
+}
+
+// sampleSide judges a candidate order of one side: windows spread over
+// every file's stream are enumerated with the decoder, looked up in the
+// tables, filled like the real stream and packed; returns the packed bytes
+// per file.
+func sampleSide(set *egtb.Set, be *baseEntry, side int, o Order, files int, bo BuildOptions, opt pairs.Options, workers int) []int {
+	enc := encPiece
+	if be.hasPawns {
+		enc = encFile
+	}
+	pieces := make([]chess.Piece, be.num)
+	for i, c := range o.Pieces {
+		pieces[i] = pieceOfCode(c)
+	}
+	scores := make([]int, files)
+	for f := 0; f < files; f++ {
+		var ei encInfo
+		copy(ei.pieces[:], o.Pieces)
+		size := ei.setup(be, o.Order, o.Order2, f, enc)
+		d := newDecoder(be, &ei, enc, f)
+		window := uint64(bo.Window)
+		numWindows := uint64(max(1, bo.SampleTarget/bo.Window))
+		if window*numWindows >= size {
+			window, numWindows = size, 1
+		}
+		sample := make([]byte, window*numWindows)
+		var next atomic.Int64
+		var wg sync.WaitGroup
+		for w := 0; w < max(1, min(workers, int(numWindows))); w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				var p [maxPieces]int
+				sq := make([]chess.Pos, be.num)
+				var buf chess.MoveBuffer
+				for {
+					wi := uint64(next.Add(1) - 1)
+					if wi >= numWindows {
+						return
+					}
+					start := uint64(0)
+					if numWindows > 1 {
+						start = wi * (size - window) / (numWindows - 1)
+					}
+					out := sample[wi*window : (wi+1)*window]
+					for i := range out {
+						d.squares(start+uint64(i), p[:be.num])
+						for j := 0; j < int(be.num); j++ {
+							sq[j] = chess.Pos(p[j] ^ 0x38)
+						}
+						b := bitboard.FromPieces(side == 0, sq, pieces)
+						out[i] = DontCare
+						if b.OpponentInCheck() {
+							continue
+						}
+						v, ok := set.Lookup(&b)
+						if !ok {
+							continue // adjacent kings
+						}
+						out[i] = captureBound(set, &b, &buf, symbolOf(v))
+					}
+				}
+			}()
+		}
+		wg.Wait()
+		fillDontCare(sample)
+		_, st := pairs.PackStats(sample, 3, opt)
+		scores[f] = st.Bytes
+	}
+	return scores
+}
+
+// fillDontCare replaces the don't-care symbols by their predecessor
+// (bounded ones by the predecessor when it fits, else the bound).
+func fillDontCare(values []byte) {
+	prev := byte(1)
+	for i, v := range values {
+		switch {
+		case v == DontCare:
+			values[i] = prev
+		case v >= bounded:
+			if prev > v-bounded {
+				prev = v - bounded
+			}
+			values[i] = prev
+		default:
+			prev = v
+		}
+	}
 }
 
 // buildSide lays the symbols of one side to move out in the index order of
@@ -504,20 +693,7 @@ func buildSide(src *Source, be *baseEntry, side int, o Order, files int, workers
 	}
 	wg.Wait()
 	for f := range values {
-		prev := byte(1)
-		for i, v := range values[f] {
-			switch {
-			case v == DontCare:
-				values[f][i] = prev
-			case v >= bounded: // the predecessor when it fits the bound, else the bound
-				if prev > v-bounded {
-					prev = v - bounded
-				}
-				values[f][i] = prev
-			default:
-				prev = v
-			}
-		}
+		fillDontCare(values[f])
 	}
 	return values, sizes
 }
@@ -585,9 +761,9 @@ func (b *Built) Write(path string) error {
 
 // WriteWDL derives, builds and writes the own WDL table of an exact egtb
 // table to path; returns what was built.
-func WriteWDL(set *egtb.Set, t *egtb.Table, path string, opt pairs.Options, workers int, progress func(string)) (*Built, error) {
+func WriteWDL(set *egtb.Set, t *egtb.Table, path string, opt pairs.Options, bo BuildOptions, workers int, progress func(string)) (*Built, error) {
 	src := NewSource(set, t, workers)
-	b := Build(src, opt, workers, progress)
+	b := Build(src, opt, bo, workers, progress)
 	return b, b.Write(path)
 }
 

@@ -88,6 +88,8 @@ const BOUNDED: u8 = 3;
 /// capture and the stored value).
 pub struct Source<'a> {
     pub table: &'a Table,
+    /// The tables the captures lead into (the sampling looks positions up here).
+    pub set: &'a Set,
     pub symbols: Vec<u8>,
     pub legal: usize,
     pub decided: usize,
@@ -117,7 +119,7 @@ fn distinct_squares(sq: &[Pos]) -> bool {
 
 impl<'a> Source<'a> {
     /// Derives the symbols from a table with exact values in memory, in parallel.
-    pub fn new(set: &Set, t: &'a Table, workers: usize) -> Source<'a> {
+    pub fn new(set: &'a Set, t: &'a Table, workers: usize) -> Source<'a> {
         assert!(!t.values.is_empty() && t.is_exact(), "syzygy: Source needs an exact table in memory");
         let pieces = pieces_of(&t.mat);
         let n = t.size;
@@ -143,22 +145,9 @@ impl<'a> Source<'a> {
                             continue;
                         }
                         nl += 1;
-                        let mut own = symbol_of(t.value(idx));
-                        let (mut best, mut has_capture) = (0u8, false);
-                        let nm = b.gen_moves(&mut buf);
-                        for &m in &buf[..nm] {
-                            if m.capture == Piece::NONE {
-                                continue;
-                            }
-                            let mut c = b;
-                            c.do_move(m);
-                            let v = set.lookup(&c).expect("syzygy: no table after a capture");
-                            has_capture = true;
-                            best = best.max(2 - symbol_of(v));
-                        }
-                        if has_capture && best == own {
+                        let own = capture_bound(set, &b, &mut buf, symbol_of(t.value(idx)));
+                        if own >= BOUNDED {
                             nd += 1;
-                            own += BOUNDED;
                         }
                         slot.store(own, Ordering::Relaxed);
                     }
@@ -167,7 +156,64 @@ impl<'a> Source<'a> {
                 });
             }
         });
-        Source { table: t, symbols: symbols.into_iter().map(|a| a.into_inner()).collect(), legal: legal.into_inner(), decided: decided.into_inner() }
+        Source { table: t, set, symbols: symbols.into_iter().map(|a| a.into_inner()).collect(), legal: legal.into_inner(), decided: decided.into_inner() }
+    }
+}
+
+/// The symbol as the stream stores it: own, or BOUNDED+own when the best
+/// capture already achieves it.
+fn capture_bound(set: &Set, b: &Board, buf: &mut crate::chess::MoveBuffer, own: u8) -> u8 {
+    let (mut best, mut has_capture) = (0u8, false);
+    let nm = b.gen_moves(buf);
+    for &m in &buf[..nm] {
+        if m.capture == Piece::NONE {
+            continue;
+        }
+        let mut c = *b;
+        c.do_move(m);
+        let v = set.lookup(&c).expect("syzygy: no table after a capture");
+        has_capture = true;
+        best = best.max(2 - symbol_of(v));
+    }
+    if has_capture && best == own {
+        own + BOUNDED
+    } else {
+        own
+    }
+}
+
+/// Replaces the don't-care symbols by their predecessor (bounded ones by
+/// the predecessor when it fits, else the bound).
+fn fill_dont_care(values: &mut [u8]) {
+    let mut prev = 1u8;
+    for v in values.iter_mut() {
+        if *v == DONT_CARE {
+            *v = prev;
+        } else if *v >= BOUNDED {
+            if prev > *v - BOUNDED {
+                prev = *v - BOUNDED;
+            }
+            *v = prev;
+        } else {
+            prev = *v;
+        }
+    }
+}
+
+/// The coloured piece of a Syzygy code.
+fn piece_of_code(c: u8) -> Piece {
+    let p = match c & 7 {
+        1 => Piece::PAWN,
+        2 => Piece::KNIGHT,
+        3 => Piece::BISHOP,
+        4 => Piece::ROOK,
+        5 => Piece::QUEEN,
+        _ => Piece::KING,
+    };
+    if c & 8 != 0 {
+        Piece::BLACK | p
+    } else {
+        Piece::WHITE | p
     }
 }
 
@@ -387,17 +433,77 @@ pub(super) const OWN_VERSION: u8 = 1;
 pub(super) const OWN_HEADER: usize = 32;
 pub(super) const OWN_DESCRIPTOR: usize = 32;
 
-/// Packs the WDL of a source, trying every candidate order per side and
-/// keeping the smallest stream per side and file.
-pub fn build(src: &Source, opt: pairs::Options, workers: usize, progress: Option<&dyn Fn(&str)>) -> Built {
+/// Controls the candidate preselection: a large stream is not built for
+/// every candidate order; windows spread over the stream are enumerated with
+/// the decoder, looked up and packed, and only the best candidates of that
+/// sample are built completely. Zero values take the defaults.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BuildOptions {
+    /// Positions sampled per stream (0 = 2 Mi); a stream with fewer than
+    /// twice that many positions is built completely for every candidate.
+    pub sample_target: usize,
+    /// Candidates built completely per stream after the sampling (0 = 3).
+    pub finalists: usize,
+    /// Positions per sample window (0 = 4096).
+    pub window: usize,
+}
+
+impl BuildOptions {
+    fn with_defaults(mut self) -> BuildOptions {
+        if self.sample_target == 0 {
+            self.sample_target = 2 << 20;
+        }
+        if self.finalists == 0 {
+            self.finalists = 3;
+        }
+        if self.window == 0 {
+            self.window = 4096;
+        }
+        self
+    }
+}
+
+/// Packs the WDL of a source: every candidate order per side on small
+/// streams, the finalists of the sampled windows on large ones, keeping the
+/// smallest stream per side and file.
+pub fn build(src: &Source, opt: pairs::Options, bo: BuildOptions, workers: usize, progress: Option<&dyn Fn(&str)>) -> Built {
+    let bo = bo.with_defaults();
     let (first, second) = counts_of(&src.table.mat);
     let be = BaseEntry::describe(name_of(&first, &second), &first, &second).expect("syzygy: too many pieces");
     let sides = if be.symmetric { 1 } else { 2 };
     let files = if be.has_pawns { 4 } else { 1 };
     let cands = candidates(&be, &first, &second);
+    let enc = if be.has_pawns { ENC_FILE } else { ENC_PIECE };
     let mut streams: Vec<Option<Stream>> = (0..sides * files).map(|_| None).collect();
     for side in 0..sides {
-        for o in &cands {
+        let mut ei = EncInfo::default();
+        ei.pieces[..cands[0].pieces.len()].copy_from_slice(&cands[0].pieces);
+        let size = encode::setup(&mut ei, &be.shape, cands[0].order, cands[0].order2, 0, enc);
+        let mut chosen: Vec<&Order> = cands.iter().collect();
+        if size > 2 * bo.sample_target as u64 && cands.len() > bo.finalists {
+            // the sample: per candidate and file the packed size of the windows
+            let scores: Vec<Vec<usize>> = cands
+                .iter()
+                .map(|o| {
+                    let s = sample_side(src.set, &be, side, o, files, bo, opt, workers);
+                    if let Some(p) = progress {
+                        p(&format!("{} side {} order {:<12} sample {:?} bytes", be.name, side, o, s));
+                    }
+                    s
+                })
+                .collect();
+            // the finalists: the best of every file, as a set
+            let mut picked = vec![false; cands.len()];
+            for f in 0..files {
+                let mut order: Vec<usize> = (0..cands.len()).collect();
+                order.sort_by_key(|&c| scores[c].get(f).copied());
+                for &c in &order[..bo.finalists] {
+                    picked[c] = true;
+                }
+            }
+            chosen = cands.iter().enumerate().filter(|(c, _)| picked[*c]).map(|(_, o)| o).collect();
+        }
+        for o in chosen {
             let (values, sizes) = build_side(src, &be, side, o, files, workers);
             for f in 0..files {
                 let (packed, st) = pairs::pack_stats(&values[f], 3, opt);
@@ -483,21 +589,69 @@ fn build_side(src: &Source, be: &BaseEntry, side: usize, o: &Order, files: usize
     });
     let mut out: Vec<Vec<u8>> = values.into_iter().map(|v| v.into_iter().map(|a| a.into_inner()).collect()).collect();
     for stream in &mut out {
-        let mut prev = 1u8;
-        for v in stream.iter_mut() {
-            if *v == DONT_CARE {
-                *v = prev;
-            } else if *v >= BOUNDED {
-                if prev > *v - BOUNDED {
-                    prev = *v - BOUNDED;
-                }
-                *v = prev;
-            } else {
-                prev = *v;
-            }
-        }
+        fill_dont_care(stream);
     }
     (out, sizes)
+}
+
+/// Judges a candidate order of one side: windows spread over every file's
+/// stream are enumerated with the decoder, looked up in the tables, filled
+/// like the real stream and packed; returns the packed bytes per file.
+#[allow(clippy::too_many_arguments)]
+fn sample_side(set: &Set, be: &BaseEntry, side: usize, o: &Order, files: usize, bo: BuildOptions, opt: pairs::Options, workers: usize) -> Vec<usize> {
+    let enc = if be.has_pawns { ENC_FILE } else { ENC_PIECE };
+    let num = be.shape.num;
+    let pieces: Vec<Piece> = o.pieces.iter().map(|&c| piece_of_code(c)).collect();
+    let mut scores = vec![0usize; files];
+    for (f, score) in scores.iter_mut().enumerate() {
+        let mut ei = EncInfo::default();
+        ei.pieces[..o.pieces.len()].copy_from_slice(&o.pieces);
+        let size = encode::setup(&mut ei, &be.shape, o.order, o.order2, f, enc);
+        let d = super::decode::Decoder::new(be, &ei, enc, f);
+        let mut window = bo.window as u64;
+        let mut num_windows = (bo.sample_target / bo.window).max(1) as u64;
+        if window * num_windows >= size {
+            window = size;
+            num_windows = 1;
+        }
+        let sample: Vec<std::sync::atomic::AtomicU8> = (0..window * num_windows).map(|_| std::sync::atomic::AtomicU8::new(DONT_CARE)).collect();
+        let next = AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..workers.max(1).min(num_windows as usize) {
+                let (d, pieces, sample, next) = (&d, &pieces, &sample, &next);
+                s.spawn(move || {
+                    let mut p = [0usize; MAX_PIECES];
+                    let mut sq = vec![Pos(0); num];
+                    let mut buf = new_buffer();
+                    loop {
+                        let wi = next.fetch_add(1, Ordering::Relaxed) as u64;
+                        if wi >= num_windows {
+                            return;
+                        }
+                        let start = if num_windows > 1 { wi * (size - window) / (num_windows - 1) } else { 0 };
+                        for i in 0..window {
+                            d.squares(start + i, &mut p[..num]);
+                            for j in 0..num {
+                                sq[j] = Pos((p[j] ^ 0x38) as i8);
+                            }
+                            let b = Board::from_pieces(side == 0, &sq, pieces);
+                            let slot = &sample[(wi * window + i) as usize];
+                            if b.opponent_in_check() {
+                                continue;
+                            }
+                            let Some(v) = set.lookup(&b) else { continue }; // adjacent kings
+                            slot.store(capture_bound(set, &b, &mut buf, symbol_of(v)), Ordering::Relaxed);
+                        }
+                    }
+                });
+            }
+        });
+        let mut values: Vec<u8> = sample.into_iter().map(|a| a.into_inner()).collect();
+        fill_dont_care(&mut values);
+        let (_, st) = pairs::pack_stats(&values, 3, opt);
+        *score = st.bytes;
+    }
+    scores
 }
 
 /// Appends the Syzygy squares of every piece with the code c (ascending
@@ -518,9 +672,9 @@ fn squares_of(c: u8, pieces: &[Piece], sq: &[Pos], p: &mut [usize], mut i: usize
 }
 
 /// Derives, builds and writes the own WDL table of an exact egtb table.
-pub fn write_wdl(set: &Set, t: &Table, path: &Path, opt: pairs::Options, workers: usize, progress: Option<&dyn Fn(&str)>) -> std::io::Result<Built> {
+pub fn write_wdl(set: &Set, t: &Table, path: &Path, opt: pairs::Options, bo: BuildOptions, workers: usize, progress: Option<&dyn Fn(&str)>) -> std::io::Result<Built> {
     let src = Source::new(set, t, workers);
-    let b = build(&src, opt, workers, progress);
+    let b = build(&src, opt, bo, workers, progress);
     b.write(path)?;
     Ok(b)
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/pairs"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/syzygy"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/uci"
 )
 
@@ -158,13 +159,13 @@ func experiments() {
 	// syzygyDescribe(syzygyDefaultDir, "KBNvK;KQvKR;KRvKN;KPvKP;KBBvK;KBvKP") // the layout of the Syzygy streams (symbols, blocks, piece order)
 	// --- own WDL tables in Syzygy's structure (syzygy/write.go): every candidate piece order per stream, best kept; "test <names> <blockBytes> <indexBits> <pairsPerPass> <minCount> <maxSymbols> <maxSymbolLen> [v]" ---
 	// 2026-10-22: KQK;KBNK;KBBK;KRKN;KPK = 170,282 bytes against 173,776 Syzygy (0.98) in 28 s; "" = the whole base (minutes)
-	// syzygyBuild(testArg(0, ""), 12, pairs.Options{BlockBytes: testInt(1, 0), IndexBits: testInt(2, 0), PairsPerPass: testInt(3, 64), MinCount: testInt(4, 8), MaxSymbols: testInt(5, 4095), MaxSymbolLen: testInt(6, 256), Workers: 12}, testArg(7, "") == "v")
+	// "test <names> <sampleTarget> <finalists> [v]": the candidate preselection on sampled windows (sampleTarget 0 = 2 Mi: every base stream is built completely; 65536 judges the 4-piece streams on 3 % and builds the finalists)
+	syzygyBuild(testArg(0, ""), 12, pairs.Options{Workers: 12}, syzygy.BuildOptions{SampleTarget: testInt(1, 0), Finalists: testInt(2, 0)}, testArg(3, "") == "v")
 	// the own WDL files of the base: written to mattjes-egtb-cache/wdl/ ("" = all 35, minutes), then probed through the Syzygy prober against the base
 	// 2026-10-22: 14 materials written and verified (100,000 random positions each, all agree); "test" without names writes and verifies all 35 (minutes)
-	// syzygyOwnWrite(testArg(0, ""), 12, pairs.Options{Workers: 12}, testArg(1, "")) // "test <names> <dir>": dir "" = mattjes-egtb-cache/wdl; 2026-10-22: all 35 in 264 s, 1,322,480 bytes
+	// syzygyOwnWrite(testArg(0, ""), 12, pairs.Options{Workers: 12}, syzygy.BuildOptions{}, testArg(1, "")) // "test <names> <dir>": dir "" = mattjes-egtb-cache/wdl; 2026-10-22: all 35 in 264 s, 1,322,480 bytes
 	// syzygyOwnVerify(testArg(0, ""), testInt(1, 20000))
-	_ = pairs.Options{}
-	syzygyDecodeCheck(testArg(0, ""), testInt(1, 8), testInt(2, 20000)) // the index decoder (syzygy/decode.go) against encode
+	// syzygyDecodeCheck(testArg(0, ""), testInt(1, 8), testInt(2, 20000)) // the index decoder (syzygy/decode.go) against encode: 2026-10-22 every index of all 35 materials round-trips
 	// syzygyOwnProbe(testArg(0, "K7/1r6/8/6k1/8/8/6R1/8 b - - 0 1;k7/1R6/8/6K1/8/8/6r1/8 w - - 0 1")) // single positions: base value next to the own file's answer
 	// pairsMeasure("tests/wdl", testArg(0, ""), pairs.Options{BlockBytes: testInt(1, 0), IndexBits: testInt(2, 0), PairsPerPass: testInt(3, 64), MinCount: testInt(4, 8), MaxSymbols: testInt(5, 4095), MaxSymbolLen: testInt(6, 256), Workers: 12}, true) // every position verified, random probes timed
 	// pairsSyzygy(syzygyDefaultDir, testArg(0, "KBNvK;KQvKR;KRvKN;KPvKP;KBBvK;KBvKP;KQvKQ;KRvKB"), pairs.Options{BlockBytes: testInt(1, 0), IndexBits: testInt(2, 0), PairsPerPass: testInt(3, 64), MinCount: testInt(4, 8), MaxSymbols: testInt(5, 4095), MaxSymbolLen: testInt(6, 256), Workers: 12})

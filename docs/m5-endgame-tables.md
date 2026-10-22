@@ -998,9 +998,31 @@ Bauern der anderen Farbe ab Feld 8). `CheckDecoder`/Testbank `syzygyDecodeCheck`
 alle 35 Materialien, je acht Reihenfolgen und jede Linienklasse, 20.000 Zufallsindizes
 je Strom, jeder Index kommt durch `encode` zurück (2,6 s).
 
-Offen: für Fünf- und Sechs-Steiner eine Vorauswahl der Kandidaten statt
-Durchprobieren (360 Kandidaten bei fünf Einzelsteinen; mit dem Dekoder werden
-Scheiben des Stroms als Stichprobe gepackt, nur die besten Kandidaten ganz gebaut) und
+**Die Vorauswahl der Kandidaten (2026-10-22, `BuildOptions`):** ein Strom mit mehr als
+dem Doppelten von `SampleTarget` Stellungen (Vorgabe 2 Mi) wird nicht für jeden
+Kandidaten gebaut. Stattdessen werden je Kandidat und Strom `SampleTarget/Window`
+Fenster von 4.096 Stellungen gleichmäßig über den Strom verteilt mit dem Dekoder
+aufgezählt, in den Tabellen nachgeschlagen (Schlag-Schranken wie im echten Strom,
+unerreichbare Stellungen als Don't-care), gefüllt und gepackt; die `Finalists` (Vorgabe
+3) mit der kleinsten Stichprobe je Strom, als Menge über alle Bauernlinien, werden
+ganz gebaut. Deterministisch, Go und Rust wählen dieselben Finalisten (vier Tabellen
+mit 3 %-Stichprobe: identische Größen). Prüfung an der Basis gegen das Durchprobieren
+(1.322.480 Byte Dateien, Ströme rund 1.317.500):
+
+| Stichprobe je Strom | Finalisten | Ströme (Byte) | gegen Durchprobieren | Zeit alle 35 |
+|---|---|---|---|---|
+| 65.536 (3 % eines Vier-Steiner-Stroms) | 3 | 1.328.583 | +0,8 % | 56 s |
+| 65.536 | 5 | 1.324.857 | +0,6 % | 77 s |
+| 262.144 (14 %) | 3 | 1.323.376 | +0,4 % | 135 s |
+| alles | alle | | | 264 s |
+
+Die Abweichungen sitzen in den kleinen Tabellen (KRBK 4.791 statt 4.077, KQKB 7.807
+statt 6.933), bei den großen trifft die Stichprobe (KPKP 252.837 statt 252.137, KRKN
+104.727 statt 102.197). Für Fünf-Steiner (118 Mio. Stellungen je Strom bei KQKBN)
+sind 2 Mi Stichprobe 1,7 %, bei 360 Kandidaten je Seite.
+
+Offen: ein Packer, der das Wörterbuch an einer Stichprobe baut und den Strom danach in
+einem Durchlauf tokenisiert (siehe unten), und
 ein Packer, der das Wörterbuch an einer Stichprobe baut und den Strom danach in einem
 Durchlauf tokenisiert (Re-Pair über 250 Mio. Symbole braucht sonst hunderte Durchläufe
 über den ganzen Strom); die Einbindung (UCI legt die `syzygy.Tables` immer an:

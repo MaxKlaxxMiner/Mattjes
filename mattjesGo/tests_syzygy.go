@@ -32,12 +32,35 @@ const syzygyDefaultDir = `C:\Users\MaxKlaxx\Desktop\spiele\chess\table`
 // order and prints the best order and size per stream next to the Syzygy
 // file (docs/m5-endgame-tables.md, "Eigene WDL-Tabellen"). verbose prints
 // every candidate.
-func syzygyBuild(names string, workers int, opt pairs.Options, verbose bool) {
+func syzygyBuild(names string, workers int, opt pairs.Options, bo syzygy.BuildOptions, verbose bool) {
 	set := egtbLoadOrGenerate(workers)
 	fmt.Printf("=== own WDL tables: blocks %d bytes, %d pairs per pass, min count %d, %d symbols, symbol length %d ===\n", opt.BlockBytes, opt.PairsPerPass, opt.MinCount, opt.MaxSymbols, opt.MaxSymbolLen)
 	var sumOurs, sumSyzygy int64
 	start := time.Now()
-	for _, t := range set.Base() {
+	// materials beyond the base are generated exactly in memory (a minute for a five-piece table; the quantised cache file cannot serve)
+	tables := append([]*egtb.Table(nil), set.Base()...)
+	var canonical []string // the names as the tables carry them ("KQKBN" is KBNKQ)
+	for _, name := range strings.Split(names, ";") {
+		if m, err := egtb.Parse(strings.TrimSpace(name)); err == nil {
+			canonical = append(canonical, m.Name())
+		}
+	}
+	if names != "" {
+		names = strings.Join(canonical, ";")
+	}
+	for _, name := range strings.Split(names, ";") {
+		if m, err := egtb.Parse(strings.TrimSpace(name)); err == nil && m.Pieces() > 4 {
+			t := set.AddMaterial(m)
+			st := set.Generate(t, workers, func(line string) {
+				if line[0] != ' ' {
+					fmt.Println(line)
+				}
+			})
+			fmt.Printf("%s: generated in %.1f s\n", m.Name(), st.Duration.Seconds())
+			tables = append(tables, t)
+		}
+	}
+	for _, t := range tables {
 		if names != "" && !strings.Contains(";"+names+";", ";"+t.Mat.Name()+";") {
 			continue
 		}
@@ -47,7 +70,7 @@ func syzygyBuild(names string, workers int, opt pairs.Options, verbose bool) {
 		if verbose {
 			progress = func(line string) { fmt.Println("    " + line) }
 		}
-		b := syzygy.Build(src, opt, workers, progress)
+		b := syzygy.Build(src, opt, bo, workers, progress)
 		size := syzygyFileSize(t.Mat)
 		fmt.Printf("%-6s %9d legal, %4.1f%% capture-decided, %4d candidates: ours %8d, syzygy %8d, ratio %.2f (%.1f s)\n", t.Mat.Name(), src.Legal, 100*float64(src.Decided)/float64(max(src.Legal, 1)), b.Candidates, b.Bytes(), size, float64(b.Bytes())/float64(max(size, 1)), time.Since(tStart).Seconds())
 		for i, s := range b.Streams {
@@ -169,7 +192,7 @@ func syzygyVerify(dir string, names string, samples int) {
 
 // syzygyOwnWrite writes our own WDL tables of the named base materials ("" =
 // all) into dir ("" = the cache folder's wdl subfolder) and prints the sizes.
-func syzygyOwnWrite(names string, workers int, opt pairs.Options, dir string) {
+func syzygyOwnWrite(names string, workers int, opt pairs.Options, bo syzygy.BuildOptions, dir string) {
 	set := egtbLoadOrGenerate(workers)
 	start := time.Now()
 	total := 0
@@ -182,7 +205,7 @@ func syzygyOwnWrite(names string, workers int, opt pairs.Options, dir string) {
 		if dir != "" {
 			path = filepath.Join(dir, filepath.Base(path))
 		}
-		b, err := syzygy.WriteWDL(set, t, path, opt, workers, nil)
+		b, err := syzygy.WriteWDL(set, t, path, opt, bo, workers, nil)
 		if err != nil {
 			panic(err)
 		}
