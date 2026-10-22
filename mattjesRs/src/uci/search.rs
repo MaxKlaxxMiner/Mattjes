@@ -609,7 +609,14 @@ fn run_root<W: Write + Send + 'static>(root: &Board, max_plies: usize, multi_pv:
         .map(|&m| {
             let mut e = RootEntry { rm: RootMove { mv: m, ..Default::default() }, cost: 0, draw: false };
             if let Some(k) = known.iter().find(|k| k.mv == m) {
-                if k.value.is_win() {
+                if k.wdl_only() {
+                    // the WDL tables: a draw or a loss holds no mate for us
+                    // and is settled, a win is searched for its distance
+                    // like an open move
+                    if k.wdl != mateab::Verdict::Win {
+                        e.draw = true;
+                    }
+                } else if k.value.is_win() {
                     (e.rm.proven, e.rm.mate_plies, e.rm.pv) = (true, k.value.plies() as i32, k.pv.clone());
                 } else if k.value.is_loss() {
                     (e.rm.proven, e.rm.mate_plies, e.rm.pv) = (true, -(k.value.plies() as i32), k.pv.clone());

@@ -33,6 +33,7 @@ import (
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mateab"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/syzygy"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/tt"
 )
@@ -396,8 +397,25 @@ func (e *Engine) findMove(s string) (chess.Move, bool) {
 type rootMove struct {
 	move  chess.Move
 	value egtb.Value
-	known bool
+	known bool // the own tables know the distance (value and pv)
 	pv    []chess.Move
+	// wdl is set when only the Syzygy WDL tables know the move (the
+	// outcome from the root side's view, no distance, no line)
+	wdl mateab.Verdict
+}
+
+// wdlOnly: the move is known by the WDL tables only (no distance).
+func (r rootMove) wdlOnly() bool { return !r.known && r.wdl != mateab.Unknown }
+
+// wdlScore renders a WDL-only outcome as the WDL search does.
+func wdlScore(v mateab.Verdict) string {
+	switch v {
+	case mateab.Win:
+		return "cp 9999"
+	case mateab.Loss:
+		return "cp -9999"
+	}
+	return "cp 0"
 }
 
 // search answers the current position from the tables: every root move is
@@ -429,12 +447,31 @@ func (e *Engine) search() bool {
 			r.value = parentValue(cv)
 			r.pv = append([]chess.Move{m}, e.line(child, cv)...)
 		} else {
-			allKnown = false
+			// the Syzygy WDL tables know the outcome without a distance
+			// (v is for the opponent, to move in the child): the WDL search
+			// has nothing left to do for such a move, the mate searches
+			// skip a known draw or loss and still search a known win for
+			// its distance
+			if e.syzygy != nil {
+				if v, hit := e.syzygy.ProbeWDL(&child); hit {
+					switch {
+					case v >= syzygy.CursedWin:
+						r.wdl = mateab.Loss
+					case v <= syzygy.BlessedLoss:
+						r.wdl = mateab.Win
+					default:
+						r.wdl = mateab.Draw
+					}
+				}
+			}
+			if !(r.wdl != mateab.Unknown && (e.algo == "fastwdl" || r.wdl != mateab.Win)) {
+				allKnown = false
+			}
 		}
 		moves = append(moves, r)
 	}
 	sort.SliceStable(moves, func(i, j int) bool { return rank(moves[i]) < rank(moves[j]) })
-	if !moves[0].known {
+	if !moves[0].known && !moves[0].wdlOnly() {
 		e.send("info string no endgame table for this material (%d pieces)", pieceCount(&e.board))
 	}
 	// one depth for the whole block (the longest line), as the search's
@@ -446,6 +483,10 @@ func (e *Engine) search() bool {
 	}
 	for i := 0; i < len(moves) && i < e.multiPV; i++ {
 		r := moves[i]
+		if r.wdlOnly() {
+			e.send("info depth %d multipv %d score %s pv %s", depth, i+1, wdlScore(r.wdl), r.move.UCI())
+			continue
+		}
 		if !r.known {
 			e.send("info depth %d multipv %d score cp 0 pv %s", depth, i+1, r.move.UCI())
 			continue
@@ -457,10 +498,10 @@ func (e *Engine) search() bool {
 		}
 		e.send("info depth %d multipv %d score %s pv%s", depth, i+1, score(r.value), sb.String())
 	}
-	e.pendingBest, e.tableBest = moves[0].move.UCI(), moves[0].known
+	e.pendingBest, e.tableBest = moves[0].move.UCI(), moves[0].known || moves[0].wdlOnly()
 	e.rootTable = e.rootTable[:0]
 	for _, r := range moves {
-		if r.known {
+		if r.known || r.wdlOnly() {
 			e.rootTable = append(e.rootTable, r)
 		}
 	}
@@ -688,6 +729,16 @@ func (e *Engine) backgroundWorkers() int {
 // without a table, then losses by longest distance.
 func rank(r rootMove) int {
 	switch {
+	case r.wdlOnly():
+		// a WDL win after the wins with a distance, a WDL loss before the
+		// losses with one (its distance is unknown, so it may be the longest)
+		switch r.wdl {
+		case mateab.Win:
+			return 1<<10 - 1
+		case mateab.Loss:
+			return 3<<10 - 512
+		}
+		return 1 << 10
 	case !r.known:
 		return 2 << 10
 	case r.value.IsWin():

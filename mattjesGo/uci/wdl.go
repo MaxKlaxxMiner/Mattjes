@@ -136,6 +136,18 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 			}
 			settled = true
 			entries[i].method = "table"
+			if k.wdlOnly() {
+				entries[i].method = "syzygy"
+				switch k.wdl {
+				case mateab.Win:
+					entries[i].class, entries[i].pv = wdlWin, []chess.Move{k.move}
+				case mateab.Loss:
+					entries[i].class, entries[i].pv = wdlLoss, []chess.Move{k.move}
+				default:
+					entries[i].class = wdlDraw
+				}
+				continue
+			}
 			switch {
 			case k.value.IsWin():
 				entries[i].class, entries[i].pv = wdlWin, k.pv

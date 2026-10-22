@@ -126,7 +126,17 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
         for k in known.iter().filter(|k| k.mv == mv) {
             settled = true;
             en.method = "table";
-            if k.value.is_win() {
+            if k.wdl_only() {
+                en.method = "syzygy";
+                en.class = match k.wdl {
+                    crate::mateab::Verdict::Win => WdlClass::Win,
+                    crate::mateab::Verdict::Loss => WdlClass::Loss,
+                    _ => WdlClass::Draw,
+                };
+                if en.class != WdlClass::Draw {
+                    en.pv = vec![mv];
+                }
+            } else if k.value.is_win() {
                 en.class = WdlClass::Win;
                 en.pv = k.pv.clone();
             } else if k.value.is_loss() {

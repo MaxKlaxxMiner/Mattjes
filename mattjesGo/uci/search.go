@@ -397,6 +397,15 @@ func runRoot(root *bitboard.Board, maxPlies, multiPV int, rep *reporter, known [
 			if k.move != buf[i] {
 				continue
 			}
+			if k.wdlOnly() {
+				// the WDL tables: a draw or a loss holds no mate for us and
+				// is settled, a win is searched for its distance like an
+				// open move
+				if k.wdl != mateab.Win {
+					moves[i].draw = true
+				}
+				continue
+			}
 			switch {
 			case k.value.IsWin():
 				moves[i].rm.Proven, moves[i].rm.MatePlies, moves[i].rm.PV = true, k.value.Plies(), k.pv

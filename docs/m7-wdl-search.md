@@ -1033,8 +1033,21 @@ sondern je Runde) und die Welle selbst beobachten.
    bis zum vollen Budget (Hash 2048, MultiPV 3): Sieben-Steiner KRRN-KNP
    11,2 statt 16,0 s, einsamer Springer 13,4 statt 14,6 s, kurze Läufe
    gleich; dieselben Ergebnisse.
-6. Syzygy auch in der Tabellenstufe an der Wurzel (heute nur als
-   Such-Orakel, die Wurzel antwortet über die Suche in Millisekunden).
+6. ~~Syzygy auch in der Tabellenstufe an der Wurzel (heute nur als
+   Such-Orakel, die Wurzel antwortet über die Suche in Millisekunden).~~
+   Gebaut (2026-10-22): die Tabellenstufe des UCI sondiert jeden
+   Wurzelzug, den die eigenen Tabellen nicht kennen, in den Syzygy-WDL
+   (`rootMove.wdl`, Verdikt aus Sicht der Wurzel, ohne Distanz und
+   Linie, cursed win als Gewinn, blessed loss als Verlust). Ausgabe
+   `cp 9999 / 0 / -9999` wie die WDL-Suche, Rang: WDL-Gewinne nach den
+   Gewinnen mit Distanz, WDL-Verluste vor den Verlusten mit Distanz.
+   `Search fastwdl` nimmt sie als entschieden (Methode `syzygy`, die
+   Suche entfällt: einsamer Springer, KQQ-KN und KRR-KN antworten im
+   Depth-1-Block), die Mattsuchen nehmen ein WDL-Remis oder einen
+   WDL-Verlust als "kein Matt" (erledigt, nie gesucht) und suchen einen
+   WDL-Gewinn weiter nach seiner Distanz (KQQ-KN findet Matt in 2).
+   Nur Sieben-Steiner laufen noch über die Suche. Go und Rust
+   zeilenidentisch.
 7. Speicher weiter: `wdlBytesPerPosition` nach Messung an der Spitze
    senken (Rust 192), Rust-`Vec`s mit Faktor 1,25 wachsen lassen,
    Kanten mit `uint32`-Paaren in Blöcken ohne Reallokation.

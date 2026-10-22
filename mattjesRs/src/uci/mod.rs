@@ -36,6 +36,7 @@ use std::time::{Duration, Instant};
 use crate::bitboard::Board;
 use crate::chess::{new_buffer, Move, Piece};
 use crate::egtb::{self, Control, Material, Set, Value, MAX_PLIES};
+use crate::mateab::Verdict;
 use search::{GoParams, SearchEnd, SearchTable, DEFAULT_ALGO, DEFAULT_GOAL, DEFAULT_HASH_MB, DEFAULT_MOBILITY, MAX_SEARCH_PLIES, MIN_HASH_MB};
 
 /// Reported in "id name"; it follows the milestone that is being worked on.
@@ -211,8 +212,28 @@ pub fn run<R: Read + Send + 'static, W: Write + Send + 'static>(input: R, out: W
 struct RootMove {
     mv: Move,
     value: Value,
+    /// The own tables know the distance (value and pv).
     known: bool,
     pv: Vec<Move>,
+    /// Set when only the Syzygy WDL tables know the move (the outcome from
+    /// the root side's view, no distance, no line).
+    wdl: Verdict,
+}
+
+impl RootMove {
+    /// The move is known by the WDL tables only (no distance).
+    fn wdl_only(&self) -> bool {
+        !self.known && self.wdl != Verdict::Unknown
+    }
+}
+
+/// Renders a WDL-only outcome as the WDL search does.
+fn wdl_score(v: Verdict) -> &'static str {
+    match v {
+        Verdict::Win => "cp 9999",
+        Verdict::Loss => "cp -9999",
+        _ => "cp 0",
+    }
 }
 
 impl<W: Write + Send + 'static> Engine<W> {
@@ -495,7 +516,7 @@ impl<W: Write + Send + 'static> Engine<W> {
             let mut child = root;
             child.do_move(m);
             self.load_material(&child);
-            let mut r = RootMove { mv: m, value: Value::DRAW, known: false, pv: Vec::new() };
+            let mut r = RootMove { mv: m, value: Value::DRAW, known: false, pv: Vec::new(), wdl: Verdict::Unknown };
             if let Some(cv) = self.eval(&child, 1) {
                 r.known = true;
                 r.value = parent_value(cv);
@@ -503,12 +524,28 @@ impl<W: Write + Send + 'static> Engine<W> {
                 let rest = self.line(child, cv);
                 r.pv.extend(rest);
             } else {
-                all_known = false;
+                // the Syzygy WDL tables know the outcome without a distance
+                // (v is for the opponent, to move in the child): the WDL
+                // search has nothing left to do for such a move, the mate
+                // searches skip a known draw or loss and still search a
+                // known win for its distance
+                if let Some(v) = self.syzygy.as_ref().and_then(|t| t.probe_wdl(&child)) {
+                    r.wdl = if v >= crate::syzygy::CURSED_WIN {
+                        Verdict::Loss
+                    } else if v <= crate::syzygy::BLESSED_LOSS {
+                        Verdict::Win
+                    } else {
+                        Verdict::Draw
+                    };
+                }
+                if !(r.wdl != Verdict::Unknown && (self.algo == "fastwdl" || r.wdl != Verdict::Win)) {
+                    all_known = false;
+                }
             }
             moves.push(r);
         }
         moves.sort_by_key(rank);
-        if !moves[0].known {
+        if !moves[0].known && !moves[0].wdl_only() {
             self.send(&format!("info string no endgame table for this material ({} pieces)", piece_count(&root)));
         }
         // one depth for the whole block (the longest line), as the search's
@@ -516,6 +553,10 @@ impl<W: Write + Send + 'static> Engine<W> {
         // that look older, so a draw with its one-move line must not say depth 1
         let depth = moves.iter().take(self.multi_pv).map(|r| r.pv.len()).max().unwrap_or(1).max(1);
         for (i, r) in moves.iter().enumerate().take(self.multi_pv) {
+            if r.wdl_only() {
+                self.send(&format!("info depth {} multipv {} score {} pv {}", depth, i + 1, wdl_score(r.wdl), r.mv.uci()));
+                continue;
+            }
             if !r.known {
                 self.send(&format!("info depth {} multipv {} score cp 0 pv {}", depth, i + 1, r.mv.uci()));
                 continue;
@@ -524,8 +565,8 @@ impl<W: Write + Send + 'static> Engine<W> {
             self.send(&format!("info depth {} multipv {} score {} pv {}", depth, i + 1, score(r.value), pv.join(" ")));
         }
         self.pending_best = moves[0].mv.uci();
-        self.table_best = moves[0].known;
-        self.root_table = moves.iter().filter(|r| r.known).cloned().collect();
+        self.table_best = moves[0].known || moves[0].wdl_only();
+        self.root_table = moves.iter().filter(|r| r.known || r.wdl_only()).cloned().collect();
         all_known
     }
 
@@ -974,7 +1015,15 @@ impl<W: Write + Send + 'static> Engine<W> {
 /// Orders root moves: wins by shortest distance, then draws, then moves
 /// without a table, then losses by longest distance.
 fn rank(r: &RootMove) -> u32 {
-    if !r.known {
+    if r.wdl_only() {
+        // a WDL win after the wins with a distance, a WDL loss before the
+        // losses with one (its distance is unknown, so it may be the longest)
+        match r.wdl {
+            Verdict::Win => (1 << 10) - 1,
+            Verdict::Loss => (3 << 10) - 512,
+            _ => 1 << 10,
+        }
+    } else if !r.known {
         2 << 10
     } else if r.value.is_win() {
         r.value.plies()
