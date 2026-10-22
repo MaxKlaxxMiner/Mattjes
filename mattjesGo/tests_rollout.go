@@ -65,14 +65,17 @@ func rolloutPositions(names string, options string, maxPlies int) {
 		}
 		return false
 	}
-	opt := rollout.Options{MaxPlies: maxPlies, Oracle: rolloutOracle(options)}
+	opt := rollout.Options{MaxPlies: maxPlies, Oracle: rolloutOracle(options), Depth: 1}
+	if has('d') {
+		opt.Depth = 2 // the move choice by the opponent's best reply
+	}
 	oracleName := "dead material only"
 	if has('s') {
 		oracleName = "four-piece tables and Syzygy WDL"
 	} else if has('t') {
 		oracleName = "four-piece tables"
 	}
-	fmt.Printf("=== rollouts, Patricia's net as the policy of both sides, %s, at most %d plies ===\n", oracleName, maxPlies)
+	fmt.Printf("=== rollouts, Patricia's net as the policy of both sides, depth %d, %s, at most %d plies ===\n", opt.Depth, oracleName, maxPlies)
 	totalMoves, totalExact := 0, 0
 	var totalTime time.Duration
 	for i, p := range chess.WdlPositions {
@@ -131,6 +134,10 @@ func rolloutLine(fen string, options string, maxPlies int) {
 		return
 	}
 	start := time.Now()
-	r := rollout.Play(&b, rollout.Options{MaxPlies: maxPlies, Oracle: rolloutOracle(options)})
+	depth := 1
+	if strings.IndexByte(options, 'd') >= 0 {
+		depth = 2
+	}
+	r := rollout.Play(&b, rollout.Options{MaxPlies: maxPlies, Oracle: rolloutOracle(options), Depth: depth})
 	fmt.Printf("%s\n  %s by %s after %d plies, %d evals, %s\n  %s\n", fen, r.Outcome, r.Reason, len(r.Line), r.Evals, fmtMs(time.Since(start)), pvString(r.Line))
 }

@@ -245,6 +245,28 @@ Züge einzeln nicht fest). Go und Rust liefern dieselben Zeilen.
 Vor den zwei Korrekturen: 241 bzw. 460. Kosten: Rust 156 ms für alle
 567 Rollouts mit den Vier-Steinern, Go 1,9 s.
 
+**Tiefe 2** (`Options.Depth`, Testbank `d`): statt des Kindes, das das
+Netz am liebsten mag, das Kind, dessen schlechteste Antwort das Netz am
+liebsten mag (Minimax über zwei Halbzüge, `replyMin`: das Blatt aus
+Sicht des Ziehenden plus das Doppelte dessen, was er dort frei schlagen
+kann; eine Antwort, die mattsetzt oder per Tabelle gewinnt, widerlegt
+das Kind). Der gierige Gegner lief in Verluste und ließ Remis wie
+Gewinne aussehen; mit Tiefe 2 hält der Spieler Remis für Verluste, was
+für die Zugordnung unschädlich ist.
+
+| Orakel | Tiefe 1 | Tiefe 2 | Kosten Rust (alle 567) |
+|---|---|---|---|
+| Vier-Steiner und Syzygy | 561 | 561 | 15 / 53 ms |
+| nur die Vier-Steiner | 478 | 516 | 167 / 682 ms |
+| totes Material, 100 Halbzüge | 237 | 349 | 274 ms / 1,41 s |
+
+Mit den Vier-Steinern springen KQ-KBN von 6 auf 22 von 24, Philidor
+von 11 auf 19 von 19, "zwei Remis" auf 10 von 10, "vier Remis" auf 15
+von 17, der einsame Springer schwarz auf 10 von 10; ohne Tabellen
+findet Tiefe 2 erste Matts mit der blanken Dame (KQ-K 7 von 20, KQ-KN 21
+von 24). Go = Rust auf die Zahl (Go 9,4 s für den Vier-Steiner-Lauf).
+Tiefe 2 ist die Vorgabe im UCI-Treiber (`WdlRollouts`).
+
 **Im UCI-Treiber** (`WdlRollouts`, Vorgabe an): vor den Runden spielt
 `runWdl` jeden offenen Wurzelzug einmal aus (mit dem Orakel der Suche)
 und meldet `info string wdl: rollouts guess W win, D draw, L loss, U
@@ -260,17 +282,19 @@ Syzygy, MultiPV 3:
 | Stellung | Schätzung | Stellungen mit / ohne Rollouts |
 |---|---|---|
 | KRRN-KN einsamer Springer, Weiß | 27 Gewinne von 27, 0,3 ms | 58 / 112 |
-| KRRN-KNP Sieben-Steiner | 27 von 27, 4,4 ms | 112.335 / 147.321 (0,38 / 0,41 s) |
+| KRRN-KNP Sieben-Steiner | 27 von 27, 4,4 ms | 112.335 / 147.321 (0,38 / 0,41 s), **Rauschen**: die Summe hängt im Wettrennen vom Timing ab, mit Tiefe 2 wieder 147.321 |
 | KQQ-KN | 37 von 37 | 82 / 82 |
 | KRR-KN Benchmark, Schwarz | 12 Verluste von 12 | 28 / 52 |
 
-Der Gewinn ist die gesparte falsche Frage je Zug (ein Viertel weniger
-Stellungen auf dem Sieben-Steiner), die Rollouts selbst kosten in Rust
+Der belastbare Gewinn ist die gesparte falsche Frage je Zug an den
+Stellungen, die deterministisch enden (einsamer Springer 58 statt 112,
+KRR-KN 28 statt 52 Stellungen); die Rollouts selbst kosten in Rust
 Mikrosekunden bis Millisekunden, in Go das Zehn- bis Fünfzigfache. Wo
 die Tabellen alles sofort entscheiden, ändert sich nichts; wo die
 Beweise lang sind (einsamer Springer ohne Fünf-Steiner-Tabellen: null
 Gewinne in 20 s mit und ohne), auch nicht. Go liefert dieselben
-Schätzungen.
+Schätzungen. (Seit Syzygy in der Tabellenstufe antwortet, erreichen
+nur noch Sieben-Steiner und Stellungen ohne Tabellen die Rollouts.)
 
 ## Nächster Schritt
 

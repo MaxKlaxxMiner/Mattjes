@@ -59,6 +59,46 @@ pub struct Options<'a> {
     pub max_plies: usize,
     /// Decides positions on sight (None = dead material only).
     pub oracle: Option<Tables<'a>>,
+    /// Depth of the move choice: 1 (0 counts as 1) takes the child the net
+    /// likes best, 2 the child whose worst reply the net likes best
+    /// (minimax over two plies).
+    pub depth: usize,
+}
+
+/// Scores a child c (the opponent to move) for the mover by the opponent's
+/// best reply: the smallest leaf score over the replies, where a leaf is
+/// the net's view for the mover (to move again) plus twice what it can
+/// capture for free; a reply that mates or wins by the tables refutes the
+/// child, a reply into a table draw scores zero.
+fn reply_min(c: &Board, acc: &nnue::Accumulator, net: &nnue::Net, oracle: &Option<Tables<'_>>, evals: &mut usize) -> i32 {
+    let mut buf = new_buffer();
+    let n = c.gen_moves(&mut buf);
+    let mut worst = 1 << 29;
+    for &m in &buf[..n] {
+        let mut g = *c;
+        g.do_move(m);
+        let score = match probe(oracle, &g) {
+            Verdict::Win => 1 << 29, // the mover to move wins: the opponent will not play it
+            Verdict::Loss => return -(1 << 29), // the mover loses: the child is refuted
+            Verdict::Draw => 0,
+            Verdict::Unknown => {
+                if !g.has_moves() {
+                    if g.in_check() {
+                        return -(1 << 29); // the mover is mated
+                    }
+                    0 // stalemate
+                } else {
+                    let d = nnue::Delta::of(c, m);
+                    let mut leaf = nnue::Accumulator::default();
+                    leaf.update(net, acc, &d);
+                    *evals += 1;
+                    leaf.evaluate(net, g.white_move) + 2 * hanging(&g)
+                }
+            }
+        };
+        worst = worst.min(score);
+    }
+    worst
 }
 
 /// Result of a rollout.
@@ -198,11 +238,19 @@ pub fn play(root: &Board, opt: Options<'_>) -> Result {
                     } else {
                         let d = nnue::Delta::of(&b, m);
                         child.update(net, &acc, &d);
-                        r.evals += 1;
-                        // the opponent's view, negated; the static view
-                        // does not see a hanging piece; a position of the
-                        // line again only when nothing else is left
-                        let mut s = -child.evaluate(net, c.white_move) - 2 * hanging(&c);
+                        let mut s = if opt.depth >= 2 {
+                            // the opponent's best reply decides (minimax over
+                            // two plies, the net at the leaves from the
+                            // mover's view)
+                            reply_min(&c, &child, net, &opt.oracle, &mut r.evals)
+                        } else {
+                            r.evals += 1;
+                            // the opponent's view, negated; the static view
+                            // does not see a hanging piece
+                            -child.evaluate(net, c.white_move) - 2 * hanging(&c)
+                        };
+                        // a position of the line again only when nothing
+                        // else is left
                         if keys.contains(&c.key) {
                             s -= 1 << 28;
                         }

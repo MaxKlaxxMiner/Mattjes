@@ -56,6 +56,50 @@ type Options struct {
 	MaxPlies int
 	// Oracle decides positions on sight (nil = dead material only).
 	Oracle mateab.Oracle
+	// Depth of the move choice: 1 (default) takes the child the net likes
+	// best, 2 the child whose worst reply the net likes best (minimax over
+	// two plies; a greedy opponent walked into losses and let draws look
+	// like wins).
+	Depth int
+}
+
+// replyMin scores a child c (the opponent to move) for the mover by the
+// opponent's best reply: the smallest leaf score over the replies, where a
+// leaf is the net's view for the mover (to move again) plus twice what it
+// can capture for free; a reply that mates or wins by the tables refutes
+// the child, a reply into a table draw scores zero.
+func replyMin(c *bitboard.Board, acc *nnue.Accumulator, net *nnue.Net, oracle mateab.Oracle, r *Result) int {
+	var buf chess.MoveBuffer
+	n := c.GenMoves(&buf)
+	worst := 1 << 29
+	for _, m := range buf[:n] {
+		g := *c
+		g.DoMove(m)
+		score := 0
+		switch v, _, _ := oracle.Probe(&g); v {
+		case mateab.Win:
+			score = 1 << 29 // the mover to move wins: the opponent will not play it
+		case mateab.Loss:
+			return -(1 << 29) // the mover loses: the child is refuted
+		case mateab.Draw:
+			score = 0
+		default:
+			if !g.HasMoves() {
+				if g.InCheck() {
+					return -(1 << 29) // the mover is mated
+				}
+				score = 0 // stalemate
+				break
+			}
+			d := nnue.DeltaOf(c, m)
+			var leaf nnue.Accumulator
+			leaf.Update(net, acc, &d)
+			r.Evals++
+			score = leaf.Evaluate(net, g.WhiteMove) + 2*hanging(&g)
+		}
+		worst = min(worst, score)
+	}
+	return worst
 }
 
 // Result of a rollout.
@@ -196,12 +240,18 @@ func Play(root *bitboard.Board, opt Options) Result {
 				}
 				d := nnue.DeltaOf(&b, m)
 				child.Update(net, &acc, &d)
-				r.Evals++
-				score = -child.Evaluate(net, c.WhiteMove) // the opponent's view, negated
-				// the static view does not see a hanging piece (the queen
-				// walked into the king's reach in KQ-K): the opponent's best
-				// capture that cannot be answered, twice counted
-				score -= 2 * hanging(&c)
+				if opt.Depth >= 2 {
+					// the opponent's best reply decides (minimax over two
+					// plies, the net at the leaves from the mover's view)
+					score = replyMin(&c, &child, net, oracle, &r)
+				} else {
+					r.Evals++
+					score = -child.Evaluate(net, c.WhiteMove) // the opponent's view, negated
+					// the static view does not see a hanging piece (the queen
+					// walked into the king's reach in KQ-K): the opponent's best
+					// capture that cannot be answered, twice counted
+					score -= 2 * hanging(&c)
+				}
 				for _, k := range keys {
 					if k == c.Key {
 						// a position of the line again: only when nothing

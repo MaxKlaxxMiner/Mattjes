@@ -202,7 +202,7 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 		// asked first, and every move is asked its guessed question first
 		start := time.Now()
 		var guesses [4]int
-		ropt := rollout.Options{Oracle: oracle}
+		ropt := rollout.Options{Oracle: oracle, Depth: 2} // depth 2 measured: 516 instead of 478 of 567 right with the base tables
 		for _, i := range open {
 			c := *root
 			c.DoMove(entries[i].move)

@@ -181,7 +181,7 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
         // asked first, and every move is asked its guessed question first
         let start = Instant::now();
         let mut guesses = [0usize; 4];
-        let ropt = rollout::Options { max_plies: 0, oracle: Some(oracle) };
+        let ropt = rollout::Options { max_plies: 0, oracle: Some(oracle), depth: 2 }; // depth 2 measured: 516 instead of 478 of 567 right with the base tables
         for &i in &open {
             let mut c = *root;
             c.do_move(entries[i].mv);

@@ -53,7 +53,7 @@ pub fn rollout_positions(names: &str, options: &str, max_plies: usize) {
     let has = |o: char| options.contains(o);
     let (set, syzygy) = rollout_oracle(options);
     let oracle = set.as_ref().map(|s| Tables { set: s, wdl: syzygy.as_ref() });
-    let opt = Options { max_plies, oracle };
+    let opt = Options { max_plies, oracle, depth: if has('d') { 2 } else { 1 } };
     let oracle_name = if has('s') {
         "four-piece tables and Syzygy WDL"
     } else if has('t') {
@@ -61,7 +61,7 @@ pub fn rollout_positions(names: &str, options: &str, max_plies: usize) {
     } else {
         "dead material only"
     };
-    println!("=== rollouts, Patricia's net as the policy of both sides, {}, at most {} plies ===", oracle_name, max_plies);
+    println!("=== rollouts, Patricia's net as the policy of both sides, depth {}, {}, at most {} plies ===", opt.depth, oracle_name, max_plies);
     let (mut total_moves, mut total_exact) = (0, 0);
     let mut total_time = std::time::Duration::ZERO;
     for (i, p) in WDL_POSITIONS.iter().enumerate() {
@@ -133,6 +133,6 @@ pub fn rollout_line(fen: &str, options: &str, max_plies: usize) {
     let (set, syzygy) = rollout_oracle(options);
     let oracle = set.as_ref().map(|s| Tables { set: s, wdl: syzygy.as_ref() });
     let start = Instant::now();
-    let r = rollout::play(&b, Options { max_plies, oracle });
+    let r = rollout::play(&b, Options { max_plies, oracle, depth: if options.contains('d') { 2 } else { 1 } });
     println!("{}\n  {} by {} after {} plies, {} evals, {}\n  {}", fen, r.outcome, r.reason, r.line.len(), r.evals, fmt_ms(start.elapsed()), pv_string(&r.line));
 }
