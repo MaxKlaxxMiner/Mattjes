@@ -87,24 +87,32 @@ func piecesOf(m egtb.Material) []chess.Piece {
 }
 
 // DontCare marks a position whose stored value does not matter; a symbol
-// bounded+v marks one whose stored value may be anything up to v.
+// with the boundedFlag marks one whose stored value may be anything up to
+// the symbol below the flag.
 const (
-	DontCare = 0xff
-	bounded  = 3
+	DontCare    = 0xff
+	boundedFlag = 0x80
 )
 
-// Source is the WDL of a material taken from an exact egtb table: per
-// index the symbol (0 loss, 1 draw, 2 win for the side to move), DontCare
-// for dead and illegal indices, or bounded+symbol for positions whose best
-// capture already achieves their value: the probe takes the maximum of the
-// best capture and the stored value, so the stored value may be anything up
-// to the real one (anything at all when a capture wins).
+// Source is the value stream of a material taken from an exact egtb table,
+// per index a symbol: for WDL 0 loss, 1 draw, 2 win for the side to move,
+// DontCare for dead and illegal indices, or boundedFlag|symbol for
+// positions whose best capture already achieves their value (the probe
+// takes the maximum of the best capture and the stored value, so the
+// stored value may be anything up to the real one, anything at all when a
+// capture wins). For DTM (NewSourceDTM) the symbol is the quantised
+// distance bucket, draws free when a WDL table carries them.
 type Source struct {
-	Table   *egtb.Table
-	Set     *egtb.Set // the tables the captures lead into (the sampling looks positions up here)
-	Symbols []byte
-	Legal   int // legal, canonical positions
-	Decided int // of them decided by a capture
+	Table    *egtb.Table
+	Set      *egtb.Set // the tables the captures lead into (the sampling looks positions up here)
+	Symbols  []byte
+	Alphabet int // symbols the stream uses
+	Legal    int // legal, canonical positions
+	Decided  int // of them decided by a capture (WDL) or free as draws (DTM)
+	dtm      bool
+	step     int  // DTM: moves per bucket
+	signed   bool // DTM: wins and losses apart (without, the WDL table tells)
+	drawFree bool // DTM: draws as don't care
 }
 
 func symbolOf(v egtb.Value) byte {
@@ -117,15 +125,54 @@ func symbolOf(v egtb.Value) byte {
 	return 1
 }
 
-// NewSource derives the symbols from a table with exact values in memory,
-// in parallel.
+// symbolAt is the stream symbol of a legal position with the table value v.
+func (src *Source) symbolAt(b *bitboard.Board, buf *chess.MoveBuffer, v egtb.Value) byte {
+	if !src.dtm {
+		return captureBound(src.Set, b, buf, symbolOf(v))
+	}
+	q := egtb.Quantize(v, src.step)
+	switch {
+	case q == egtb.Draw:
+		if src.drawFree {
+			return DontCare
+		}
+		return 0
+	case q.IsWin():
+		return byte((int(q) + src.step - 1) / src.step) // 1 .. 127/step
+	}
+	m := int(q) - 128 // loss: bucket 0 = mated now
+	bucket := byte((m + src.step - 1) / src.step)
+	if src.signed {
+		return byte(127/src.step) + 1 + bucket
+	}
+	return bucket
+}
+
+// NewSource derives the WDL symbols from a table with exact values in
+// memory, in parallel.
 func NewSource(set *egtb.Set, t *egtb.Table, workers int) *Source {
+	return newSource(set, t, workers, &Source{Alphabet: 3})
+}
+
+// NewSourceDTM derives the quantised distance symbols (buckets of step
+// moves; signed = wins and losses apart, else the bucket alone; drawFree =
+// draws as don't care) from a table with exact values in memory.
+func NewSourceDTM(set *egtb.Set, t *egtb.Table, step int, signed, drawFree bool, workers int) *Source {
+	buckets := 127/step + 1 // 0 .. 127/step
+	alphabet := buckets
+	if signed {
+		alphabet = 2*buckets + 1
+	}
+	return newSource(set, t, workers, &Source{Alphabet: alphabet, dtm: true, step: step, signed: signed, drawFree: drawFree})
+}
+
+func newSource(set *egtb.Set, t *egtb.Table, workers int, src *Source) *Source {
 	if t.Values == nil || !t.Exact() {
 		panic("syzygy: NewSource needs an exact table in memory: " + t.Mat.Name())
 	}
 	pieces := piecesOf(t.Mat)
 	n := t.Size
-	src := &Source{Table: t, Set: set, Symbols: make([]byte, n)}
+	src.Table, src.Set, src.Symbols = t, set, make([]byte, n)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	chunk := (n + workers - 1) / workers
@@ -148,8 +195,8 @@ func NewSource(set *egtb.Set, t *egtb.Table, workers int) *Source {
 					continue
 				}
 				legal++
-				own := captureBound(set, &b, &buf, symbolOf(t.Values[idx]))
-				if own >= bounded {
+				own := src.symbolAt(&b, &buf, t.Values[idx])
+				if own&boundedFlag != 0 { // bounded, or DontCare (a free draw)
 					decided++
 				}
 				src.Symbols[idx] = own
@@ -445,7 +492,7 @@ func Build(src *Source, opt pairs.Options, bo BuildOptions, workers int, progres
 			// the sample: per candidate and file the packed size of the windows
 			scores := make([][]int, len(cands))
 			for c, o := range cands {
-				scores[c] = sampleSide(set, be, side, o, b.Files, bo, opt, workers)
+				scores[c] = sampleSide(src, be, side, o, b.Files, bo, opt, workers)
 				if progress != nil {
 					progress(fmt.Sprintf("%s side %d order %-12s sample %v bytes", be.name, side, o, scores[c]))
 				}
@@ -476,7 +523,7 @@ func Build(src *Source, opt pairs.Options, bo BuildOptions, workers int, progres
 				if sizes[f] > uint64(bo.DictAbove) && po.DictSample == 0 {
 					po.DictSample = bo.DictSample
 				}
-				packed, st := pairs.PackStats(values[f], 3, po)
+				packed, st := pairs.PackStats(values[f], src.Alphabet, po)
 				s := &b.Streams[side*b.Files+f]
 				if s.Packed == nil || len(packed) < len(s.Packed) {
 					*s = Stream{Order: o, Size: sizes[f], Packed: packed, Stats: st}
@@ -531,7 +578,7 @@ func captureBound(set *egtb.Set, b *bitboard.Board, buf *chess.MoveBuffer, own b
 		best = max(best, 2-symbolOf(v))
 	}
 	if hasCapture && best == own {
-		return own + bounded
+		return own | boundedFlag
 	}
 	return own
 }
@@ -540,7 +587,8 @@ func captureBound(set *egtb.Set, b *bitboard.Board, buf *chess.MoveBuffer, own b
 // every file's stream are enumerated with the decoder, looked up in the
 // tables, filled like the real stream and packed; returns the packed bytes
 // per file.
-func sampleSide(set *egtb.Set, be *baseEntry, side int, o Order, files int, bo BuildOptions, opt pairs.Options, workers int) []int {
+func sampleSide(src *Source, be *baseEntry, side int, o Order, files int, bo BuildOptions, opt pairs.Options, workers int) []int {
+	set := src.Set
 	enc := encPiece
 	if be.hasPawns {
 		enc = encFile
@@ -594,14 +642,14 @@ func sampleSide(set *egtb.Set, be *baseEntry, side int, o Order, files int, bo B
 						if !ok {
 							continue // adjacent kings
 						}
-						out[i] = captureBound(set, &b, &buf, symbolOf(v))
+						out[i] = src.symbolAt(&b, &buf, v)
 					}
 				}
 			}()
 		}
 		wg.Wait()
 		fillDontCare(sample)
-		_, st := pairs.PackStats(sample, 3, opt)
+		_, st := pairs.PackStats(sample, src.Alphabet, opt)
 		scores[f] = st.Bytes
 	}
 	return scores
@@ -615,9 +663,9 @@ func fillDontCare(values []byte) {
 		switch {
 		case v == DontCare:
 			values[i] = prev
-		case v >= bounded:
-			if prev > v-bounded {
-				prev = v - bounded
+		case v&boundedFlag != 0:
+			if bound := v &^ boundedFlag; prev > bound {
+				prev = bound
 			}
 			values[i] = prev
 		default:

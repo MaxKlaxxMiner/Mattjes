@@ -245,6 +245,17 @@ func egtbWdlSize(workers int, orders string, dumpDir string, opt pairs.Options, 
 	fmt.Printf("   (%.1f s)\n", time.Since(start).Seconds())
 }
 
+// syzygyDtzSize is the size of the Syzygy DTZ file of a material, 0 when missing.
+func syzygyDtzSize(m egtb.Material) int64 {
+	name := m.Name()
+	name = name[:1] + strings.Replace(name[1:], "K", "vK", 1)
+	info, err := os.Stat(filepath.Join(syzygyDefaultDir, name+".rtbz"))
+	if err != nil {
+		return 0
+	}
+	return info.Size()
+}
+
 // syzygyFileSize is the size of the Syzygy WDL file of a material in the
 // author's folder ("KQKR" -> "KQvKR.rtbw"), 0 when missing.
 func syzygyFileSize(m egtb.Material) int64 {

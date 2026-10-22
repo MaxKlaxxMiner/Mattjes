@@ -1066,13 +1066,43 @@ für Ströme über `BuildOptions.DictAbove` (Vorgabe 512 Mi, Stichprobe 16 Mi): 
 Sechs-Steiner mit Milliarden Stellungen, wo hunderte Re-Pair-Durchläufe Stunden
 kosten würden; Fünf-Steiner packen weiterhin vollständig.
 
-Offen:
-ein Packer, der das Wörterbuch an einer Stichprobe baut und den Strom danach in einem
-Durchlauf tokenisiert (Re-Pair über 250 Mio. Symbole braucht sonst hunderte Durchläufe
-über den ganzen Strom); die Einbindung (UCI legt die `syzygy.Tables` immer an:
-`SyzygyPath` falls gesetzt, dazu `AddOwn` auf den Cache-Ordner und die Basis als
-Rückfrage; der Hintergrund-Job schreibt nach jeder fertigen DTM-Tabelle die
-WDL-Datei); die DTM-Datei danach mit Remis als Don't-care.
+### Die DTM in derselben Struktur: Vorabmessung (2026-10-22)
+
+Mit der WDL-Datei daneben braucht die DTM nur noch die Distanzen. `NewSourceDTM(set,
+t, step, signed, drawFree)` liefert statt der drei WDL-Symbole den quantisierten
+Distanz-Eimer (Schrittweite 8 wie die Cache-Datei: 16 Gewinn-Eimer, 17 Verlust-Eimer
+mit "jetzt matt" als 0, Remis), `signed` hält Gewinne und Verluste auseinander
+(34 Symbole), ohne ist es der Eimer allein (17 Symbole, das Vorzeichen sagt die WDL),
+`drawFree` macht Remis zu Don't-care. Schläge bleiben vorerst gespeichert (die
+Schranke der WDL gilt für die Distanz nicht ohne Weiteres, siehe unten). Derselbe
+Weg wie für die WDL: Syzygys Index, Kandidaten je Strom (Stichprobe), `pairs`
+(Testbank `syzygyBuild(..., mode)` mit `dtm`, `dtmd`, `dtmu`; `boundedFlag` 0x80 statt
+der Addition, damit Alphabete über drei Symbole gehen).
+
+| Material | heutige Datei (`lz`, 16-KB-Blöcke, Schritt 8) | Syzygy DTZ | `dtmd` (34 Symbole) | `dtmu` (17) |
+|---|---|---|---|---|
+| KBNK (exakt in `4-all.bin`: 1.200.492 mit `lz`) | | | 186.430 | 186.322 |
+| KQKR (exakt: 1.666.919) | | | 384.226 | 369.688 |
+| KRKN | | | 127.119 (72 % frei) | 127.020 |
+| **KBNKQ** | **57.282.867** | **12.536.144** | **27.727.616 (0,48)** | **26.211.660 (0,46)** |
+
+KBNKQ: 115 Mio. Stellungen je Strom, 13,2 bzw. 7,3 Mio. Tokens, Reihenfolgen KqBkN/2
+und KkNqB/2 (andere als die WDL), 4,3 % frei (nur die Remis), 547 bzw. 560 s nach
+65 s Erzeugung. Die Datei halbiert sich gegenüber heute, liegt aber doppelt über
+Syzygys DTZ. Syzygy hat zwei weitere Hebel, beide eine Entscheidung über den Prober:
+**Schläge als Don't-care** (der DTZ-Prober löst Schläge und Bauernzüge auf, die
+Tabelle speichert nur, was besser ist als der beste Schlag; dafür muss das Alphabet
+nach Güte geordnet sein, Verlust kurz bis lang, Remis, Gewinn lang bis kurz, damit
+"beliebig bis zur Schranke" gilt; bei KBNKQ waren 40 % der Stellungen in der WDL
+schlagentschieden) und **nur eine Seite** (DTZ speichert die Distanz nur für eine Seite
+am Zug, die andere ergibt sich beim Probe aus den Kindern). Beides kostet je
+DTM-Anfrage einen Zuggenerator und bis zu zwanzig Kind-Anfragen, so wie der
+WDL-Prober es heute schon tut.
+
+Offen in dieser Reihe: das DTM-Dateiformat und der Leser in dieser Struktur (ein
+Distanz-Probe über Syzygys Index statt des 2-GB-Blockcaches), die beiden Hebel oben
+nach Entscheidung, und eine schnellere Kandidaten-Stichprobe (sie dominiert die Zeit
+bei fünf Steinen).
 
 ## Offen
 

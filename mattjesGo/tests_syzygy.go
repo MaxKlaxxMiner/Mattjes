@@ -32,9 +32,9 @@ const syzygyDefaultDir = `C:\Users\MaxKlaxx\Desktop\spiele\chess\table`
 // order and prints the best order and size per stream next to the Syzygy
 // file (docs/m5-endgame-tables.md, "Eigene WDL-Tabellen"). verbose prints
 // every candidate.
-func syzygyBuild(names string, workers int, opt pairs.Options, bo syzygy.BuildOptions, verbose bool) {
+func syzygyBuild(names string, workers int, opt pairs.Options, bo syzygy.BuildOptions, mode string, verbose bool) {
 	set := egtbLoadOrGenerate(workers)
-	fmt.Printf("=== own WDL tables: blocks %d bytes, %d pairs per pass, min count %d, %d symbols, symbol length %d ===\n", opt.BlockBytes, opt.PairsPerPass, opt.MinCount, opt.MaxSymbols, opt.MaxSymbolLen)
+	fmt.Printf("=== own %s tables: blocks %d bytes, %d pairs per pass, min count %d, %d symbols, symbol length %d ===\n", mode, opt.BlockBytes, opt.PairsPerPass, opt.MinCount, opt.MaxSymbols, opt.MaxSymbolLen)
 	var sumOurs, sumSyzygy int64
 	start := time.Now()
 	// materials beyond the base are generated exactly in memory (a minute for a five-piece table; the quantised cache file cannot serve)
@@ -65,13 +65,31 @@ func syzygyBuild(names string, workers int, opt pairs.Options, bo syzygy.BuildOp
 			continue
 		}
 		tStart := time.Now()
-		src := syzygy.NewSource(set, t, workers)
+		// mode: wdl, or the quantised distances (step 8) as dtm (wins and losses
+		// apart, draws stored), dtmd (draws free), dtmu (bucket only, draws free)
+		var src *syzygy.Source
+		var size int64
+		switch mode {
+		case "dtm":
+			src = syzygy.NewSourceDTM(set, t, egtb.FileStep, true, false, workers)
+		case "dtmd":
+			src = syzygy.NewSourceDTM(set, t, egtb.FileStep, true, true, workers)
+		case "dtmu":
+			src = syzygy.NewSourceDTM(set, t, egtb.FileStep, false, true, workers)
+		default:
+			src = syzygy.NewSource(set, t, workers)
+		}
+		if mode == "wdl" {
+			size = syzygyFileSize(t.Mat)
+		} else if info, err := os.Stat(set.TablePath(t)); err == nil {
+			size = info.Size() // our quantised DTM file, when present
+			fmt.Printf("%s: Syzygy DTZ %d bytes, our quantised DTM file %d bytes\n", t.Mat.Name(), syzygyDtzSize(t.Mat), size)
+		}
 		var progress func(string)
 		if verbose {
 			progress = func(line string) { fmt.Println("    " + line) }
 		}
 		b := syzygy.Build(src, opt, bo, workers, progress)
-		size := syzygyFileSize(t.Mat)
 		fmt.Printf("%-6s %9d legal, %4.1f%% capture-decided, %4d candidates: ours %8d, syzygy %8d, ratio %.2f (%.1f s)\n", t.Mat.Name(), src.Legal, 100*float64(src.Decided)/float64(max(src.Legal, 1)), b.Candidates, b.Bytes(), size, float64(b.Bytes())/float64(max(size, 1)), time.Since(tStart).Seconds())
 		for i, s := range b.Streams {
 			fmt.Printf("       stream %d: order %-12s %9d positions, %8d bytes: %s\n", i, s.Order, s.Size, len(s.Packed), s.Stats)
