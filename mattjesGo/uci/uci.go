@@ -69,6 +69,7 @@ type Engine struct {
 	mobility   string // MatePnMobility: on (leaves start with their move count), off (1/1), lazy (move count when entered)
 	goal       string // MatePnGoal: mate (the shortest mate, depth by depth) or win (any won table position proves, the mate length is an upper bound)
 	netInit    bool   // WdlNetInit: the WDL descent's proof numbers initialised by Patricia's net (docs/nnue-patricia.md)
+	rollouts   bool   // WdlRollouts: a rollout per open root move as the guess that orders the WDL search (package rollout)
 	// the transposition tables, allocated on the first search, dropped when a
 	// generation starts (the generator needs the memory)
 	direct    *tt.Table   // matepn (direct-mapped: proofs must not be evicted by larger numbers)
@@ -105,7 +106,7 @@ type job struct {
 // reported to the GUI (the Go and Rust binaries differ).
 func Run(in io.Reader, out io.Writer, name string, workers int) {
 	e := &Engine{out: bufio.NewWriter(out), board: bitboard.New(), multiPV: 1, workers: workers, name: name, cacheDir: egtb.DefaultCacheDir(),
-		algo: defaultAlgo, hashMB: defaultHashMB, mobility: defaultMobility, goal: defaultGoal, netInit: true, jobDone: make(chan *egtb.Set, 1), searchDone: make(chan searchEnd, 1), demandTick: make(chan struct{}, 1)}
+		algo: defaultAlgo, hashMB: defaultHashMB, mobility: defaultMobility, goal: defaultGoal, netInit: true, rollouts: true, jobDone: make(chan *egtb.Set, 1), searchDone: make(chan searchEnd, 1), demandTick: make(chan struct{}, 1)}
 	e.send("%s", About)
 	e.flush()
 	lines := make(chan string)
@@ -171,6 +172,7 @@ func (e *Engine) command(words []string) bool {
 		e.send("option name EgtbWriteCache type check default false")
 		e.send("option name EgtbGenerate5 type check default false")
 		e.send("option name WdlNetInit type check default true")
+		e.send("option name WdlRollouts type check default true")
 		e.send("option name EgtbGenerate6 type check default false")
 		e.send("option name EgtbPath type string default %s", e.cacheDir)
 		e.send("option name SyzygyPath type string default <empty>")
@@ -272,6 +274,8 @@ func (e *Engine) setOption(words []string) {
 		e.generate5 = flag
 	case strings.EqualFold(name, "WdlNetInit"):
 		e.netInit = flag
+	case strings.EqualFold(name, "WdlRollouts"):
+		e.rollouts = flag
 	case strings.EqualFold(name, "EgtbGenerate6"):
 		e.generate6 = flag
 	case strings.EqualFold(name, "EgtbPath"):

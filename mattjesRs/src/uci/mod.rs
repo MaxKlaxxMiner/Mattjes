@@ -79,6 +79,7 @@ pub struct Engine<W: Write + Send + 'static> {
     mobility: String,  // MatePnMobility: on (leaves start with their move count), off (1/1), lazy (move count when entered)
     goal: String,      // MatePnGoal: mate (the shortest mate, depth by depth) or win (any won table position proves, the mate length is an upper bound)
     net_init: bool,    // WdlNetInit: the WDL descent's proof numbers initialised by Patricia's net (docs/nnue-patricia.md)
+    rollouts: bool,    // WdlRollouts: a rollout per open root move as the guess that orders the WDL search (module rollout)
     /// The search's transposition table, allocated on the first search,
     /// dropped when a generation starts (the generator needs the memory).
     tables: Option<SearchTable>,
@@ -138,6 +139,7 @@ pub fn run<R: Read + Send + 'static, W: Write + Send + 'static>(input: R, out: W
         generate5: false,
         generate6: false,
         net_init: true,
+        rollouts: true,
         cache_dir: egtb::default_cache_dir(),
         syzygy: None,
         algo: DEFAULT_ALGO.to_string(),
@@ -243,6 +245,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                 self.send("option name EgtbWriteCache type check default false");
                 self.send("option name EgtbGenerate5 type check default false");
                 self.send("option name WdlNetInit type check default true");
+                self.send("option name WdlRollouts type check default true");
                 self.send("option name EgtbGenerate6 type check default false");
                 self.send(&format!("option name EgtbPath type string default {}", self.cache_dir.display()));
                 self.send("option name SyzygyPath type string default <empty>");
@@ -356,6 +359,8 @@ impl<W: Write + Send + 'static> Engine<W> {
             self.generate5 = flag;
         } else if name.eq_ignore_ascii_case("WdlNetInit") {
             self.net_init = flag;
+        } else if name.eq_ignore_ascii_case("WdlRollouts") {
+            self.rollouts = flag;
         } else if name.eq_ignore_ascii_case("EgtbGenerate6") {
             self.generate6 = flag;
         } else if name.eq_ignore_ascii_case("EgtbPath") {

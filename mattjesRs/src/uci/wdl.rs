@@ -16,6 +16,7 @@ use super::{RootMove, PROGRESS_INTERVAL};
 use crate::bitboard::Board;
 use crate::chess::{new_buffer, Move};
 use crate::mateab::Tables;
+use crate::rollout;
 use crate::wdllist::{self, Options, Outcome};
 
 /// A root move's state, best first.
@@ -56,6 +57,19 @@ pub struct WdlEntry {
     /// Positions of the move's graphs (both questions, both racers).
     pub positions: usize,
     pub method: &'static str,
+    /// The rollout's guess for us (WdlRollouts), Unknown without.
+    pub guess: rollout::Outcome,
+}
+
+/// Orders the open moves by the rollout's guess: wins first (the first
+/// proven win ends a MultiPV 1 search), then unknown, draws, losses.
+fn guess_rank(o: rollout::Outcome) -> u8 {
+    match o {
+        rollout::Outcome::Win => 0,
+        rollout::Outcome::Unknown => 1,
+        rollout::Outcome::Draw => 2,
+        rollout::Outcome::Loss => 3,
+    }
 }
 
 /// The measured memory of a graph position (record, key, store slot,
@@ -101,13 +115,13 @@ pub const WDL_BUDGET_GROWTH: usize = 4;
 /// multi_pv moves are proven wins (nothing can rank above them), when the
 /// full budget left moves open, or on stop.
 #[allow(clippy::too_many_arguments)]
-pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &Arc<Reporter<W>>, known: &[RootMove], stop: &Arc<AtomicBool>, max_positions: usize, oracle: Tables<'_>, net_init: bool) -> Core {
+pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &Arc<Reporter<W>>, known: &[RootMove], stop: &Arc<AtomicBool>, max_positions: usize, oracle: Tables<'_>, net_init: bool, rollouts: bool) -> Core {
     let mut buf = new_buffer();
     let n = root.gen_moves(&mut buf);
     let mut entries: Vec<WdlEntry> = Vec::with_capacity(n);
     let mut open = Vec::new();
     for (i, &mv) in buf[..n].iter().enumerate() {
-        let mut en = WdlEntry { mv, class: WdlClass::Unknown, pv: Vec::new(), positions: 0, method: "" };
+        let mut en = WdlEntry { mv, class: WdlClass::Unknown, pv: Vec::new(), positions: 0, method: "", guess: rollout::Outcome::Unknown };
         let mut settled = false;
         for k in known.iter().filter(|k| k.mv == mv) {
             settled = true;
@@ -151,6 +165,28 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
     // the weaker side's question first (wdl_material): 0 = we win, 1 = the
     // opponent wins
     let order: [usize; 2] = if wdl_material(root, !root.white_move) < wdl_material(root, root.white_move) { [1, 0] } else { [0, 1] };
+    if rollouts && !open.is_empty() {
+        // a rollout per open move as the guess (module rollout, Patricia's
+        // net as both sides' policy down to the tables): guessed wins are
+        // asked first, and every move is asked its guessed question first
+        let start = Instant::now();
+        let mut guesses = [0usize; 4];
+        let ropt = rollout::Options { max_plies: 0, oracle: Some(oracle) };
+        for &i in &open {
+            let mut c = *root;
+            c.do_move(entries[i].mv);
+            let r = rollout::play(&c, ropt);
+            let g = match r.outcome {
+                rollout::Outcome::Win => rollout::Outcome::Loss, // for the opponent, to move after the move
+                rollout::Outcome::Loss => rollout::Outcome::Win,
+                o => o,
+            };
+            entries[i].guess = g;
+            guesses[g as usize] += 1;
+        }
+        open.sort_by_key(|&i| guess_rank(entries[i].guess));
+        rep.note(&format!("wdl: rollouts guess {} win, {} draw, {} loss, {} unknown of {} open moves in {:?}", guesses[rollout::Outcome::Win as usize], guesses[rollout::Outcome::Draw as usize], guesses[rollout::Outcome::Loss as usize], guesses[rollout::Outcome::Unknown as usize], open.len(), start.elapsed()));
+    }
     let mut budget = WDL_FIRST_BUDGET.min(max_positions);
     let mut round = 0;
     while !open.is_empty() && wins < multi_pv && !core.aborted {
@@ -176,7 +212,14 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
                 *counted = total;
                 r
             };
-            for &q in &order {
+            // the guessed question first: a guessed win asks "we win", a
+            // guessed loss "the opponent wins", the rest the material order
+            let move_order: [usize; 2] = match entries[i].guess {
+                rollout::Outcome::Win => [0, 1],
+                rollout::Outcome::Loss => [1, 0],
+                _ => order,
+            };
+            for &q in &move_order {
                 if q == 0 && matches!(entries[i].class, WdlClass::Unknown | WdlClass::NoLoss) {
                     // we win? (the root is a defender node of the child: the
                     // opponent to move, we attack)

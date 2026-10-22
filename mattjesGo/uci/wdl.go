@@ -10,6 +10,7 @@ import (
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mateab"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/rollout"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/wdllist"
 )
 
@@ -56,6 +57,21 @@ type wdlEntry struct {
 	pv        []chess.Move // the winning line (ours or the opponent's), the move first
 	positions int          // positions the shared graphs grew by while this move was asked
 	method    string
+	guess     rollout.Outcome // the rollout's guess for us (WdlRollouts), Unknown without
+}
+
+// guessRank orders the open moves by the rollout's guess: wins first (the
+// first proven win ends a MultiPV 1 search), then unknown, draws, losses.
+func guessRank(o rollout.Outcome) int {
+	switch o {
+	case rollout.Win:
+		return 0
+	case rollout.Unknown:
+		return 1
+	case rollout.Draw:
+		return 2
+	}
+	return 3
 }
 
 // wdlMaterial is the piece value sum of a side without the king (queen 9,
@@ -105,7 +121,7 @@ const wdlBudgetGrowth = 4
 // reported after every decision; the search ends when every move is
 // decided, when the top multiPV moves are proven wins (nothing can rank
 // above them), when the full budget left moves open, or on stop.
-func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, stop *atomic.Bool, maxPositions int, oracle mateab.Oracle, netInit bool) searchEnd {
+func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, stop *atomic.Bool, maxPositions int, oracle mateab.Oracle, netInit bool, rollouts bool) searchEnd {
 	var buf chess.MoveBuffer
 	n := root.GenMoves(&buf)
 	entries := make([]wdlEntry, n)
@@ -164,6 +180,30 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 	if wdlMaterial(root, !root.WhiteMove) < wdlMaterial(root, root.WhiteMove) {
 		order = [2]int{1, 0}
 	}
+	if rollouts && len(open) > 0 {
+		// a rollout per open move as the guess (package rollout, Patricia's
+		// net as both sides' policy down to the tables): guessed wins are
+		// asked first, and every move is asked its guessed question first
+		start := time.Now()
+		var guesses [4]int
+		ropt := rollout.Options{Oracle: oracle}
+		for _, i := range open {
+			c := *root
+			c.DoMove(entries[i].move)
+			r := rollout.Play(&c, ropt)
+			g := r.Outcome // for the opponent, to move after the move
+			switch g {
+			case rollout.Win:
+				g = rollout.Loss
+			case rollout.Loss:
+				g = rollout.Win
+			}
+			entries[i].guess = g
+			guesses[g]++
+		}
+		sort.SliceStable(open, func(a, b int) bool { return guessRank(entries[open[a]].guess) < guessRank(entries[open[b]].guess) })
+		rep.note(fmt.Sprintf("wdl: rollouts guess %d win, %d draw, %d loss, %d unknown of %d open moves in %v", guesses[rollout.Win], guesses[rollout.Draw], guesses[rollout.Loss], guesses[rollout.Unknown], len(open), time.Since(start).Round(time.Millisecond)))
+	}
 	budget := min(wdlFirstBudget, maxPositions)
 	for round := 1; len(open) > 0 && wins < multiPV && !end.aborted; round++ {
 		rep.note(fmt.Sprintf("wdl: round %d, %d new positions per graph and question, %d moves open, %d positions so far", round, budget, len(open), positions))
@@ -187,7 +227,16 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 				counted = total
 				return r
 			}
-			for _, q := range order {
+			// the guessed question first: a guessed win asks "we win", a
+			// guessed loss "the opponent wins", the rest the material order
+			moveOrder := order
+			switch m.guess {
+			case rollout.Win:
+				moveOrder = [2]int{0, 1}
+			case rollout.Loss:
+				moveOrder = [2]int{1, 0}
+			}
+			for _, q := range moveOrder {
 				if q == 0 && (m.class == wdlUnknown || m.class == wdlNoLoss) {
 					// we win? (the root is a defender node of the child: the
 					// opponent to move, we attack)

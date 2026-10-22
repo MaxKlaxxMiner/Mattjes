@@ -245,9 +245,36 @@ Züge einzeln nicht fest). Go und Rust liefern dieselben Zeilen.
 Vor den zwei Korrekturen: 241 bzw. 460. Kosten: Rust 156 ms für alle
 567 Rollouts mit den Vier-Steinern, Go 1,9 s.
 
+**Im UCI-Treiber** (`WdlRollouts`, Vorgabe an): vor den Runden spielt
+`runWdl` jeden offenen Wurzelzug einmal aus (mit dem Orakel der Suche)
+und meldet `info string wdl: rollouts guess W win, D draw, L loss, U
+unknown of N open moves in T`. Geratene Gewinne kommen zuerst an die
+Reihe (dann unbekannt, Remis, Verluste), und jeder Zug bekommt seine
+geratene Frage zuerst: ein geratener Gewinn "wir gewinnen", ein
+geratener Verlust "der Gegner gewinnt", der Rest die Materialregel.
+A/B mit `tests/uci-wdl.sh <binary> tests/uci-ab.txt 20000 3 2048
+"SyzygyPath value ...;WdlRollouts value false"` (das Skript nimmt jetzt
+weitere Optionen mit `;` getrennt und druckt die Schätzzeile), Rust mit
+Syzygy, MultiPV 3:
+
+| Stellung | Schätzung | Stellungen mit / ohne Rollouts |
+|---|---|---|
+| KRRN-KN einsamer Springer, Weiß | 27 Gewinne von 27, 0,3 ms | 58 / 112 |
+| KRRN-KNP Sieben-Steiner | 27 von 27, 4,4 ms | 112.335 / 147.321 (0,38 / 0,41 s) |
+| KQQ-KN | 37 von 37 | 82 / 82 |
+| KRR-KN Benchmark, Schwarz | 12 Verluste von 12 | 28 / 52 |
+
+Der Gewinn ist die gesparte falsche Frage je Zug (ein Viertel weniger
+Stellungen auf dem Sieben-Steiner), die Rollouts selbst kosten in Rust
+Mikrosekunden bis Millisekunden, in Go das Zehn- bis Fünfzigfache. Wo
+die Tabellen alles sofort entscheiden, ändert sich nichts; wo die
+Beweise lang sind (einsamer Springer ohne Fünf-Steiner-Tabellen: null
+Gewinne in 20 s mit und ohne), auch nicht. Go liefert dieselben
+Schätzungen.
+
 ## Nächster Schritt
 
-Die Rollouts in den UCI-Treiber: je Wurzelzug ein Rollout als Vorhersage,
-geratene Gewinne zuerst in die exakte Suche (MultiPV findet den ersten
-bewiesenen Gewinn früher), und die Linie als Vorgabe für den Abstieg
-(kleine Beweiszahlen entlang der Linie).
+Die Rollout-Linie als Vorgabe für den Abstieg (kleine Beweiszahlen
+entlang der Linie), gemessen an den Gewinnen ohne Tabellen; und
+Rollouts mit Breite (die zwei besten Züge, Rückkehr), um die "vier
+Remis" und "zwei Remis" nicht mehr für Gewinne zu halten.
