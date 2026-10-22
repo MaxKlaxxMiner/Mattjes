@@ -37,7 +37,7 @@ impl<'a> Graph<'a> {
             return if c.in_check() { -100000 } else { 100000 };
         }
         for &am in &buf[..n] {
-            if c.squares[am.to.idx()] != Piece::NONE && !recapturable(&c, am) {
+            if c.squares[am.to.idx()] != Piece::NONE && self.capture_free(&c, am) {
                 s -= 2000; // the attacker wins material for free
             }
         }
@@ -154,12 +154,28 @@ impl<'a> Graph<'a> {
 
 /// After the capture m on board b, the side then to move can take back on
 /// the same square (a one-ply exchange check).
-fn recapturable(b: &Board, m: Move) -> bool {
-    let mut c = *b;
-    c.do_move(m);
-    let mut buf = new_buffer();
-    let n = c.gen_moves(&mut buf);
-    buf[..n].iter().any(|r| r.to == m.to)
+impl<'a> Graph<'a> {
+    /// The capture m on board b wins material for free: after it the side
+    /// then to move can neither take back on the same square (a one-ply
+    /// exchange check) nor is the position a draw on sight (stalemate, dead
+    /// material or a table draw: in the KQ-KP stalemate trick Qxc2 after
+    /// Ka1 is stalemate, and the policy preferred c1=Q+ over Ka1 because
+    /// the pawn "hung").
+    fn capture_free(&self, b: &Board, m: Move) -> bool {
+        let mut c = *b;
+        c.do_move(m);
+        match self.probe(&c) {
+            Verdict::Draw | Verdict::Loss => return false, // the capturer gets nothing (or loses by the table)
+            Verdict::Win => return true,
+            Verdict::Unknown => {}
+        }
+        let mut buf = new_buffer();
+        let n = c.gen_moves(&mut buf);
+        if n == 0 {
+            return c.in_check(); // mate wins, stalemate is a draw
+        }
+        !buf[..n].iter().any(|r| r.to == m.to)
+    }
 }
 
 fn chebyshev(a: i32, b: i32) -> i32 {
@@ -180,7 +196,7 @@ impl<'a> Searcher<'a> {
             return false;
         }
         let b = self.g.board(i);
-        if self.chase_nodes && self.g.chaseable(i) && self.g.defender_has_piece(&b) {
+        if self.chase_nodes && self.g.chaseable(i) && self.g.defender_chases(&b) {
             match self.chase_top(i, CHASE_NODE_BUDGET) {
                 ChaseResult::Hold => return true,
                 ChaseResult::Cut if self.aborted => return false,
@@ -332,11 +348,11 @@ impl<'a> Searcher<'a> {
         let mut s = Searcher::new(g, opt);
         s.start = Instant::now();
         s.cond_lists = vec![Vec::new(); CHASE_MAX_DEPTH + 2];
-        // a perpetual check is the weaker side's resource: only then are the
-        // policy nodes chased (a stronger defender's checks are an attack,
-        // and chasing them cost millions of positions on KQ-KRRPP)
-        let side = s.g.defender_side();
-        s.chase_nodes = !no_chase && material(root, side) < material(root, 1 - side);
+        // a perpetual check is the weaker side's resource: only such policy
+        // nodes are chased (defender_chases, per node; a stronger defender's
+        // checks are an attack, and chasing them cost millions of positions
+        // on KQ-KRRPP)
+        s.chase_nodes = !no_chase;
         s
     }
 

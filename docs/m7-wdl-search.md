@@ -954,12 +954,59 @@ beiden, weil Millionen Slice-Köpfe mit Zeigern verschwunden sind, die
 der Garbage Collector bei `SetGCPercent(1)` ständig abgelaufen hat;
 die Arenen sind zeigerfreie Arrays.
 
+## Zweiter Anlauf an den gemischten Remis: zwei Befunde, drei verworfene Terme (2026-10-22)
+
+Prüfstand war zuerst die KQ-KP-Pattfalle mit dem c-Bauern ohne Tabellen
+(sichere Menge 89.506, der Abstieg braucht 4 Mio. Stellungen), weil sie
+billiger ist als die Sieben-Steiner. Der Zertifikat-Bauer allein kam
+dort nicht zum Ende, aber die Fortschrittszeilen zeigten zwei Dinge:
+
+1. **Jagd-Freigabe je Knoten statt je Wurzel.** Die Jagd an
+   Politik-Knoten galt, wenn der Verteidiger *an der Wurzel* materiell
+   schwächer war; in KQ-KP wandelt der Bauer um, und die
+   Dame-gegen-Dame-Knoten darunter wurden mit je 4.096 Knoten gejagt,
+   ohne einen Hold: 8,4 Mio. Jagdknoten mit 7 Mio. Schnitten in 105 s.
+   Jetzt entscheidet `defenderChases` am Knoten (Figur vorhanden und
+   materiell schwächer): 2 Mio. Jagdknoten in 50 s, fast nur billige
+   Fehlschläge bei Unterverwandlungen. Nicht gelöst, aber ein Viertel
+   der Arbeit.
+2. **Die Schlagprüfung kennt Patt und Tabellen-Remis.** Die Politik
+   wählte c1=D+ (Schach +1500) statt Ka1, weil nach Ka1 der Bauer c2
+   "hing" (−2000): dass Dxc2 Patt ist, sah die Ein-Zug-Tauschprüfung
+   nicht. `captureFree` zählt einen Schlag nur als freien Gewinn, wenn
+   danach weder zurückgeschlagen werden kann noch Patt, totes Material
+   oder ein Tabellen-Remis steht.
+
+**Gebaut, gemessen, verworfen** (alle ohne Wirkung auf die gelösten
+Stellungen und ohne Wirkung auf die offenen):
+
+- Schach-Bonus nur an Knoten, deren Jagd nicht gescheitert ist (die
+  Schachs streuen dort nur). Keine Zahl.
+- Bauernvorstoß +800, zum zweiten Mal. Keine Zahl.
+- Adaptives Jagdbudget an Politik-Knoten (halbiert nach Fehlschlag oder
+  Schnitt bis 64, 4.096 nach einem Hold): die Fortschrittszeilen von
+  `KQP-KRRP zwei Remis` waren auf die Zahl identisch mit vorher, die
+  1,6 Mio. Holds setzten das Budget ständig zurück.
+
+**Befund an `KQP-KRRP zwei Remis`** (Rust = Go auf die Zahl): nach 100 s
+13,4 Mio. Stellungen, davon 10,5 Mio. Jagdknoten mit 7,7 Mio.
+Schnitten; die Jagden an den Politik-Knoten erzeugen die Stellungen,
+nicht die Welle, und das 16-Mi-Budget ist nach rund 130 s voll, ohne
+dass eine Runde endet. Die freien Ausweichzüge lassen die Jagd dort
+den Turmschachs folgen, bis der Deckel schneidet. Das Zertifikat des
+Bauernlaufs selbst (schwarze Stellungen innerhalb von vier Zügen plus
+Schachs, mal die Bauernstufen) dürfte bei mehreren Millionen liegen,
+und `KQ-KRRPP ein Remis` darüber. Beide bleiben offen; der nächste
+Ansatz muss die Jagd an Politik-Knoten zügeln (kein Budget je Knoten,
+sondern je Runde) und die Welle selbst beobachten.
+
 **Nächste Hebel**, nach erwartetem Nutzen:
 
-1. Gemischte Remis als Zertifikat-Problem: die Welle begrenzen (Budget
-   je Runde, Fixpunkt dazwischen, Erweiterung nur am Leck), Politik mit
-   Drohung und Bauernlauf; Maßstab die zwei offenen Sieben-Steiner und
-   die KQ-KP-Pattfallen (heute nur per Abstieg).
+1. Gemischte Remis als Zertifikat-Problem: Jagdbudget je Runde statt
+   je Knoten, die Welle begrenzen (Budget je Runde, Fixpunkt dazwischen,
+   Erweiterung nur am Leck), Politik mit Drohung; Maßstab die zwei
+   offenen Sieben-Steiner und die KQ-KP-Pattfallen (heute nur per
+   Abstieg).
 2. Beide Fragen in einem Graphen (die Gewinne der einen Frage sind die
    Verluste der anderen).
 3. Politik: freie Königsfelder statt Klebens gegen Springer; taktische

@@ -77,6 +77,18 @@ impl<'a> Graph<'a> {
         b.pieces[side][1] | b.pieces[side][2] | b.pieces[side][3] | b.pieces[side][4] != 0
     }
 
+    /// A policy node is chased when the defender has a piece and is the
+    /// weaker side by material. Per node, not per root: in KQ-KP the pawn
+    /// promotes, and the queen-against-queen nodes below were chased at
+    /// 4,096 nodes each without a single hold.
+    pub(super) fn defender_chases(&self, b: &Board) -> bool {
+        if !self.defender_has_piece(b) {
+            return false;
+        }
+        let side = if self.attacker_white { 1 } else { 0 };
+        material(b, side) < material(b, 1 - side)
+    }
+
     /// The node holds by the chase memo (for good or on the path).
     fn chase_held(&self, i: u32) -> bool {
         matches!(self.chase[i as usize], CH_HOLD | CH_HOLD_COND)

@@ -700,7 +700,7 @@ type searcher struct {
 	condLists                                    [][]uint32
 	chaseCap                                     int    // the current depth cap of the chase
 	chaseLimit                                   uint64 // chase node count at which a budgeted chase is cut (0 = none)
-	chaseNodes                                   bool   // chase at policy nodes too (the defender is the weaker side)
+	chaseNodes                                   bool   // chase at policy nodes too (those where defenderChases holds)
 	chaseFails, chaseCuts, chaseHolds, chaseCond int
 	quietMoves                                   int // quiet moves the chase tried
 }

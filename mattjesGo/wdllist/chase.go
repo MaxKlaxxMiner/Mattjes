@@ -146,6 +146,22 @@ func (g *Graph) defenderHasPiece(b *bitboard.Board) bool {
 	return b.Pieces[side][1]|b.Pieces[side][2]|b.Pieces[side][3]|b.Pieces[side][4] != 0
 }
 
+// defenderChases: a policy node is chased when the defender has a piece
+// and is the weaker side by material. Per node, not per root: in KQ-KP the
+// pawn promotes, and the queen-against-queen nodes below were chased at
+// 4,096 nodes each without a single hold (8 million chase nodes in 100 s
+// on the c-pawn stalemate position).
+func (g *Graph) defenderChases(b *bitboard.Board) bool {
+	if !g.defenderHasPiece(b) {
+		return false
+	}
+	side := 0
+	if g.attackerWhite {
+		side = 1
+	}
+	return material(b, side) < material(b, 1-side)
+}
+
 // chaseHeld: the node holds by the chase memo (for good or on the path).
 func (g *Graph) chaseHeld(i uint32) bool {
 	return g.chase[i] == chHold || g.chase[i] == chHoldCond

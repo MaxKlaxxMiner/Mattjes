@@ -68,7 +68,7 @@ func (g *Graph) policyScore(b *bitboard.Board, m chess.Move) int {
 		return 100000 // stalemate
 	}
 	for _, am := range buf[:n] {
-		if c.Squares[am.To] != chess.None && !recapturable(&c, am) {
+		if c.Squares[am.To] != chess.None && g.captureFree(&c, am) {
 			s -= 2000 // the attacker wins material for free
 		}
 	}
@@ -108,19 +108,32 @@ func (g *Graph) gluedPieces(b *bitboard.Board) int {
 	return n
 }
 
-// recapturable: after the capture m on board b, the side then to move can
-// take back on the same square (a one-ply exchange check).
-func recapturable(b *bitboard.Board, m chess.Move) bool {
+// captureFree: the capture m on board b wins material for free: after it
+// the side then to move can neither take back on the same square (a
+// one-ply exchange check) nor is the position a draw on sight (stalemate,
+// dead material or a table draw: in the KQ-KP stalemate trick Qxc2 after
+// Ka1 is stalemate, and the policy preferred c1=Q+ over Ka1 because the
+// pawn "hung").
+func (g *Graph) captureFree(b *bitboard.Board, m chess.Move) bool {
 	c := *b
 	c.DoMove(m)
+	switch v, _, _ := g.oracle.Probe(&c); v {
+	case mateab.Draw, mateab.Loss:
+		return false // the capturer gets nothing (or loses by the table)
+	case mateab.Win:
+		return true
+	}
 	var buf chess.MoveBuffer
 	n := c.GenMoves(&buf)
+	if n == 0 {
+		return c.InCheck() // mate wins, stalemate is a draw
+	}
 	for _, r := range buf[:n] {
 		if r.To == m.To {
-			return true
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // displacement is the Chebyshev distance of the defender's king from its
@@ -188,7 +201,7 @@ func (s *searcher) expandPartial(i uint32, k int) bool {
 		return false
 	}
 	b := g.board(i)
-	if s.chaseNodes && g.chaseable(i) && g.defenderHasPiece(&b) {
+	if s.chaseNodes && g.chaseable(i) && g.defenderChases(&b) {
 		switch s.chaseTop(i, ChaseNodeBudget) {
 		case chaseHold:
 			return true
@@ -263,10 +276,11 @@ func newCertSearcher(root *bitboard.Board, sideToMoveAttacks bool, opt Options) 
 	g.add(root)
 	g.shape = opt.Progress
 	s := &searcher{g: g, opt: opt, start: time.Now(), capN: DefaultNumberCap, frontier: []uint32{0}, condLists: make([][]uint32, ChaseMaxDepth+2)}
-	// a perpetual check is the weaker side's resource: only then are the
-	// policy nodes chased (a stronger defender's checks are an attack, and
-	// chasing them cost millions of positions on KQ-KRRPP)
-	s.chaseNodes = !opt.NoChase && material(root, side) < material(root, 1-side)
+	// a perpetual check is the weaker side's resource: only such policy
+	// nodes are chased (defenderChases, per node; a stronger defender's
+	// checks are an attack, and chasing them cost millions of positions on
+	// KQ-KRRPP)
+	s.chaseNodes = !opt.NoChase
 	if opt.ProgressEvery <= 0 {
 		s.opt.ProgressEvery = 1 << 20
 	}

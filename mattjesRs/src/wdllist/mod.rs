@@ -10,7 +10,7 @@
 mod certificate;
 mod chase;
 
-use chase::{material, ChaseResult, CHASE_MAX_DEPTH, CHASE_NODE_BUDGET, CH_HOLD, CH_UNKNOWN};
+use chase::{ChaseResult, CHASE_MAX_DEPTH, CHASE_NODE_BUDGET, CH_HOLD, CH_UNKNOWN};
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
