@@ -766,6 +766,11 @@ func (s *searcher) expand(i uint32) {
 		acc = new(nnue.Accumulator)
 		acc.Refresh(net, &b)
 	}
+	var children [chess.MaxMoves]struct {
+		idx   uint32
+		eval  int // the attacker's view
+		fresh bool
+	}
 	for j := 0; j < n; j++ {
 		c := b
 		c.DoMove(buf[j])
@@ -776,18 +781,29 @@ func (s *searcher) expand(i uint32) {
 		}
 		if isNew {
 			g.add(&c)
-			if acc != nil && g.status[ci] == stUnknown {
-				d := nnue.DeltaOf(&b, buf[j])
-				var child nnue.Accumulator
-				child.Update(net, acc, &d)
-				eval := child.Evaluate(net, c.WhiteMove) // for the side to move in the child
-				if !g.attackerAt(ci) {
-					eval = -eval // the attacker's view
-				}
-				g.biasNumbers(ci, eval, s.opt.NetInit)
+		}
+		children[j].idx, children[j].fresh = ci, isNew && g.status[ci] == stUnknown
+		if acc != nil {
+			d := nnue.DeltaOf(&b, buf[j])
+			var child nnue.Accumulator
+			child.Update(net, acc, &d)
+			eval := child.Evaluate(net, c.WhiteMove) // for the side to move in the child
+			if !g.attackerAt(ci) {
+				eval = -eval
 			}
+			children[j].eval = eval
 		}
 		g.addEdge(i, ci)
+	}
+	if acc != nil {
+		// (a rank among the siblings instead of the absolute view was
+		// measured and dropped: KRR-KN 116 thousand expansions instead of
+		// 5 thousand, docs/nnue-patricia.md)
+		for _, ch := range children[:n] {
+			if ch.fresh {
+				g.biasNumbers(ch.idx, ch.eval, s.opt.NetInit)
+			}
+		}
 	}
 	// wins through the new edges: a losing child wins the node, a winning
 	// child is one legal move less for the node

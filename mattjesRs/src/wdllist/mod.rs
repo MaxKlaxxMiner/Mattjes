@@ -1110,6 +1110,8 @@ impl<'a> Searcher<'a> {
         if let Some(net) = net {
             acc.refresh(net, &b);
         }
+        // (child index, the attacker's view of it, fresh = new and open)
+        let mut children: Vec<(u32, i32, bool)> = Vec::with_capacity(n);
         for &m in &buf[..n] {
             let mut c = b;
             c.do_move(m);
@@ -1120,22 +1122,31 @@ impl<'a> Searcher<'a> {
             }
             if is_new {
                 g.add(&c);
-                if let Some(net) = net {
-                    if g.status[ci as usize] == ST_UNKNOWN {
-                        let d = crate::nnue::Delta::of(&b, m);
-                        let mut child = crate::nnue::Accumulator::default();
-                        child.update(net, &acc, &d);
-                        let mut eval = child.evaluate(net, c.white_move); // for the side to move in the child
-                        if !g.attacker_at(ci) {
-                            eval = -eval; // the attacker's view
-                        }
-                        let (pn, dn) = bias_numbers(g.pn[ci as usize], g.dn[ci as usize], eval, self.opt.net_init);
-                        g.pn[ci as usize] = pn;
-                        g.dn[ci as usize] = dn;
-                    }
+            }
+            let mut eval = 0;
+            if let Some(net) = net {
+                let d = crate::nnue::Delta::of(&b, m);
+                let mut child = crate::nnue::Accumulator::default();
+                child.update(net, &acc, &d);
+                eval = child.evaluate(net, c.white_move); // for the side to move in the child
+                if !g.attacker_at(ci) {
+                    eval = -eval;
                 }
             }
+            children.push((ci, eval, is_new && g.status[ci as usize] == ST_UNKNOWN));
             g.add_edge(i, ci);
+        }
+        if net.is_some() {
+            // (a rank among the siblings instead of the absolute view was
+            // measured and dropped: KRR-KN 116 thousand expansions instead
+            // of 5 thousand, docs/nnue-patricia.md)
+            for &(ci, eval, fresh) in &children {
+                if fresh {
+                    let (pn, dn) = bias_numbers(g.pn[ci as usize], g.dn[ci as usize], eval, self.opt.net_init);
+                    g.pn[ci as usize] = pn;
+                    g.dn[ci as usize] = dn;
+                }
+            }
         }
         // wins through the new edges: a losing child wins the node, a
         // winning child is one legal move less for the node

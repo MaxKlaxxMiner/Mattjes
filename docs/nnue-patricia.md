@@ -195,9 +195,17 @@ Gewinne und 2 Remis wie vorher (79.574 statt 51.311 Stellungen, Go und
 Rust gleich). Kosten: in Rust 1,8 µs je Expansion plus 0,24 µs je Kind,
 im Rauschen; in Go 46 µs plus 8 µs je Kind, dort spürbar.
 
+**Gemessen und verworfen: der Rang unter den Geschwistern.** Statt des
+absoluten Werts der Rang des Zugs unter den Kindern des expandierten
+Knotens (der beste aus Sicht des Ziehenden behält seine Zahlen, der
+r-te bekommt die Zahl gegen sich r-mal verdoppelt, höchstens dreimal):
+KQ-KN 365.732 Expansionen, KBB-K 373.157, KQ-KR 14.277, KRR-KN "Weiß
+gewinnt" 116.238 (statt 5.004), einsamer Springer 204.096 (statt
+30.809); nur KBN-K besser (1.499.552). Der Rang verliert die
+Information, wie klar die Stellung ist: ein knapper zweiter Zug und ein
+hoffnungsloser bekommen dieselbe Strafe. Ausgebaut.
+
 ## Nächster Schritt
 
 Das Netz als Zugordnung der Rollouts in Stufe 2 der M6-Richtung
-(Varianten ausspielen, bis Gewinn, Verlust oder Remis klar ist), und
-eine zweite Initialisierungsform messen: die Netzbewertung nicht nur
-als Faktor auf die Mobilität, sondern als Rang unter den Geschwistern.
+(Varianten ausspielen, bis Gewinn, Verlust oder Remis klar ist).
