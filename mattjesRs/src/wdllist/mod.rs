@@ -93,6 +93,12 @@ pub struct Options<'a> {
     /// Runs the certificate builder alone (no proof-number descent racing
     /// it), for measuring the builder.
     pub no_descent: bool,
+    /// Adds Patricia's network to the certificate builder's policy: the
+    /// defender prefers the moves after which the attacker's evaluation is
+    /// lowest, net_weight points per centipawn (0 = off; nnue, one
+    /// accumulator per defender node, incremental per move); the measured
+    /// experiment.
+    pub net_weight: i32,
     /// Widens the child's threshold (in eighths, as in matepn).
     pub epsilon: u32,
     /// Clips the stored node numbers (0 = DEFAULT_NUMBER_CAP).
@@ -216,6 +222,8 @@ pub struct Graph<'a> {
     chase_visits: u64,
     /// Receives the certificate's shape line (diagnostics).
     shape: Option<Progress>,
+    /// Options.net_weight for the policy (certificate builder only).
+    net_weight: i32,
 }
 
 impl<'a> Graph<'a> {
@@ -256,6 +264,7 @@ impl<'a> Graph<'a> {
             chase_quiet: Vec::new(),
             chase_visits: 0,
             shape: None,
+            net_weight: 0,
         };
         g.set_budget(max_positions);
         g.store.put(root.key, 0);

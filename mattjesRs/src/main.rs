@@ -176,11 +176,12 @@ fn experiments() {
     // tests_wdl::wdlpn_solve(&test_arg(0, ""), 256, &test_arg(2, "sat"), &test_arg(1, "mxb"));
     // --- step 2: explicit graph (docs/m7-wdl-search.md), "test <names> <options>": B brute force, p descent alone, e/E/x/X epsilon, w/l number variants, v progress; expansions must match Go ---
     // options t = four-piece tables as oracle, s = Syzygy WDL on top (SYZYGY_DEFAULT_DIR)
-    // tests_wdllist::wdllist_solve(&test_arg(0, ""), &test_arg(1, "x"));
-    // --- Patricia's network (module nnue): "test <fenfile>" prints the reference lines of tests/patricia-eval.sh, then the incremental check ---
-    tests_nnue::nnue_verify(&test_arg(0, "tests/nnue-smoke.txt"));
-    tests_nnue::nnue_incremental(3);
-    tests_nnue::nnue_bench(3);
+    // option n = Patricia's net in the certificate builder's policy (docs/nnue-patricia.md)
+    tests_wdllist::wdllist_solve(&test_arg(0, ""), &test_arg(1, "x"));
+    // --- Patricia's network (module nnue): "test <fenfile>" prints the reference lines of tests/patricia-eval.sh, then the incremental check and the throughput ---
+    // tests_nnue::nnue_verify(&test_arg(0, "tests/nnue-smoke.txt")); // 2026-10-22: 55 positions identical to the reference build (docs/nnue-patricia.md)
+    // tests_nnue::nnue_incremental(3);
+    // tests_nnue::nnue_bench(3);
     // --- Syzygy WDL reader: "test <dir> <materials>" compares probes with the own tables on random legal positions ---
     // tests_syzygy::syzygy_verify(&test_arg(0, tests_syzygy::SYZYGY_DEFAULT_DIR), &test_arg(1, "KQKR;KRKN;KPK;KPKP;KQKP;KPPK;KRRKN;KBNKQ"), 20000); // 2026-10-22: all agree, Go and Rust
     // tests_syzygy::syzygy_positions(&test_arg(0, tests_syzygy::SYZYGY_DEFAULT_DIR)); // the root moves of the WDL test positions against the recorded win/draw/loss counts: all 31 agree

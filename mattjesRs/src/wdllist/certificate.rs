@@ -6,13 +6,14 @@ use std::time::Instant;
 
 use super::*;
 use crate::chess::{Piece, Pos};
+use crate::nnue;
 
 impl<'a> Graph<'a> {
     /// Orders a defender's moves (see the Go package for the rationale):
     /// known holds and terminal draws first, known attacker wins and mates
     /// last, then stay put, leave nothing en prise, keep the pieces glued to
     /// the king, prefer known positions and used placements, captures.
-    fn policy_score(&self, b: &Board, m: Move) -> i32 {
+    fn policy_score(&self, b: &Board, m: Move, acc: Option<(&nnue::Accumulator, &nnue::Net)>) -> i32 {
         let mut c = *b;
         c.do_move(m);
         let mut s = 0i32;
@@ -54,6 +55,15 @@ impl<'a> Graph<'a> {
         s -= 300 * self.displacement(&c);
         s += 400 * self.glued_pieces(&c);
         s += self.defender_configs.as_ref().map_or(0, |cfg| cfg.get(&self.defender_config(&c)).copied().unwrap_or(0).min(200) as i32);
+        if let Some((acc, net)) = acc {
+            // Patricia's view of the child from the attacker's side (it is
+            // to move): the defender wants it as low as possible; one
+            // centipawn is one point of the policy
+            let d = nnue::Delta::of(b, m);
+            let mut child = nnue::Accumulator::default();
+            child.update(net, acc, &d);
+            s -= self.net_weight * child.evaluate(net, c.white_move);
+        }
         s
     }
 
@@ -213,7 +223,12 @@ impl<'a> Searcher<'a> {
             self.g.expansions += 1;
         }
         let moves = &buf[..n];
-        let scores: Vec<i32> = moves.iter().map(|&m| self.g.policy_score(&b, m)).collect();
+        let net = if self.opt.net_weight > 0 { Some(nnue::load(nnue::phase_of(&b))) } else { None };
+        let mut acc = nnue::Accumulator::default();
+        if let Some(net) = net {
+            acc.refresh(net, &b);
+        }
+        let scores: Vec<i32> = moves.iter().map(|&m| self.g.policy_score(&b, m, net.map(|n| (&acc, n)))).collect();
         let mut order: Vec<usize> = (0..n).collect();
         order.sort_by(|&a, &c| scores[c].cmp(&scores[a]));
         let mut added = 0;
@@ -353,6 +368,7 @@ impl<'a> Searcher<'a> {
         // checks are an attack, and chasing them cost millions of positions
         // on KQ-KRRPP)
         s.chase_nodes = !no_chase;
+        s.g.net_weight = s.opt.net_weight;
         s
     }
 

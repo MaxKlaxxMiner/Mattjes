@@ -78,6 +78,12 @@ type Options struct {
 	// NoChase runs the certificate builder without the perpetual-check
 	// chase (chase.go), the measured alternative.
 	NoChase bool
+	// NetWeight adds Patricia's network to the certificate builder's
+	// policy: the defender prefers the moves after which the attacker's
+	// evaluation is lowest, NetWeight points per centipawn (0 = off; nnue,
+	// one accumulator per defender node, incremental per move); the
+	// measured experiment.
+	NetWeight int
 	// NoDescent runs the certificate builder alone (no proof-number
 	// descent racing it), for measuring the builder.
 	NoDescent bool
@@ -244,6 +250,8 @@ type Graph struct {
 	oracle mateab.Oracle
 	// shape (optional) receives the certificate's shape line (diagnostics)
 	shape func(line string)
+	// netWeight is Options.NetWeight for the policy (certificate builder only)
+	netWeight int
 }
 
 // oracleOf is the option's oracle or the material fallback.

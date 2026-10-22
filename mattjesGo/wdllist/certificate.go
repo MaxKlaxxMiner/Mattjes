@@ -9,6 +9,7 @@ import (
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mateab"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/nnue"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/ttstore"
 )
 
@@ -37,7 +38,7 @@ import (
 // piece en prise, prefer positions already in the graph and placements of
 // the own pieces the graph already uses (the king shuffles between the
 // same squares).
-func (g *Graph) policyScore(b *bitboard.Board, m chess.Move) int {
+func (g *Graph) policyScore(b *bitboard.Board, m chess.Move, acc *nnue.Accumulator, net *nnue.Net) int {
 	c := *b
 	c.DoMove(m)
 	s := 0
@@ -85,6 +86,15 @@ func (g *Graph) policyScore(b *bitboard.Board, m chess.Move) int {
 	s -= 300 * g.displacement(&c)
 	s += 400 * g.gluedPieces(&c)
 	s += int(min(g.defenderConfigs[g.defenderConfig(&c)], 200))
+	if acc != nil {
+		// Patricia's view of the child from the attacker's side (it is to
+		// move): the defender wants it as low as possible; one centipawn
+		// is one point of the policy
+		d := nnue.DeltaOf(b, m)
+		var child nnue.Accumulator
+		child.Update(net, acc, &d)
+		s -= g.netWeight * child.Evaluate(net, c.WhiteMove)
+	}
 	return s
 }
 
@@ -222,8 +232,15 @@ func (s *searcher) expandPartial(i uint32, k int) bool {
 	}
 	moves := buf[:n]
 	scores := make([]int, n)
+	var acc *nnue.Accumulator
+	var net *nnue.Net
+	if s.opt.NetWeight > 0 {
+		net = nnue.Load(nnue.PhaseOf(&b))
+		acc = new(nnue.Accumulator)
+		acc.Refresh(net, &b)
+	}
 	for j, m := range moves {
-		scores[j] = g.policyScore(&b, m)
+		scores[j] = g.policyScore(&b, m, acc, net)
 	}
 	order := make([]int, n)
 	for j := range order {
@@ -275,6 +292,7 @@ func newCertSearcher(root *bitboard.Board, sideToMoveAttacks bool, opt Options) 
 	g.store.Put(root.Key, 0)
 	g.add(root)
 	g.shape = opt.Progress
+	g.netWeight = opt.NetWeight
 	s := &searcher{g: g, opt: opt, start: time.Now(), capN: DefaultNumberCap, frontier: []uint32{0}, condLists: make([][]uint32, ChaseMaxDepth+2)}
 	// a perpetual check is the weaker side's resource: only such policy
 	// nodes are chased (defenderChases, per node; a stronger defender's

@@ -44,6 +44,11 @@ func wdllistSolve(names string, options string) {
 		return false
 	}
 	opt := wdllist.Options{BruteForce: has('B'), NoRace: has('p'), NoChase: has('C'), NoDescent: has('P'), MaxPositions: 16 << 20} // the store is allocated per question and search: 16 Mi positions = 512 MB
+	if has('n') {
+		opt.NetWeight = 1 // Patricia's net in the policy, one point per centipawn
+	} else if has('N') {
+		opt.NetWeight = 5 // five points per centipawn: 300 cp weigh like a check
+	}
 	if has('t') || has('s') {
 		// t = the four-piece tables as oracle: every capture into them is a
 		// terminal, which the draw certificates of five-piece positions need;
@@ -87,6 +92,9 @@ func wdllistSolve(names string, options string) {
 	}
 	if opt.NoChase && !opt.NoRace {
 		mode += ", no chase"
+	}
+	if opt.NetWeight > 0 {
+		mode += fmt.Sprintf(", Patricia's net in the policy (weight %d)", opt.NetWeight)
 	}
 	if opt.BruteForce {
 		mode = "brute force (reachable graph)"

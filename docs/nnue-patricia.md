@@ -138,9 +138,35 @@ expandiert Knoten in derselben Größenordnung.
 Offen: das Laden der drei Netze dauert in Rust 200 ms (Go 7 ms), vermutlich
 die `Vec`-Kopien des Parsers; und ein Akkumulator-Stapel für die Suche.
 
+## Erster Einsatz: die Politik des Zertifikat-Bauers (gemessen, kein Gewinn)
+
+`Options.NetWeight` (Testbank `n` = 1, `N` = 5 Punkte je Centipawn):
+`policyScore` zieht den Netzwert der Kindstellung aus Angreifersicht
+ab, der Verteidiger bevorzugt also die Züge, nach denen Patricia den
+Angreifer am schlechtesten sieht. Ein Akkumulator je Verteidigerknoten,
+die Kinder inkrementell. Zertifikat-Bauer allein (`P`), ohne Tabellen:
+
+| Stellung | ohne Netz | Gewicht 1 | Gewicht 5 |
+|---|---|---|---|
+| KP-K Randbauer | 1.423 Stellungen, 1.423 sicher | 1.435 / 1.435 | 1.576 / 1.576 |
+| KBP-K falscher Läufer | 53.048 / 53.048 | 53.368 / 53.368 | 53.932 / 53.932 |
+| KP-K Opposition | 784.607 Stellungen, 1.703 sicher | 783.628 / 1.055 | 783.466 / 717 |
+| KNN-K | 4.353.118 / 4.346.771 | 4.651.183 / 4.648.748 | 4.724.098 / 4.721.657 |
+| KR-KB b6, KBP-KB, KQ-KRP, KRB-KR, KNN-KP, KQ-KP (offen) | offen in 60 s | offen | offen |
+
+Die Expansionen ändern sich kaum, die Zertifikate werden mit Gewicht
+etwas kleiner (die Opposition von 1.703 auf 717 sichere Stellungen), KNN-K
+wird um ein Zehntel größer, und keine offene Stellung wird gelöst. Das
+ist erwartbar im Nachhinein: das Netz sagt, wer besser steht, der
+Zertifikat-Bauer braucht aber den Zug, der die sichere Menge klein hält,
+und das ist eine Struktureigenschaft, keine Bewertung. Die Option bleibt
+mit Vorgabe 0 als Haken drin, der Term kostet nichts, wenn er aus ist.
+
 ## Nächster Schritt
 
-Die Vorhersage in die Politik des Zertifikat-Bauers einbauen
-(`policyScore`: Netzwert der Kindstellung aus Sicht des Verteidigers als
-Term, gemessen an KR-KB, einsamem Springer und den offenen gemischten
-Remis) und als Zugordnung für die Stufen 2 bis 4 der M6-Richtung.
+Das Netz dort einsetzen, wo "wer steht besser" die Frage ist: die
+Initialisierung der Beweiszahlen im Abstieg (neue Knoten bekommen heute
+pn = dn = 1; ein Angreifer, den das Netz vorn sieht, bekäme eine kleine
+Beweiszahl, df-pn mit heuristischer Initialisierung), gemessen an den
+offenen Gewinnen KBN-K, KQ-KBN und den Springer-Stellungen; und als
+Zugordnung der Rollouts in Stufe 2 der M6-Richtung.

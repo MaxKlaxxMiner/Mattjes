@@ -44,7 +44,7 @@ pub fn wdllist_solve(names: &str, options: &str) {
     } else {
         None
     };
-    let mut opt = Options { brute_force: has('B'), no_race: has('p'), no_chase: has('C'), no_descent: has('P'), max_positions: 16 << 20, oracle: set.as_ref().map(|s| crate::mateab::Tables { set: s, wdl: syzygy.as_ref() }), ..Default::default() };
+    let mut opt = Options { brute_force: has('B'), no_race: has('p'), no_chase: has('C'), no_descent: has('P'), net_weight: if has('n') { 1 } else if has('N') { 5 } else { 0 }, max_positions: 16 << 20, oracle: set.as_ref().map(|s| crate::mateab::Tables { set: s, wdl: syzygy.as_ref() }), ..Default::default() };
     for (letter, eps) in [('e', 1), ('E', 4), ('x', 8), ('X', 16)] {
         if has(letter) {
             opt.epsilon = eps;
