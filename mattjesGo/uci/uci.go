@@ -33,6 +33,7 @@ import (
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/syzygy"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/tt"
 )
 
@@ -61,6 +62,8 @@ type Engine struct {
 	generate5  bool   // EgtbGenerate5: build missing five-piece tables during go infinite
 	generate6  bool   // EgtbGenerate6: the same for six pieces
 	cacheDir   string // EgtbPath
+	syzygyPath string // SyzygyPath: a folder with Syzygy WDL tables, empty = none
+	syzygy     *syzygy.Tables
 	algo       string // Search: the algorithm for positions the tables do not settle
 	hashMB     int    // Hash: the transposition table of the search
 	mobility   string // MatePnMobility: on (leaves start with their move count), off (1/1), lazy (move count when entered)
@@ -168,6 +171,7 @@ func (e *Engine) command(words []string) bool {
 		e.send("option name EgtbGenerate5 type check default false")
 		e.send("option name EgtbGenerate6 type check default false")
 		e.send("option name EgtbPath type string default %s", e.cacheDir)
+		e.send("option name SyzygyPath type string default <empty>")
 		e.send("uciok")
 	case "xboard", "protover", "new", "force":
 		// Winboard probes from a GUI's auto-detection: stay silent, so that only UCI answers are seen
@@ -270,6 +274,24 @@ func (e *Engine) setOption(words []string) {
 		e.cacheDir = value
 		if e.set != nil {
 			e.set.CacheDir = value
+		}
+	case strings.EqualFold(name, "SyzygyPath"):
+		// the WDL tables become part of the search oracle (Syzygy answers
+		// win, draw or loss without a distance, the fifty-move rule is
+		// ignored); the files are mapped on first use
+		if e.syzygy != nil {
+			e.syzygy.Close()
+			e.syzygy = nil
+		}
+		e.syzygyPath = value
+		if value != "" && value != "<empty>" {
+			tb, err := syzygy.Open(value)
+			if err != nil {
+				e.send("info string syzygy: %v", err)
+			} else {
+				e.syzygy = tb
+				e.send("info string syzygy: %d WDL tables in %s, up to %d pieces", tb.Count(), value, tb.Largest())
+			}
 		}
 	default:
 		e.send("info string unknown option %s or bad value %q", name, value)

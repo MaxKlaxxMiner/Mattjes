@@ -1,0 +1,201 @@
+package main
+
+import (
+	"fmt"
+	"math/rand"
+	"strings"
+	"time"
+
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/syzygy"
+)
+
+// --- milestone 7: Syzygy WDL reader ---
+
+// syzygyDefaultDir is the author's Syzygy folder (all three- to six-piece tables).
+const syzygyDefaultDir = `C:\Users\MaxKlaxx\Desktop\spiele\chess\table`
+
+// syzygyPositions probes every root move of the WDL test positions and
+// compares the win/draw/loss counts with the recorded ones (Stockfish with
+// Syzygy): the check for the five- and six-piece tables, which have no
+// own table to compare with.
+func syzygyPositions(dir string) {
+	tb, err := syzygy.Open(dir)
+	if err != nil {
+		fmt.Printf("syzygy: %v\n", err)
+		return
+	}
+	fails := 0
+	for _, p := range chess.WdlPositions {
+		b, err := bitboard.FromFEN(p.FEN)
+		if err != nil {
+			panic(err)
+		}
+		if !tb.Has(&b) {
+			fmt.Printf("%-32s no table\n", p.Name)
+			continue
+		}
+		var buf chess.MoveBuffer
+		n := b.GenMoves(&buf)
+		wins, draws, losses := 0, 0, 0
+		for _, m := range buf[:n] {
+			c := b
+			c.DoMove(m)
+			v, ok := tb.ProbeWDL(&c)
+			if !ok {
+				fmt.Printf("%-32s move %s: no table\n", p.Name, m.UCI())
+				break
+			}
+			switch {
+			case v <= syzygy.BlessedLoss: // the opponent loses: our win
+				wins++
+			case v >= syzygy.CursedWin:
+				losses++
+			default:
+				draws++
+			}
+		}
+		status := "ok"
+		if wins != p.Wins || draws != p.Draws || losses != p.Losses {
+			status = fmt.Sprintf("MISMATCH, expected %d/%d/%d", p.Wins, p.Draws, p.Losses)
+			fails++
+		}
+		fmt.Printf("%-32s %2d/%2d/%2d %s\n", p.Name, wins, draws, losses, status)
+	}
+	if fails == 0 {
+		fmt.Println("--- syzygy: every test position agrees with the recorded move counts")
+	} else {
+		fmt.Printf("--- syzygy: %d MISMATCHES\n", fails)
+	}
+}
+
+// syzygyVerify compares Syzygy WDL probes with the engine's own tables on
+// random legal positions of the named materials (semicolon separated,
+// "KQKR;KRRKN"; three- and four-piece ones from the base, larger ones from
+// the cache files) and reports mismatches and the probe rate. Cursed wins
+// and blessed losses count as win and loss: our tables ignore the
+// fifty-move rule.
+func syzygyVerify(dir string, names string, samples int) {
+	start := time.Now()
+	tb, err := syzygy.Open(dir)
+	if err != nil {
+		fmt.Printf("syzygy: %v\n", err)
+		return
+	}
+	fmt.Printf("syzygy: %d WDL tables in %s, largest %d pieces, scanned in %s\n", tb.Count(), dir, tb.Largest(), time.Since(start).Round(time.Millisecond))
+	set := egtbLoadOrGenerate(12)
+	rng := rand.New(rand.NewSource(1))
+	totalMismatch := 0
+	for _, name := range strings.Split(names, ";") {
+		name = strings.TrimSpace(name)
+		m, err := egtb.Parse(name)
+		if err != nil {
+			fmt.Printf("%s: %v\n", name, err)
+			continue
+		}
+		if m.Pieces() > 4 && set.Find(m.Name()) == nil {
+			t := set.AddMaterial(m)
+			if err := set.LoadTable(t, set.TablePath(t)); err != nil {
+				fmt.Printf("%s: own table not loaded (%v), skipped\n", name, err)
+				continue
+			}
+		}
+		pieces := []chess.Piece{chess.WhiteKing, chess.BlackKing}
+		for _, p := range m.White {
+			pieces = append(pieces, chess.White|p)
+		}
+		for _, p := range m.Black {
+			pieces = append(pieces, chess.Black|p)
+		}
+		squares := make([]chess.Pos, len(pieces))
+		mismatch, checked, noTable := 0, 0, 0
+		probesBefore := tb.Probes.Load()
+		t0 := time.Now()
+		for checked < samples {
+			// random distinct squares, pawns off the first and last rank
+			used := uint64(0)
+			ok := true
+			for i, p := range pieces {
+				for {
+					sq := rng.Intn(64)
+					if used&(1<<sq) != 0 {
+						continue
+					}
+					if p.Type() == chess.Pawn && (sq < 8 || sq >= 56) {
+						continue
+					}
+					used |= 1 << sq
+					squares[i] = chess.Pos(sq)
+					break
+				}
+			}
+			if !ok {
+				continue
+			}
+			whiteMove := rng.Intn(2) == 0
+			b := bitboard.FromPieces(whiteMove, squares, pieces)
+			if b.OpponentInCheck() {
+				continue
+			}
+			own, ok := set.Lookup(&b)
+			if !ok {
+				continue
+			}
+			var v int
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						setup := b.Setup()
+						fmt.Printf("  PANIC at %s: %v\n", setup.FEN(), r)
+						panic(r)
+					}
+				}()
+				v, ok = tb.ProbeWDL(&b)
+			}()
+			if !ok {
+				noTable++
+				if noTable > 10 {
+					break
+				}
+				continue
+			}
+			checked++
+			ownClass, syzClass := 0, 0
+			if own.IsWin() {
+				ownClass = 1
+			} else if own.IsLoss() {
+				ownClass = -1
+			}
+			if v >= syzygy.CursedWin {
+				syzClass = 1
+			} else if v <= syzygy.BlessedLoss {
+				syzClass = -1
+			}
+			if ownClass != syzClass {
+				mismatch++
+				if mismatch <= 5 {
+					setup := b.Setup()
+					fmt.Printf("  MISMATCH %s: own %d (%s), syzygy %d\n", setup.FEN(), own, map[int]string{1: "win", 0: "draw", -1: "loss"}[ownClass], v)
+				}
+			}
+		}
+		probes := tb.Probes.Load() - probesBefore
+		el := time.Since(t0)
+		status := "ok"
+		if mismatch > 0 {
+			status = fmt.Sprintf("%d MISMATCHES", mismatch)
+		}
+		if noTable > 10 {
+			status = "no Syzygy table"
+		}
+		fmt.Printf("%-8s %7d positions checked, %s, %d probes (with captures) in %s, %.0f probes/s\n", name, checked, status, probes, el.Round(time.Millisecond), float64(probes)/el.Seconds())
+		totalMismatch += mismatch
+	}
+	if totalMismatch == 0 {
+		fmt.Printf("--- syzygy: all materials agree with the own tables, %s\n", time.Since(start).Round(time.Millisecond))
+	} else {
+		fmt.Printf("--- syzygy: %d MISMATCHES\n", totalMismatch)
+	}
+}

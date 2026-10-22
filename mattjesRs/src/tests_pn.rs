@@ -67,8 +67,8 @@ fn run_with_codec<T: TransTable + 'static>(table: T, codec: &str, set: Option<&e
     match (codec, set) {
         ("sat", None) => run(table, matepn::Saturating { bits }, mateab::Material, None, positions, selected, options),
         ("float", None) => run(table, matepn::Float { bits }, mateab::Material, None, positions, selected, options),
-        ("sat", Some(set)) => run(table, matepn::Saturating { bits }, mateab::Tables { set }, Some(set), positions, selected, options),
-        ("float", Some(set)) => run(table, matepn::Float { bits }, mateab::Tables { set }, Some(set), positions, selected, options),
+        ("sat", Some(set)) => run(table, matepn::Saturating { bits }, mateab::Tables { set, wdl: None }, Some(set), positions, selected, options),
+        ("float", Some(set)) => run(table, matepn::Float { bits }, mateab::Tables { set, wdl: None }, Some(set), positions, selected, options),
         _ => panic!("codec sat or float"),
     }
 }

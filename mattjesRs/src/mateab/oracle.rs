@@ -38,6 +38,11 @@ pub trait Oracle {
 #[derive(Clone, Copy)]
 pub struct Tables<'a> {
     pub set: &'a egtb::Set,
+    /// Syzygy WDL tables (optional): win or loss with the distance
+    /// 1..UNBOUNDED, a cursed win counts as a win and a blessed loss as a
+    /// loss (the fifty-move rule is ignored throughout, the author's
+    /// decision); they also resolve positions with an en passant right.
+    pub wdl: Option<&'a crate::syzygy::Tables>,
 }
 
 impl Oracle for Tables<'_> {
@@ -47,7 +52,20 @@ impl Oracle for Tables<'_> {
             Some((v, lo, hi)) if v.is_loss() => (Verdict::Loss, lo, hi),
             Some((egtb::Value::DRAW, _, _)) => (Verdict::Draw, 0, 0),
             Some(_) => (Verdict::Unknown, 0, 0), // invalid position, cannot happen for legal input
-            None => Material.probe(b),
+            None => {
+                if let Some(wdl) = self.wdl {
+                    if let Some(v) = wdl.probe_wdl(b) {
+                        return if v >= crate::syzygy::CURSED_WIN {
+                            (Verdict::Win, 1, UNBOUNDED)
+                        } else if v <= crate::syzygy::BLESSED_LOSS {
+                            (Verdict::Loss, 1, UNBOUNDED)
+                        } else {
+                            (Verdict::Draw, 0, 0)
+                        };
+                    }
+                }
+                Material.probe(b)
+            }
         }
     }
 }

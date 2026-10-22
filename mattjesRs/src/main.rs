@@ -32,10 +32,12 @@ mod tests_perft;
 mod tests_pn;
 mod tests_tt;
 mod tests_wdl;
+mod tests_syzygy;
 mod tests_wdllist;
 mod tt;
 mod ttstore;
 mod uci;
+mod syzygy;
 mod wdllist;
 mod wdlpn;
 
@@ -171,7 +173,11 @@ fn experiments() {
     // 2026-10-21: epsilon 1 (x) is the setting for disproofs, 1/2 (E) ran forever on KP-K rook pawn; sat beats float (docs/m7-wdl-search.md); visits must match Go
     // tests_wdl::wdlpn_solve(&test_arg(0, ""), 256, &test_arg(2, "sat"), &test_arg(1, "mxb"));
     // --- step 2: explicit graph (docs/m7-wdl-search.md), "test <names> <options>": B brute force, p descent alone, e/E/x/X epsilon, w/l number variants, v progress; expansions must match Go ---
+    // options t = four-piece tables as oracle, s = Syzygy WDL on top (SYZYGY_DEFAULT_DIR)
     tests_wdllist::wdllist_solve(&test_arg(0, ""), &test_arg(1, "x"));
+    // --- Syzygy WDL reader: "test <dir> <materials>" compares probes with the own tables on random legal positions ---
+    // tests_syzygy::syzygy_verify(&test_arg(0, tests_syzygy::SYZYGY_DEFAULT_DIR), &test_arg(1, "KQKR;KRKN;KPK;KPKP;KQKP;KPPK;KRRKN;KBNKQ"), 20000); // 2026-10-22: all agree, Go and Rust
+    // tests_syzygy::syzygy_positions(&test_arg(0, tests_syzygy::SYZYGY_DEFAULT_DIR)); // the root moves of the WDL test positions against the recorded win/draw/loss counts: all 31 agree
     // tests_pn::matepn_solve(15, 256, "sat", "mEfb"); // 1,370,235 visits in total (KQ-KN 271,120, KR-KR 1,023,102), 0 proofs evicted, every proof tree complete; identical from 256 MB up (KR-KR 1,022,904 from 1 GB)
     // tests_pn::matepn_solve(15, 256, "sat", "mEf"); // the direct table: 1,156,948 visits, 772 proofs and 3,285 final entries of KR-KR evicted, its proof tree incomplete; swings 5x with the size
     // tests_egtb::egtb_measure(&["KQKBN"], 12, true); // generated in 45 s, checksum 7b54498535f836cb, byte-identical to Go

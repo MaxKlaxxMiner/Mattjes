@@ -6,6 +6,7 @@ import (
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/syzygy"
 )
 
 // Verdict is what an Oracle knows about a position, from the point of view of
@@ -37,11 +38,15 @@ type Oracle interface {
 
 // Tables answers from the endgame tables (milestone 5) for every position
 // with up to four pieces (and every larger material that is loaded), with
-// the distance as exactly as the table stores it, and falls back to the
-// material check for everything else. Positions with an en passant right are
-// not in the tables; the search simply continues there.
+// the distance as exactly as the table stores it; then, if Syzygy WDL
+// tables are given, from those with the distance 1..Unbounded (a cursed
+// win counts as a win and a blessed loss as a loss: the fifty-move rule is
+// ignored throughout, the author's decision); and falls back to the
+// material check for everything else. Positions with an en passant right
+// are not in the own tables; Syzygy resolves them.
 type Tables struct {
 	Set *egtb.Set
+	WDL *syzygy.Tables // optional
 }
 
 func (o Tables) Probe(b *bitboard.Board) (Verdict, int, int) {
@@ -55,6 +60,17 @@ func (o Tables) Probe(b *bitboard.Board) (Verdict, int, int) {
 			return Draw, 0, 0
 		}
 		return Unknown, 0, 0 // invalid position, cannot happen for legal input
+	}
+	if o.WDL != nil {
+		if v, ok := o.WDL.ProbeWDL(b); ok {
+			switch {
+			case v >= syzygy.CursedWin:
+				return Win, 1, Unbounded
+			case v <= syzygy.BlessedLoss:
+				return Loss, 1, Unbounded
+			}
+			return Draw, 0, 0
+		}
 	}
 	return Material{}.Probe(b)
 }

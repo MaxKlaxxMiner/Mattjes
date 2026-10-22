@@ -259,11 +259,17 @@ impl<W: Write + Send + 'static> Reporter<W> {
     }
 
     /// Prints a line unthrottled (one per event, such as a round).
+    /// Prints a line unthrottled (one per event, such as a round), and
+    /// sends the demand tick like `progress` does: the WDL search reports
+    /// only through `text` and `note`, and its table probes count as demand.
     pub(super) fn note(&self, line: &str) {
         *self.last.lock().unwrap() = Instant::now();
-        let mut o = self.out.lock().unwrap();
-        let _ = writeln!(o, "info string {}", compact(line));
-        let _ = o.flush();
+        {
+            let mut o = self.out.lock().unwrap();
+            let _ = writeln!(o, "info string {}", compact(line));
+            let _ = o.flush();
+        }
+        let _ = self.tx.send(super::Event::Tick);
     }
 }
 
@@ -328,6 +334,7 @@ impl<W: Write + Send + 'static> Engine<W> {
             });
         }
         let (root, algo, mut max_plies, multi_pv, mobility, goal) = (self.board, self.algo.clone(), p.max_plies, self.multi_pv, self.mobility.clone(), self.goal.clone());
+        let syzygy = self.syzygy.clone(); // shared with the search thread
         let known = self.root_table.clone();
         if multi_pv == 1 {
             // one line wanted and the table knows a win in n plies: the open
@@ -355,7 +362,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                 tx: tx.clone(),
             });
             let (core, table) = {
-                let oracle = Tables { set: &set };
+                let oracle = Tables { set: &set, wdl: syzygy.as_deref() };
                 match (algo.as_str(), table) {
                     ("mateab", Some(SearchTable::Buckets(t))) => {
                         let (c, t) = run_mateab(&root, max_plies, multi_pv, oracle, t, &known, &stop, &rep);

@@ -244,7 +244,9 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
     }
     drop(solvers); // the graphs go with the search
     core.nodes = positions;
-    core.answered = !core.aborted;
+    // answered only when every move is decided: full graphs end the search
+    // with open moves, and a background generation must go on for them
+    core.answered = decided == n;
     core.wdl = Some(order_wdl(&entries));
     core
 }

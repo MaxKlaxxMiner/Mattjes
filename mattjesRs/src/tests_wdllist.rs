@@ -27,9 +27,21 @@ pub fn wdllist_solve(names: &str, options: &str) {
         }
     };
     // t = the four-piece tables as oracle: every capture into them is a
-    // terminal, which the draw certificates of five-piece positions need
-    let set = if has('t') { Some(crate::tests_egtb::egtb_load_or_generate(12)) } else { None };
-    let mut opt = Options { brute_force: has('B'), no_race: has('p'), max_positions: 16 << 20, oracle: set.as_ref().map(|s| crate::mateab::Tables { set: s }), ..Default::default() };
+    // terminal, which the draw certificates of five-piece positions need;
+    // s = the Syzygy WDL tables on top (the author's folder)
+    let set = if has('t') || has('s') { Some(crate::tests_egtb::egtb_load_or_generate(12)) } else { None };
+    let syzygy = if has('s') {
+        match crate::syzygy::Tables::open(std::path::Path::new(crate::tests_syzygy::SYZYGY_DEFAULT_DIR)) {
+            Ok(tb) => Some(tb),
+            Err(e) => {
+                println!("syzygy: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut opt = Options { brute_force: has('B'), no_race: has('p'), max_positions: 16 << 20, oracle: set.as_ref().map(|s| crate::mateab::Tables { set: s, wdl: syzygy.as_ref() }), ..Default::default() };
     for (letter, eps) in [('e', 1), ('E', 4), ('x', 8), ('X', 16)] {
         if has(letter) {
             opt.epsilon = eps;
@@ -54,7 +66,13 @@ pub fn wdllist_solve(names: &str, options: &str) {
     } else {
         format!("proof-number descent racing the certificate builder, epsilon {}/8, numbers {}", opt.epsilon, cap_name)
     };
-    let mode = if has('t') { format!("{}, four-piece tables as oracle", mode) } else { mode };
+    let mode = if has('s') {
+        format!("{}, four-piece tables and Syzygy WDL as oracle", mode)
+    } else if has('t') {
+        format!("{}, four-piece tables as oracle", mode)
+    } else {
+        mode
+    };
     println!("=== wdllist, {} ===", mode);
     let mut ok = true;
     let (mut total_positions, mut total_expansions) = (0usize, 0usize);

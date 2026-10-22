@@ -242,11 +242,17 @@ func (r *reporter) text(line string) {
 	r.note(line)
 }
 
-// note prints a line unthrottled (one per event, such as a round).
+// note prints a line unthrottled (one per event, such as a round), and
+// knocks for the demand tick like progress does: the WDL search reports
+// only through text and note, and its table probes count as demand too.
 func (r *reporter) note(line string) {
 	r.last = time.Now()
 	r.e.send("info string %s", compact(line))
 	r.e.flush()
+	select {
+	case r.e.demandTick <- struct{}{}:
+	default:
+	}
 }
 
 func nps(nodes uint64, ms int64) uint64 {
@@ -274,7 +280,7 @@ func (e *Engine) startSearch(p goParams) {
 			}
 		}
 	}
-	oracle := mateab.Tables{Set: e.set}
+	oracle := mateab.Tables{Set: e.set, WDL: e.syzygy}
 	var pnTable *tt.Buckets
 	var abTable mateab.Table
 	switch algo {

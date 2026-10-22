@@ -73,6 +73,7 @@ pub struct Engine<W: Write + Send + 'static> {
     generate5: bool,   // EgtbGenerate5: build missing five-piece tables during go infinite
     generate6: bool,   // EgtbGenerate6: the same for six pieces
     cache_dir: PathBuf, // EgtbPath
+    syzygy: Option<Arc<crate::syzygy::Tables>>, // SyzygyPath: WDL tables for the search oracle, shared with the search thread
     algo: String,      // Search: the algorithm for positions the tables do not settle
     hash_mb: usize,    // Hash: the transposition table of the search
     mobility: String,  // MatePnMobility: on (leaves start with their move count), off (1/1), lazy (move count when entered)
@@ -136,6 +137,7 @@ pub fn run<R: Read + Send + 'static, W: Write + Send + 'static>(input: R, out: W
         generate5: false,
         generate6: false,
         cache_dir: egtb::default_cache_dir(),
+        syzygy: None,
         algo: DEFAULT_ALGO.to_string(),
         hash_mb: DEFAULT_HASH_MB,
         mobility: DEFAULT_MOBILITY.to_string(),
@@ -240,6 +242,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                 self.send("option name EgtbGenerate5 type check default false");
                 self.send("option name EgtbGenerate6 type check default false");
                 self.send(&format!("option name EgtbPath type string default {}", self.cache_dir.display()));
+                self.send("option name SyzygyPath type string default <empty>");
                 self.send("uciok");
             }
             // Winboard probes from a GUI's auto-detection: stay silent, so that only UCI answers are seen
@@ -354,6 +357,20 @@ impl<W: Write + Send + 'static> Engine<W> {
             self.cache_dir = PathBuf::from(&value);
             if let Some(set) = self.set.as_mut() {
                 set.cache_dir = self.cache_dir.clone();
+            }
+        } else if name.eq_ignore_ascii_case("SyzygyPath") {
+            // the WDL tables become part of the search oracle (Syzygy answers
+            // win, draw or loss without a distance, the fifty-move rule is
+            // ignored); the files are mapped on first use
+            self.syzygy = None;
+            if !value.is_empty() && value != "<empty>" {
+                match crate::syzygy::Tables::open(std::path::Path::new(&value)) {
+                    Ok(tb) => {
+                        self.send(&format!("info string syzygy: {} WDL tables in {}, up to {} pieces", tb.count(), value, tb.largest()));
+                        self.syzygy = Some(Arc::new(tb));
+                    }
+                    Err(e) => self.send(&format!("info string syzygy: {}", e)),
+                }
             }
         } else {
             self.send(&format!("info string unknown option {} or bad value {:?}", name, value));

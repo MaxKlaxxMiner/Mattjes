@@ -150,7 +150,11 @@ func experiments() {
 	// 2026-10-21: epsilon 1 (x) is the setting for disproofs, 1/2 (E) ran forever on KP-K rook pawn; sat beats float (docs/m7-wdl-search.md)
 	// wdlpnSolve(testArg(0, ""), 256, testArg(2, "sat"), testArg(1, "mxb"))
 	// --- step 2: explicit graph (docs/m7-wdl-search.md), "test <names> <options>": B brute force (reachable graph), e/E/x/X epsilon, v progress lines ---
+	// options t = four-piece tables as oracle, s = Syzygy WDL on top (syzygyDefaultDir)
 	wdllistSolve(testArg(0, ""), testArg(1, "x"))
+	// --- Syzygy WDL reader: "test <dir> <materials>" compares probes with the own tables on random legal positions ---
+	// syzygyVerify(testArg(0, syzygyDefaultDir), testArg(1, "KQKR;KRKN;KPK;KPKP;KRRKN;KBNKQ;KQKRR;KQKRP;KPPKP;KRPKR"), 20000) // 2026-10-22: 25 materials x 20,000 positions agree (docs/m7-wdl-search.md)
+	// syzygyPositions(testArg(0, syzygyDefaultDir)) // the root moves of the WDL test positions against the recorded win/draw/loss counts: all 31 agree
 	// matepnSolve(15, 256, "sat", "mEfb") // 1,370,235 visits in total (KQ-KN 271,120, KR-KR 1,023,102), 0 proofs evicted, every proof tree complete; identical from 256 MB up (KR-KR 1,022,904 from 1 GB)
 	// matepnSolve(15, 256, "sat", "mEf") // the direct table: 1,156,948 visits, 772 proofs and 3,285 final entries of KR-KR evicted, its proof tree incomplete; swings 5x with the size
 	// for _, mb := range []int{64, 128, 256, 512, 1024, 2048} { matepnSolveNamed("KQ-KN", mb, "sat", "mEfb"); matepnSolveNamed("KR-KR", mb, "sat", "mEfb") } // the size series of step 7

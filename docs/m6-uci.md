@@ -483,9 +483,23 @@ sofort; KRRN-KN Springer: alle 27 Gewinne in 3,0 s (vorher 18 nach
 30 s); KQ-KRR Dauerschach: elf Verluste in der ersten Runde, die vier
 Remis bleiben "kann nicht gewinnen" (Befund im M7-Doc).
 
+**Option `SyzygyPath` (2026-10-22):** ein Ordner mit Syzygy-WDL-Dateien
+(`*.rtbw`, Vorgabe leer). Die Tabellen werden beim Setzen registriert
+(`info string syzygy: 510 WDL tables in ..., up to 6 pieces`), beim ersten
+Zugriff per Memory-Map geladen und sind Teil des Such-Orakels aller
+Algorithmen (`mateab.Tables.WDL`): Gewinn oder Verlust mit Distanz
+`1..Unbounded`, cursed win = Gewinn, blessed loss = Verlust. Die
+Tabellenstufe an der Wurzel nutzt sie noch nicht (die Suche antwortet in
+Millisekunden). Dazu zwei Korrekturen am Bedarfspfad: der WDL-Treiber
+klopft den Bedarfs-Tick jetzt über `note` an (vorher nur `progress`), und
+`answered` gilt nur noch, wenn alle Züge entschieden sind (volle Graphen
+pausierten sonst die Erzeugung des Wurzelmaterials). Messung und Leser in
+`docs/m7-wdl-search.md`, "Syzygy-WDL als Orakel".
+
 Offen daran: `Threads` wird nicht beachtet (zwei Threads je Frage); der
 Stop kommt bis zu zwei Sekunden nach dem Zeitende, wenn gerade ein
-Fixpunkt über einen großen Graphen läuft; Dauerschach-Remis fehlen.
+Fixpunkt über einen großen Graphen läuft; Dauerschach-Remis jenseits der
+Tabellen fehlen.
 
 ## Offen
 

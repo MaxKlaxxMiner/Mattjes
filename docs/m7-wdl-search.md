@@ -614,10 +614,83 @@ blind, weil jeder Turmzwischenzug ein KD-KT-Gewinn ist, den der
 Zertifikat-Bauer nicht beweisen kann (er sucht nur Remis); mit `t`
 stimmt die Messung.
 
+## Syzygy-WDL als Orakel (2026-10-22)
+
+Die Erzeugung nach Bedarf lief während einer WDL-Suche nicht an: nur
+`reporter.progress` klopfte den Bedarfs-Tick an, der WDL-Treiber meldet
+aber über `text` und `note`. Jetzt klopft auch `note` (jede Rundenzeile).
+Dazu meldete der Treiber `answered`, wenn die Graphen voll waren, und
+pausierte damit die Erzeugung des Wurzelmaterials, obwohl Züge offen
+blieben; `answered` gilt nur noch, wenn alle Züge entschieden sind. Mit
+`EgtbGenerate5` an läuft KRRKQ neben der Dauerschach-Suche, und nach der
+Übernahme stehen alle vier Remis als `cp 0` (Go und Rust).
+
+Der eigentliche Schritt: **Package `syzygy`** (Go `syzygy/`, Rust
+`src/syzygy/`), ein Leser für Syzygy-WDL-Dateien (`*.rtbw`) als Port von
+Fathom (`tbprobe.c`, MIT, Ronald de Man / basil00 / Jon Dart; Kopie in
+`tests/fathom/`). Nur WDL: Gewinn, Remis, Verlust für die Seite am Zug,
+keine Distanz, keine DTZ. Aufbau:
+
+- `Open(dir)` liest die Dateinamen (`KQvKRR`), legt je Material einen
+  Eintrag unter dem Schlüssel beider Farbzuordnungen an (Flip-Flag) und
+  prüft die Dateigröße (`size & 63 == 16`, sonst unvollständig). Die
+  Datei wird beim ersten Zugriff per Memory-Map geladen (Go `syscall`,
+  Rust mit zwei von Hand deklarierten Kernel-Funktionen, kein Crate) und
+  ihr Kopf gelesen: je Kodierung die Figurenreihenfolge und die
+  Mischradix-Faktoren (`initEncInfo`), die Huffman-Symbole mit ihren
+  Lauflängen (`setupPairs`), dann Indextabelle, Größentabelle und die
+  Code-Blöcke (64-Byte-ausgerichtet; die Map ist seitenausgerichtet, also
+  gelten Dateioffsets wie Adressen).
+- `encode` berechnet den Index einer Stellung: Spiegelungen auf das
+  Dreieck a1-d1-d4, Königspaar-Index (462) oder die drei führenden
+  Figuren (31332), bei Bauern der führende Bauer nach Linie, jede weitere
+  Gruppe gleicher Figuren als Binomialplatzierung auf den freien Feldern.
+  Felder sind Syzygy-Felder (a1 = 0), unsere sind a8 = 0: `sq ^ 0x38`.
+- `decompress` sucht den Block über Index- und Größentabelle und
+  dekodiert die kanonischen Huffman-Codes (64-Bit-Register), bis die
+  Position im Lauf erreicht ist, und expandiert das Symbol rekursiv zum
+  Wert. **Falle:** der Dekoder liest bis zu vier Byte über das Blockende
+  hinaus (Vorauslesen), Fathom liest in die Datei hinein, die dafür 16
+  Byte Reserve am Ende hat; ein Datenbereich, der exakt am letzten Block
+  endet, stürzt ab (bei KQvKP gefunden, weil dort der letzte Block
+  getroffen wurde). Jetzt reichen die Slices bis zum Dateiende, das letzte
+  Wort wird gepolstert.
+- `ProbeWDL` löst erst alle Schläge auf (`probeAB`, Alpha-Beta nur über
+  Schlagzüge, En passant getrennt mit dem Patt-Sonderfall), weil die
+  Tabellen dort "egal"-Werte speichern, und fragt dann die Tabelle.
+
+**Verifikation:** `syzygyVerify` würfelt legale Stellungen je Material
+und vergleicht mit unseren eigenen Tabellen (Basis und Fünf-Steiner-
+Cache): 25 Materialien × 20.000 Stellungen, alle gleich (Go und Rust,
+Dreisteiner bis Fünfsteiner, mit und ohne Bauern, beidseitige Bauern);
+`syzygyPositions` sondiert die Wurzelzüge aller 32 WDL-Teststellungen und
+vergleicht die Verteilung mit Stockfish: alle gleich, auch die
+Sechs-Steiner. Sondierrate 0,8 bis 1,8 Mio./s bei kleinen Tabellen,
+45 bis 90 Tsd./s bei Fünf-Steinern mit kaltem Dateicache.
+
+**Einbindung:** `mateab.Tables` hat ein optionales Feld `WDL`
+(Rust `wdl: Option<&Tables>`): erst die eigenen Tabellen (exakt), dann
+Syzygy mit Distanz `1..Unbounded` (cursed win = Gewinn, blessed loss =
+Verlust, die Fünfzig-Züge-Regel bleibt ignoriert), dann totes Material.
+Damit gilt es für alle Suchen. UCI-Option `SyzygyPath` (String, Vorgabe
+leer; Rust teilt die Tabellen als `Arc` mit dem Such-Thread),
+Testbank-Buchstabe `s` (Ordner des Autors).
+
+| | ohne Syzygy | mit Syzygy |
+|---|---|---|
+| KQ-KRR Dauerschach (5 Steine), alle 15 Züge | 11 Verluste, 4 offen | 4 Remis, 11 Verluste in 2 ms |
+| KRRN-KN Springer (6 Steine), 27 Gewinne | 3,0 s mit Cache-Tabellen | 2 ms |
+| KRRN-KNP (7 Steine, neue Teststellung), 27 Gewinne | – | 2,6 s Go, 1,5 s Rust, 640 Tsd. Stellungen |
+
+Mit allen Sechs-Steinern ist jede Stellung bis sechs Steine ein
+Tabellentreffer und die Suche beginnt bei sieben; die Sieben-Steiner-
+Stellung (Springer-Stellung plus Bauer f7, Stockfish: 27 Gewinne) ist in
+`WdlPositions` die erste, die mit Syzygy noch Suche ist.
+
 **Nächste Hebel**, nach erwartetem Nutzen:
 
-1. Dauerschach-Sucher (Schachketten als Pfad, siehe oben), für die
-   Remisseite des Autors.
+1. Dauerschach-Sucher (Schachketten als Pfad, siehe oben), jetzt an
+   Sieben-Steinern mit Syzygy-Terminals zu messen.
 2. Speicher je Knoten (Ziel 150 Byte, siehe oben).
 3. Beide Fragen in einem Graphen (die Gewinne der einen Frage sind die
    Verluste der anderen).
@@ -625,3 +698,5 @@ stimmt die Messung.
    Vorschau (Schach-Gabeln) für KR-KB-artige Verteidigungen.
 5. Stop-Flag im Fixpunkt pollen (Stop bis zu zwei Sekunden verspätet).
 6. `Threads` beachten (die zwei Fragen parallel statt nacheinander).
+7. Syzygy auch in der Tabellenstufe an der Wurzel (heute nur als
+   Such-Orakel, die Wurzel antwortet über die Suche in Millisekunden).

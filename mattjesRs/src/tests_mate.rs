@@ -47,7 +47,7 @@ pub fn mateab_solve_tables_named(name: &str, size_mb: usize, bucketed: bool) {
 fn mateab_run(selected: &dyn Fn(&MatePosition) -> bool, size_mb: usize, bucketed: bool, tables: Option<&egtb::Set>) {
     match tables {
         None => mateab_run_oracle(selected, size_mb, bucketed, mateab::Material, ""),
-        Some(set) => mateab_run_oracle(selected, size_mb, bucketed, mateab::Tables { set }, ", endgame tables"),
+        Some(set) => mateab_run_oracle(selected, size_mb, bucketed, mateab::Tables { set, wdl: None }, ", endgame tables"),
     }
 }
 

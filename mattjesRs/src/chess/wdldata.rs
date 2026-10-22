@@ -57,6 +57,7 @@ pub static WDL_POSITIONS: &[WdlPosition] = &[
     p("KRR-KN benchmark, black", "8/8/4k3/8/8/8/RK6/2R2n2 b - - 1 1", Outcome::Loss, 0, 0, 12, "all twelve moves lose"),
     p("KRRN-KN lone knight, white", "8/8/4k3/8/8/8/R7/K1RN1n2 w - - 0 1", Outcome::Win, 27, 0, 0, "the author's position: every move wins, the lone knight never does"),
     p("KRRN-KN lone knight, black", "8/8/4k3/8/8/4N3/R7/K1R2n2 b - - 1 1", Outcome::Loss, 0, 0, 10, "after Ne3: the cost of disproving the lone knight's win"),
+    p("KRRN-KNP seven pieces", "8/5p2/4k3/8/8/8/R7/K1RN1n2 w - - 0 1", Outcome::Win, 27, 0, 0, "the lone-knight position plus a black pawn: beyond the six-piece Syzygy tables, every capture lands in them"),
     p("KQ-KBN", "8/8/4k3/3bn3/8/4Q3/8/K7 w - - 0 1", Outcome::Win, 19, 1, 4, "mate in 39, out of reach without tables so far"),
     p("KQ-KRR", "k7/8/8/8/8/2r5/1r6/K5Q1 w - - 0 1", Outcome::Win, 3, 8, 10, "only Kb2, Qg8, Qh1 win"),
     p("KQ-KRB", "k7/8/8/8/8/8/5rb1/K2Q4 w - - 0 1", Outcome::Win, 2, 12, 7, "only Qd8 and Qa4 win"),

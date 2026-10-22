@@ -8,6 +8,7 @@ import (
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mateab"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/syzygy"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/wdllist"
 )
 
@@ -41,10 +42,20 @@ func wdllistSolve(names string, options string) {
 		return false
 	}
 	opt := wdllist.Options{BruteForce: has('B'), NoRace: has('p'), MaxPositions: 16 << 20} // the store is allocated per question and search: 16 Mi positions = 512 MB
-	if has('t') {
-		// the four-piece tables as oracle: every capture into them is a
-		// terminal, which the draw certificates of five-piece positions need
-		opt.Oracle = mateab.Tables{Set: egtbLoadOrGenerate(12)}
+	if has('t') || has('s') {
+		// t = the four-piece tables as oracle: every capture into them is a
+		// terminal, which the draw certificates of five-piece positions need;
+		// s = the Syzygy WDL tables on top (the author's folder)
+		oracle := mateab.Tables{Set: egtbLoadOrGenerate(12)}
+		if has('s') {
+			tb, err := syzygy.Open(syzygyDefaultDir)
+			if err != nil {
+				fmt.Printf("syzygy: %v\n", err)
+			} else {
+				oracle.WDL = tb
+			}
+		}
+		opt.Oracle = oracle
 	}
 	for _, o := range []struct {
 		letter byte
@@ -73,7 +84,9 @@ func wdllistSolve(names string, options string) {
 	if opt.BruteForce {
 		mode = "brute force (reachable graph)"
 	}
-	if has('t') {
+	if has('s') {
+		mode += ", four-piece tables and Syzygy WDL as oracle"
+	} else if has('t') {
 		mode += ", four-piece tables as oracle"
 	}
 	fmt.Printf("=== wdllist, %s ===\n", mode)

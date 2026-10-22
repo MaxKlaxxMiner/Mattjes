@@ -253,7 +253,9 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 	}
 	end.wdl = orderWdl(entries)
 	end.nodes = positions
-	end.answered = !end.aborted
+	// answered only when every move is decided: full graphs end the search
+	// with open moves, and a background generation must go on for them
+	end.answered = decided == n
 	return end
 }
 
