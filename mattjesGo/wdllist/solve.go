@@ -56,12 +56,14 @@ type Result struct {
 	Expansions int // positions whose children were added
 	Edges      int // child edges
 	Visits     uint64
-	Resets     int // heuristic disproofs the fixed point did not confirm
-	SafeChecks int // fixed-point runs
-	Rounds     int // widening rounds of the certificate builder
-	Safe       int // positions in the safe set reachable from the root (draw certificate) when disproven
-	Won        int // positions won for the attacker
-	Exhausts   int // subgraphs expanded by brute force because the numbers had saturated
+	Resets     int    // heuristic disproofs the fixed point did not confirm
+	SafeChecks int    // fixed-point runs
+	Rounds     int    // widening rounds of the certificate builder
+	Safe       int    // positions in the safe set reachable from the root (draw certificate) when disproven
+	Won        int    // positions won for the attacker
+	Exhausts   int    // subgraphs expanded by brute force because the numbers had saturated
+	Chases     int    // certificate builder: check chains started (chase.go)
+	ChaseNodes uint64 // nodes the chase visited
 	Aborted    bool
 	Stuck      bool // aborted because the descent made no progress (a bug, never a result)
 }
@@ -72,6 +74,12 @@ type Options struct {
 	BruteForce bool
 	// NoRace runs the proof-number descent alone (no certificate builder).
 	NoRace bool
+	// NoChase runs the certificate builder without the perpetual-check
+	// chase (chase.go), the measured alternative.
+	NoChase bool
+	// NoDescent runs the certificate builder alone (no proof-number
+	// descent racing it), for measuring the builder.
+	NoDescent bool
 	// Epsilon widens the child's threshold (in eighths, as in matepn).
 	Epsilon int
 	// NumberCap clips the stored node numbers (0 = DefaultNumberCap).
@@ -165,8 +173,17 @@ type Graph struct {
 	// to the leak it is unsafe from (a won or open node), so the widening
 	// can start where the leak is instead of everywhere above it
 	unsafeLevel []uint16
+	// chase (certificate builder only) is the chase memo per node
+	// (chUnknown/chHold/chHoldCond/chFail/chCut, chase.go), chaseDepth the
+	// depth on the path, the depth of the ancestor a conditional hold relies
+	// on, or the depth a cut node had left; chaseVisits the node count
+	chase       []uint8
+	chaseDepth  []uint16
+	chaseVisits uint64
 	// oracle decides positions on sight (tables or dead material)
 	oracle mateab.Oracle
+	// shape (optional) receives the certificate's shape line (diagnostics)
+	shape func(line string)
 }
 
 // oracleOf is the option's oracle or the material fallback.
@@ -325,6 +342,8 @@ func (g *Graph) add(b *bitboard.Board) uint32 {
 	g.remaining = append(g.remaining, uint8(n))
 	if g.defenderConfigs != nil {
 		g.defenderConfigs[g.defenderConfig(b)]++
+		g.chase = append(g.chase, chUnknown)
+		g.chaseDepth = append(g.chaseDepth, 0)
 	}
 	pn, dn := uint32(1), uint32(1)
 	switch {
@@ -435,6 +454,12 @@ func (s *Solver) run(q *bitboard.Board, extra int) Result {
 		if s.opt.BruteForce {
 			r.Method = "brute force"
 		}
+		return r
+	}
+	if s.opt.NoDescent {
+		s.cert.opt.Stop = s.opt.Stop
+		r := s.cert.runCert(q, extra)
+		r.Method = "certificate"
 		return r
 	}
 	var stopPN, stopCert atomic.Bool
@@ -558,8 +583,9 @@ func (s *searcher) runPN(q *bitboard.Board, extra int) Result {
 			}
 		}
 	}
-	r.Aborted, r.Stuck, r.Exhausts, r.Resets = s.aborted, s.stuck, s.exhausts, s.resets
+	r.Stuck, r.Exhausts, r.Resets = s.stuck, s.exhausts, s.resets
 	g.fillResult(&r, n)
+	r.Aborted = s.aborted && r.Outcome == Undecided
 	s.report(fmt.Sprintf("done: %d positions, %d expansions, %d edges, %d visits, %d won, %d fixed-point runs, %d resets, %s", len(g.recs), g.expansions, g.edges, g.visits, r.Won, g.safeChecks, r.Resets, fmtDur(time.Since(s.start))))
 	return r
 }
@@ -579,7 +605,7 @@ func (g *Graph) fillResult(r *Result, n uint32) {
 			r.Won++
 		}
 	}
-	r.Positions, r.Expansions, r.Edges, r.Visits, r.SafeChecks = len(g.recs), g.expansions, g.edges, g.visits, g.safeChecks
+	r.Positions, r.Expansions, r.Edges, r.Visits, r.SafeChecks, r.ChaseNodes = len(g.recs), g.expansions, g.edges, g.visits, g.safeChecks, g.chaseVisits
 	if r.Outcome == Proven {
 		g.levels()
 		r.WinPlies = int(g.level[n])
@@ -597,7 +623,16 @@ type searcher struct {
 	exhausts int
 	resets   int      // descent: heuristic disproofs the fixed point rejected
 	rounds   int      // certificate builder: widening rounds so far
+	chases   int      // certificate builder: check chains started
 	frontier []uint32 // certificate builder: the nodes the next closure starts from
+	// condLists[d] (chase) lists the nodes whose hold relies on the path
+	// node at depth d, settled when that node finishes; the counters count
+	// finished chase nodes
+	condLists                                    [][]uint32
+	chaseCap                                     int    // the current depth cap of the chase
+	chaseLimit                                   uint64 // chase node count at which a budgeted chase is cut (0 = none)
+	chaseNodes                                   bool   // chase at policy nodes too (the defender is the weaker side)
+	chaseFails, chaseCuts, chaseHolds, chaseCond int
 }
 
 func (s *searcher) report(line string) {
@@ -1007,16 +1042,29 @@ func (g *Graph) safeSet() {
 
 // reachableSafe counts the positions reachable from the root through
 // defender-holding children only, the attacker with all moves, the defender
-// with one (the draw certificate).
+// with one (the draw certificate), and reports the certificate's shape.
 func (g *Graph) reachableSafe(from uint32) int {
 	seen := make([]bool, len(g.recs))
 	stack := []uint32{from}
 	seen[from] = true
 	count := 0
+	var kingHist [64]int
+	attackerSide, defenderSide := 1, 0
+	if g.attackerWhite {
+		attackerSide, defenderSide = 0, 1
+	}
+	placements := map[[6]uint64]bool{}
+	defenderPlacements := map[[6]uint64]bool{}
 	for len(stack) > 0 {
 		i := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 		count++
+		if count <= 1<<20 {
+			b := g.board(i)
+			kingHist[bits.TrailingZeros64(b.Pieces[attackerSide][0])]++
+			placements[b.Pieces[attackerSide]] = true
+			defenderPlacements[b.Pieces[defenderSide]] = true
+		}
 		attacker := g.attackerAt(i)
 		for _, c := range g.children[i] {
 			if !g.defenderHolds(c) {
@@ -1030,6 +1078,15 @@ func (g *Graph) reachableSafe(from uint32) int {
 				break
 			}
 		}
+	}
+	if g.shape != nil {
+		squares := 0
+		for _, n := range kingHist {
+			if n > 0 {
+				squares++
+			}
+		}
+		g.shape(fmt.Sprintf("certificate: %d positions, attacker king on %d squares, %d attacker placements, %d defender placements", count, squares, len(placements), len(defenderPlacements)))
 	}
 	return count
 }

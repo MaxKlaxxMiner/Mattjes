@@ -152,6 +152,7 @@ func experiments() {
 	// --- step 2: explicit graph (docs/m7-wdl-search.md), "test <names> <options>": B brute force (reachable graph), e/E/x/X epsilon, v progress lines ---
 	// options t = four-piece tables as oracle, s = Syzygy WDL on top (syzygyDefaultDir)
 	wdllistSolve(testArg(0, ""), testArg(1, "x"))
+	// syzygyProbe(syzygyDefaultDir, testArg(0, "3k4/p7/8/8/8/8/P4rr1/K6Q w - - 0 1")) // single probes, semicolon separated (seven pieces: no table, Unknown)
 	// --- Syzygy WDL reader: "test <dir> <materials>" compares probes with the own tables on random legal positions ---
 	// syzygyVerify(testArg(0, syzygyDefaultDir), testArg(1, "KQKR;KRKN;KPK;KPKP;KRRKN;KBNKQ;KQKRR;KQKRP;KPPKP;KRPKR"), 20000) // 2026-10-22: 25 materials x 20,000 positions agree (docs/m7-wdl-search.md)
 	// syzygyPositions(testArg(0, syzygyDefaultDir)) // the root moves of the WDL test positions against the recorded win/draw/loss counts: all 31 agree

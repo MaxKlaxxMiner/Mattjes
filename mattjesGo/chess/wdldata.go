@@ -69,4 +69,7 @@ var WdlPositions = []WdlPosition{
 	{"KQ-KRR perpetual check", "3k4/8/8/8/8/8/5rr1/K6Q w - - 0 1", Draw, 0, 4, 11, "only Qh4+, Qh8+, Qb1, Qd1 hold"},
 	{"KRB-KR Philidor, black", "8/8/8/8/8/1k6/4r3/K1BR4 b - - 0 1", Draw, 0, 15, 4, ""},
 	{"KNN-KP", "8/8/8/8/2k5/8/2p5/K1NN4 w - - 0 1", Draw, 0, 4, 6, "six of ten moves lose"},
+	{"KQP-KRRP perpetual, four draws", "3k4/p7/8/8/8/8/P4rr1/K6Q w - - 0 1", Draw, 0, 4, 13, "the perpetual-check position plus a pawn each: seven pieces, every capture lands in the Syzygy tables; Qh4+, Qh8+, Qb1, Qd1+ hold"},
+	{"KQ-KRRPP perpetual, one draw", "3k4/p3p3/8/8/8/8/5rr1/K6Q w - - 0 1", Draw, 0, 1, 14, "only Qh8+ holds"},
+	{"KQP-KRRP perpetual, two draws", "3k4/p7/8/8/8/7P/5rr1/K6Q w - - 0 1", Draw, 0, 2, 8, "Qb1 and Qd1+ hold"},
 }

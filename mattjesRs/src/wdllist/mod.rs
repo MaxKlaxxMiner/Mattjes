@@ -8,6 +8,9 @@
 //! draws with a small safe set).
 
 mod certificate;
+mod chase;
+
+use chase::{material, ChaseResult, CHASE_MAX_DEPTH, CHASE_NODE_BUDGET, CH_HOLD, CH_UNKNOWN};
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,6 +61,10 @@ pub struct Result {
     pub won: usize,
     /// Subgraphs expanded by brute force because the numbers had saturated.
     pub exhausts: usize,
+    /// Certificate builder: check chains started (chase.rs).
+    pub chases: usize,
+    /// Nodes the chase visited.
+    pub chase_nodes: u64,
     pub aborted: bool,
     /// Aborted because the descent made no progress (a bug, never a result).
     pub stuck: bool,
@@ -78,6 +85,12 @@ pub struct Options<'a> {
     pub brute_force: bool,
     /// Runs the proof-number descent alone (no certificate builder).
     pub no_race: bool,
+    /// Runs the certificate builder without the perpetual-check chase
+    /// (chase.rs), the measured alternative.
+    pub no_chase: bool,
+    /// Runs the certificate builder alone (no proof-number descent racing
+    /// it), for measuring the builder.
+    pub no_descent: bool,
     /// Widens the child's threshold (in eighths, as in matepn).
     pub epsilon: u32,
     /// Clips the stored node numbers (0 = DEFAULT_NUMBER_CAP).
@@ -170,6 +183,15 @@ pub struct Graph<'a> {
     root_defender: [u64; 6],
     /// Each unsafe node's distance to the leak (certificate builder only).
     unsafe_level: Option<Vec<u16>>,
+    /// The chase memo per node (certificate builder only, CH_* in
+    /// chase.rs); chase_depth the depth on the path, the depth of the
+    /// ancestor a conditional hold relies on, or the depth a cut node had
+    /// left; chase_visits the node count.
+    chase: Vec<u8>,
+    chase_depth: Vec<u16>,
+    chase_visits: u64,
+    /// Receives the certificate's shape line (diagnostics).
+    shape: Option<Progress>,
 }
 
 impl<'a> Graph<'a> {
@@ -202,6 +224,10 @@ impl<'a> Graph<'a> {
             defender_configs: if certificate { Some(HashMap::new()) } else { None },
             root_defender: root.pieces[if attacker_white { 1 } else { 0 }],
             unsafe_level: if certificate { Some(Vec::new()) } else { None },
+            chase: Vec::new(),
+            chase_depth: Vec::new(),
+            chase_visits: 0,
+            shape: None,
         };
         g.set_budget(max_positions);
         g.store.put(root.key, 0);
@@ -355,6 +381,8 @@ impl<'a> Graph<'a> {
                 h
             };
             *configs.entry(h).or_insert(0) += 1;
+            self.chase.push(CH_UNKNOWN);
+            self.chase_depth.push(0);
         }
         let (mut pn, mut dn) = (1u32, 1u32);
         if status == ST_LOSS && !attacker {
@@ -520,14 +548,25 @@ impl<'a> Graph<'a> {
 
     /// Counts the positions reachable from the root through
     /// defender-holding children only, the attacker with all moves, the
-    /// defender with one (the draw certificate).
+    /// defender with one (the draw certificate), and reports the
+    /// certificate's shape.
     fn reachable_safe(&self, from: u32) -> usize {
         let mut seen = vec![false; self.recs.len()];
         let mut stack = vec![from];
         seen[from as usize] = true;
         let mut count = 0;
+        let mut king_hist = [0usize; 64];
+        let (attacker_side, defender_side) = if self.attacker_white { (0, 1) } else { (1, 0) };
+        let mut placements: std::collections::HashSet<[u64; 6]> = std::collections::HashSet::new();
+        let mut defender_placements: std::collections::HashSet<[u64; 6]> = std::collections::HashSet::new();
         while let Some(i) = stack.pop() {
             count += 1;
+            if count <= 1 << 20 && self.shape.is_some() {
+                let b = self.board(i);
+                king_hist[b.pieces[attacker_side][0].trailing_zeros() as usize] += 1;
+                placements.insert(b.pieces[attacker_side]);
+                defender_placements.insert(b.pieces[defender_side]);
+            }
             let attacker = self.attacker_at(i);
             for &c in &self.children[i as usize] {
                 if !self.defender_holds(c) {
@@ -541,6 +580,10 @@ impl<'a> Graph<'a> {
                     break;
                 }
             }
+        }
+        if let Some(shape) = &self.shape {
+            let squares = king_hist.iter().filter(|&&n| n > 0).count();
+            shape(&format!("certificate: {} positions, attacker king on {} squares, {} attacker placements, {} defender placements", count, squares, placements.len(), defender_placements.len()));
         }
         count
     }
@@ -654,6 +697,7 @@ impl<'a> Graph<'a> {
         r.edges = self.edges;
         r.visits = self.visits;
         r.safe_checks = self.safe_checks;
+        r.chase_nodes = self.chase_visits;
         if r.outcome == Outcome::Proven {
             self.levels();
             r.win_plies = self.level[n as usize] as usize;
@@ -731,6 +775,12 @@ impl<'a> Solver<'a> {
             r.method = if brute { "brute force" } else { "pn" };
             return r;
         };
+        if opt.no_descent {
+            cert.opt.stop = opt.stop.clone();
+            let mut r = on_big_stack(move || cert.run_cert(&q, extra));
+            r.method = "certificate";
+            return r;
+        }
         let stop_pn = Arc::new(AtomicBool::new(false));
         let stop_cert = Arc::new(AtomicBool::new(false));
         cert.opt.race_stop = Some(stop_cert.clone());
@@ -850,11 +900,11 @@ fn run_pn(&mut self, q: &Board, extra: usize) -> Result {
             }
         }
     }
-    r.aborted = s.aborted;
     r.stuck = s.stuck;
     r.exhausts = s.exhausts;
     r.resets = s.resets;
     s.g.fill_result(&mut r, n);
+    r.aborted = s.aborted && r.outcome == Outcome::Undecided;
     let line = format!("done: {} positions, {} expansions, {} edges, {} visits, {} won, {} fixed-point runs, {} resets, {}", s.g.recs.len(), s.g.expansions, s.g.edges, s.g.visits, r.won, s.g.safe_checks, r.resets, fmt_dur(s.start.elapsed()));
     s.report(&line);
     r
@@ -876,6 +926,21 @@ pub(crate) struct Searcher<'a> {
     rounds: usize,
     /// Certificate builder: the nodes the next closure starts from.
     frontier: Vec<u32>,
+    /// Certificate builder: check chains started.
+    chases: usize,
+    /// cond_lists[d] (chase) lists the nodes whose hold relies on the path
+    /// node at depth d, settled when that node finishes.
+    cond_lists: Vec<Vec<u32>>,
+    /// The current depth cap of the chase.
+    chase_cap: usize,
+    /// Chase node count at which a budgeted chase is cut (0 = none).
+    chase_limit: u64,
+    /// Chase at policy nodes too (the defender is the weaker side).
+    chase_nodes: bool,
+    chase_fails: usize,
+    chase_cuts: usize,
+    chase_holds: usize,
+    chase_cond: usize,
 }
 
 impl<'a> Searcher<'a> {
@@ -884,7 +949,27 @@ impl<'a> Searcher<'a> {
             opt.progress_every = 1 << 20;
         }
         let cap_n = if opt.number_cap == 0 { DEFAULT_NUMBER_CAP } else { opt.number_cap };
-        Searcher { g, opt, start: Instant::now(), cap_n, aborted: false, stuck: false, exhausts: 0, resets: 0, rounds: 0, frontier: vec![0] }
+        Searcher {
+            g,
+            opt,
+            start: Instant::now(),
+            cap_n,
+            aborted: false,
+            stuck: false,
+            exhausts: 0,
+            resets: 0,
+            rounds: 0,
+            frontier: vec![0],
+            chases: 0,
+            cond_lists: Vec::new(),
+            chase_cap: 0,
+            chase_limit: 0,
+            chase_nodes: false,
+            chase_fails: 0,
+            chase_cuts: 0,
+            chase_holds: 0,
+            chase_cond: 0,
+        }
     }
 
     fn report(&self, line: &str) {

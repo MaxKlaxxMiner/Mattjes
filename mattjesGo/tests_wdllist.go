@@ -21,7 +21,8 @@ import (
 // the proof-number descent alone (no certificate builder racing it),
 // e/E/x/X = epsilon 1/8, 1/2, 1, 2 for the guided descent, w = stored
 // numbers almost unclipped (the default clips at 1022 like wdlpn's sat
-// codec), l = numbers on the log scale (sums cannot overflow), v = progress
+// codec), l = numbers on the log scale (sums cannot overflow), C = the
+// certificate builder without the perpetual-check chase, v = progress
 // lines.
 func wdllistSolve(names string, options string) {
 	has := func(o byte) bool { return strings.IndexByte(options, o) >= 0 }
@@ -41,7 +42,7 @@ func wdllistSolve(names string, options string) {
 		}
 		return false
 	}
-	opt := wdllist.Options{BruteForce: has('B'), NoRace: has('p'), MaxPositions: 16 << 20} // the store is allocated per question and search: 16 Mi positions = 512 MB
+	opt := wdllist.Options{BruteForce: has('B'), NoRace: has('p'), NoChase: has('C'), NoDescent: has('P'), MaxPositions: 16 << 20} // the store is allocated per question and search: 16 Mi positions = 512 MB
 	if has('t') || has('s') {
 		// t = the four-piece tables as oracle: every capture into them is a
 		// terminal, which the draw certificates of five-piece positions need;
@@ -80,6 +81,11 @@ func wdllistSolve(names string, options string) {
 	mode := fmt.Sprintf("proof-number descent racing the certificate builder, epsilon %d/8, numbers %s", opt.Epsilon, capName)
 	if opt.NoRace {
 		mode = fmt.Sprintf("proof-number descent alone, epsilon %d/8, numbers %s", opt.Epsilon, capName)
+	} else if opt.NoDescent {
+		mode = "certificate builder alone"
+	}
+	if opt.NoChase && !opt.NoRace {
+		mode += ", no chase"
 	}
 	if opt.BruteForce {
 		mode = "brute force (reachable graph)"
@@ -127,7 +133,11 @@ func wdllistSolve(names string, options string) {
 			case r.Outcome == wdllist.Disproven:
 				verdict = fmt.Sprintf("disproven (%d safe)", r.Safe)
 			}
-			fmt.Printf("    q%d %-18s %-28s by %-11s %10s positions, %10s expansions, %10s visits, %s won, %d fixed points, %d resets, %d exhausts, %s\n", q+1, question+":", verdict, r.Method, perftGroup(uint64(r.Positions)), perftGroup(uint64(r.Expansions)), perftGroup(r.Visits), perftGroup(uint64(r.Won)), r.SafeChecks, r.Resets, r.Exhausts, fmtMs(time.Since(qStart)))
+			visits := perftGroup(r.Visits) + " visits"
+			if r.Method == "certificate" {
+				visits = perftGroup(r.ChaseNodes) + " chase nodes"
+			}
+			fmt.Printf("    q%d %-18s %-28s by %-11s %10s positions, %10s expansions, %22s, %s won, %d fixed points, %d resets, %d exhausts, %s\n", q+1, question+":", verdict, r.Method, perftGroup(uint64(r.Positions)), perftGroup(uint64(r.Expansions)), visits, perftGroup(uint64(r.Won)), r.SafeChecks, r.Resets, r.Exhausts, fmtMs(time.Since(qStart)))
 			if r.Outcome == wdllist.Proven {
 				got, pv = chess.Win, r.PV
 				if !attacks {

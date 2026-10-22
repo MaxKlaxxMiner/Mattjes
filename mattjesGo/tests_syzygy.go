@@ -9,6 +9,7 @@ import (
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mateab"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/syzygy"
 )
 
@@ -21,6 +22,27 @@ const syzygyDefaultDir = `C:\Users\MaxKlaxx\Desktop\spiele\chess\table`
 // compares the win/draw/loss counts with the recorded ones (Stockfish with
 // Syzygy): the check for the five- and six-piece tables, which have no
 // own table to compare with.
+// syzygyProbe prints the WDL probe of each FEN (semicolon separated) and
+// the oracle's verdict with the four-piece base on top.
+func syzygyProbe(dir string, fens string) {
+	tb, err := syzygy.Open(dir)
+	if err != nil {
+		fmt.Printf("syzygy: %v\n", err)
+		return
+	}
+	oracle := mateab.Tables{Set: egtbLoadOrGenerate(12), WDL: tb}
+	for _, fen := range strings.Split(fens, ";") {
+		b, err := bitboard.FromFEN(strings.TrimSpace(fen))
+		if err != nil {
+			fmt.Printf("%s: %v\n", fen, err)
+			continue
+		}
+		v, ok := tb.ProbeWDL(&b)
+		verdict, lo, hi := oracle.Probe(&b)
+		fmt.Printf("%-50s has %-5v probe %d ok %-5v oracle %v %d..%d\n", strings.TrimSpace(fen), tb.Has(&b), v, ok, verdict, lo, hi)
+	}
+}
+
 func syzygyPositions(dir string) {
 	tb, err := syzygy.Open(dir)
 	if err != nil {

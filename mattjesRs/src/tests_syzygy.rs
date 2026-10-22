@@ -127,6 +127,33 @@ pub fn syzygy_verify(dir: &str, names: &str, samples: usize) {
     }
 }
 
+/// Prints the WDL probe of each FEN (semicolon separated) and the oracle's
+/// verdict with the four-piece base on top.
+pub fn syzygy_probe(dir: &str, fens: &str) {
+    let tb = match Tables::open(Path::new(dir)) {
+        Ok(t) => t,
+        Err(e) => {
+            println!("syzygy: {}", e);
+            return;
+        }
+    };
+    let set = crate::tests_egtb::egtb_load_or_generate(12);
+    let oracle = crate::mateab::Tables { set: &set, wdl: Some(&tb) };
+    for fen in fens.split(';') {
+        let fen = fen.trim();
+        let b = match Board::from_fen(fen) {
+            Ok(b) => b,
+            Err(e) => {
+                println!("{}: {:?}", fen, e);
+                continue;
+            }
+        };
+        let probe = tb.probe_wdl(&b);
+        let (verdict, lo, hi) = crate::mateab::Oracle::probe(&oracle, &b);
+        println!("{:<50} has {:<5} probe {:?} oracle {:?} {}..{}", fen, tb.has(&b), probe, verdict, lo, hi);
+    }
+}
+
 /// Probes every root move of the WDL test positions and compares the
 /// win/draw/loss counts with the recorded ones.
 pub fn syzygy_positions(dir: &str) {

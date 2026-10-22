@@ -166,6 +166,9 @@ muss jeden Wurzelzug einzeln beweisen.
 | KRRN-KN einsamer Springer, Weiß | 6 | `8/8/4k3/8/8/8/R7/K1RN1n2 w - - 0 1` | Gewinn | 27/0/0 | Stellung des Autors; alle Züge gewinnen, der Springer allein gewinnt nie, aber das muss die Suche beweisen (ersticktes Matt ist legal) |
 | KRRN-KN einsamer Springer, Schwarz | 6 | `8/8/4k3/8/8/4N3/R7/K1R2n2 b - - 1 1` | Verlust | 0/0/10 | nach Ne3, Matt in höchstens 8; misst die Kosten des Beweises "der Springer gewinnt nicht" |
 | KRRN-KNP sieben Steine | 7 | `8/5p2/4k3/8/8/8/R7/K1RN1n2 w - - 0 1` | Gewinn | 27/0/0 | die Springer-Stellung plus schwarzer Bauer f7: jenseits der Sechs-Steiner-Syzygy, jeder Schlag landet in ihnen; Stockfish bestätigt 27 Gewinne |
+| KQP-KRRP Dauerschach, vier Remis | 7 | `3k4/p7/8/8/8/8/P4rr1/K6Q w - - 0 1` | Remis | 0/4/13 | die Dauerschach-Stellung plus je ein Bauer; `Dh4+`, `Dh8+`, `Db1`, `Dd1+` halten; Stockfish 19 mit Syzygy, 20 s; die Jagd findet das Zertifikat (3.467 Stellungen) in einer Sekunde |
+| KQ-KRRPP Dauerschach, ein Remis | 7 | `3k4/p3p3/8/8/8/8/5rr1/K6Q w - - 0 1` | Remis | 0/1/14 | nur `Dh8+` hält, und nicht als reine Schachkette (nach `Kd7` braucht Weiß den stillen Zug `Dd7`); offen |
+| KQP-KRRP Dauerschach, zwei Remis | 7 | `3k4/p7/8/8/8/7P/5rr1/K6Q w - - 0 1` | Remis | 0/2/8 | `Db1` (still) und `Dd1+` halten; offen |
 | KQ-KBN | 5 | `8/8/4k3/3bn3/8/4Q3/8/K7 w - - 0 1` | Gewinn | 19/1/4 | Matt in 39, ohne Tabelle bisher unerreichbar |
 | KQ-KRR | 5 | `k7/8/8/8/8/2r5/1r6/K5Q1 w - - 0 1` | Gewinn | 3/8/10 | nur `Kb2`, `Dg8`, `Dh1` gewinnen, zehn Züge verlieren |
 | KQ-KRB | 5 | `k7/8/8/8/8/8/5rb1/K2Q4 w - - 0 1` | Gewinn | 2/12/7 | nur `Dd8` und `Da4` gewinnen |

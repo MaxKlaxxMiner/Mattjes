@@ -177,12 +177,28 @@ func chebyshev(a, b int) int {
 
 // expandPartial adds the next k untried policy moves of a defender node
 // (generation on the first call); returns false when the position budget
-// is used up (checked before the node is touched, as in expand).
+// is used up (checked before the node is touched, as in expand). When the
+// defender is the weaker side, a node not chased yet (or cut by the
+// budget) is chased first with ChaseNodeBudget: a closing check chain is
+// its move, the policy only steps in where the chain fails or is cut.
 func (s *searcher) expandPartial(i uint32, k int) bool {
 	g := s.g
 	if g.full() {
 		s.aborted = true
 		return false
+	}
+	if s.chaseNodes && g.chaseable(i) {
+		switch s.chaseTop(i, ChaseNodeBudget) {
+		case chaseHold:
+			return true
+		case chaseCut:
+			if s.aborted {
+				return false
+			}
+		}
+		if g.status[i] != stUnknown {
+			return true
+		}
 	}
 	b := g.board(i)
 	var buf chess.MoveBuffer
@@ -209,32 +225,13 @@ func (s *searcher) expandPartial(i uint32, k int) bool {
 		}
 		c := b
 		c.DoMove(moves[j])
-		ci, isNew, ok := g.getOrPut(c.Key)
-		if !ok {
-			s.aborted = true
+		before := len(g.children[i])
+		if _, ok := s.link(i, &c); !ok {
 			return false
 		}
-		if !isNew && g.hasChild(i, ci) {
-			continue
+		if len(g.children[i]) > before {
+			added++
 		}
-		if isNew {
-			g.add(&c)
-		}
-		g.children[i] = append(g.children[i], ci)
-		g.parents[ci] = append(g.parents[ci], i)
-		g.edges++
-		added++
-		if g.status[ci] == stLoss && g.status[i] == stUnknown {
-			g.status[i] = stWin
-		} else if g.status[ci] == stWin {
-			g.remaining[i]--
-		}
-	}
-	if g.status[i] == stUnknown && g.remaining[i] == 0 {
-		g.status[i] = stLoss
-	}
-	if g.status[i] != stUnknown {
-		g.propagate(i)
 	}
 	return true
 }
@@ -255,7 +252,7 @@ func (g *Graph) fullyTried(i uint32) bool {
 
 // newCertSearcher sets up the certificate builder of a question.
 func newCertSearcher(root *bitboard.Board, sideToMoveAttacks bool, opt Options) *searcher {
-	g := &Graph{attackerWhite: root.WhiteMove == sideToMoveAttacks, defenderConfigs: map[uint64]uint32{}, unsafeLevel: []uint16{}, oracle: oracleOf(opt)}
+	g := &Graph{attackerWhite: root.WhiteMove == sideToMoveAttacks, defenderConfigs: map[uint64]uint32{}, unsafeLevel: []uint16{}, chase: []uint8{}, chaseDepth: []uint16{}, oracle: oracleOf(opt)}
 	side := 0
 	if g.attackerWhite {
 		side = 1
@@ -265,7 +262,12 @@ func newCertSearcher(root *bitboard.Board, sideToMoveAttacks bool, opt Options) 
 	g.store = ttstore.NewSlots(min(initialSlots, g.maxSlots))
 	g.store.Put(root.Key, 0)
 	g.add(root)
-	s := &searcher{g: g, opt: opt, start: time.Now(), capN: DefaultNumberCap, frontier: []uint32{0}}
+	g.shape = opt.Progress
+	s := &searcher{g: g, opt: opt, start: time.Now(), capN: DefaultNumberCap, frontier: []uint32{0}, condLists: make([][]uint32, ChaseMaxDepth+2)}
+	// a perpetual check is the weaker side's resource: only then are the
+	// policy nodes chased (a stronger defender's checks are an attack, and
+	// chasing them cost millions of positions on KQ-KRRPP)
+	s.chaseNodes = !opt.NoChase && material(root, side) < material(root, 1-side)
 	if opt.ProgressEvery <= 0 {
 		s.opt.ProgressEvery = 1 << 20
 	}
@@ -326,6 +328,21 @@ func (s *searcher) runCert(q *bitboard.Board, extra int) Result {
 	s.frontier = g.openUnexpanded(n)
 	for !s.aborted {
 		s.rounds++
+		// the chase from the question node first: a perpetual check is
+		// found as a chain, and after a rejected hold the chain is repaired
+		// from the top (the leak is far below the check that was wrong,
+		// the widening at the leak would never reach it)
+		if !opt.NoChase && g.status[n] == stUnknown && g.chaseable(n) {
+			res := s.chaseTop(n, 0)
+			s.report(fmt.Sprintf("cert chase from the question node: %s, %d chains, %d chase nodes, %d positions, %s", res, s.chases, g.chaseVisits, len(g.recs), fmtDur(time.Since(s.start))))
+			if s.aborted {
+				break
+			}
+			if g.AttackerWon(n) || g.defenderHolds(n) {
+				break
+			}
+			s.frontier = g.openUnexpanded(n)
+		}
 		s.closure(s.frontier)
 		if s.aborted {
 			break
@@ -338,6 +355,7 @@ func (s *searcher) runCert(q *bitboard.Board, extra int) Result {
 			s.aborted = true
 			break
 		}
+		forgotten := g.resetChase()
 		s.frontier = g.unsafeDefenders(n)
 		won, safe := 0, 0
 		for i := range g.status {
@@ -347,15 +365,19 @@ func (s *searcher) runCert(q *bitboard.Board, extra int) Result {
 				safe++
 			}
 		}
-		s.report(fmt.Sprintf("cert round %d: %d positions, %d expansions, %d edges, %d won, %d safe, %d defender nodes widened, %s", s.rounds, len(g.recs), g.expansions, g.edges, won, safe, len(s.frontier), fmtDur(time.Since(s.start))))
+		s.report(fmt.Sprintf("cert round %d: %d positions, %d expansions, %d edges, %d won, %d safe, %d defender nodes widened, %d chains, %d chase nodes, %d holds forgotten, %s", s.rounds, len(g.recs), g.expansions, g.edges, won, safe, len(s.frontier), s.chases, g.chaseVisits, forgotten, fmtDur(time.Since(s.start))))
 		if len(s.frontier) == 0 {
 			s.aborted, s.stuck = true, true // cannot happen: an unsafe root has an unsafe defender with untried moves below it
 			break
 		}
 	}
-	r.Rounds = s.rounds
-	r.Aborted, r.Stuck = s.aborted, s.stuck
+	r.Rounds, r.Chases, r.Resets = s.rounds, s.chases, s.resets
+	r.Stuck = s.stuck
 	g.fillResult(&r, n)
+	// a decision stands even when the run was cut off afterwards (the
+	// other racer's stop reaches a chase whose structure the fixed point
+	// then confirms)
+	r.Aborted = s.aborted && r.Outcome == Undecided
 	return r
 }
 
@@ -363,10 +385,13 @@ func (s *searcher) runCert(q *bitboard.Board, extra int) Result {
 // left: attacker nodes completely, defender nodes with one policy move
 // (one more when they are in the frontier again). A node is queued once
 // per wave (flRegion), otherwise a defender reached through several
-// attackers in one wave would get one move per arrival.
+// attackers in one wave would get one move per arrival. A defender node
+// the chase has already given its move (edges, but reached by a wave, not
+// by the frontier) keeps it.
 func (s *searcher) closure(frontier []uint32) {
 	g := s.g
 	queue := frontier
+	fromFrontier := true
 	push := func(next []uint32, c uint32) []uint32 {
 		if g.flags[c]&flRegion != 0 || g.status[c] != stUnknown {
 			return next
@@ -395,6 +420,9 @@ func (s *searcher) closure(frontier []uint32) {
 					s.report(fmt.Sprintf("cert closure: %d positions, %d expansions, %d edges, %d defender placements (%s), %s", len(g.recs), g.expansions, g.edges, len(g.defenderConfigs), g.kingSquares(), fmtDur(time.Since(s.start))))
 				}
 			} else {
+				if g.chase[i] == chHold || !fromFrontier && g.flags[i]&flExpanded != 0 {
+					continue // chased: it has its move
+				}
 				if !s.expandPartial(i, 1) {
 					break
 				}
@@ -413,6 +441,7 @@ func (s *searcher) closure(frontier []uint32) {
 			break // the rest of the queue stays marked until below
 		}
 		queue = next
+		fromFrontier = false
 	}
 	// an interrupted wave leaves its queue and the next one marked
 	for _, i := range queue {

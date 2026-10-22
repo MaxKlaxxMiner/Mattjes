@@ -178,6 +178,7 @@ fn experiments() {
     // --- Syzygy WDL reader: "test <dir> <materials>" compares probes with the own tables on random legal positions ---
     // tests_syzygy::syzygy_verify(&test_arg(0, tests_syzygy::SYZYGY_DEFAULT_DIR), &test_arg(1, "KQKR;KRKN;KPK;KPKP;KQKP;KPPK;KRRKN;KBNKQ"), 20000); // 2026-10-22: all agree, Go and Rust
     // tests_syzygy::syzygy_positions(&test_arg(0, tests_syzygy::SYZYGY_DEFAULT_DIR)); // the root moves of the WDL test positions against the recorded win/draw/loss counts: all 31 agree
+    // tests_syzygy::syzygy_probe(tests_syzygy::SYZYGY_DEFAULT_DIR, &test_arg(0, "3k4/p7/8/8/8/8/P4rr1/K6Q w - - 0 1")); // single probes, semicolon separated (seven pieces: no table, Unknown)
     // tests_pn::matepn_solve(15, 256, "sat", "mEfb"); // 1,370,235 visits in total (KQ-KN 271,120, KR-KR 1,023,102), 0 proofs evicted, every proof tree complete; identical from 256 MB up (KR-KR 1,022,904 from 1 GB)
     // tests_pn::matepn_solve(15, 256, "sat", "mEf"); // the direct table: 1,156,948 visits, 772 proofs and 3,285 final entries of KR-KR evicted, its proof tree incomplete; swings 5x with the size
     // tests_egtb::egtb_measure(&["KQKBN"], 12, true); // generated in 45 s, checksum 7b54498535f836cb, byte-identical to Go

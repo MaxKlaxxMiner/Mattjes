@@ -687,10 +687,118 @@ Tabellentreffer und die Suche beginnt bei sieben; die Sieben-Steiner-
 Stellung (Springer-Stellung plus Bauer f7, Stockfish: 27 Gewinne) ist in
 `WdlPositions` die erste, die mit Syzygy noch Suche ist.
 
+## Der Dauerschach-Sucher: die Schachkette als Pfad (2026-10-22)
+
+Umsetzung der notierten Idee als dritter Mechanismus im Zertifikat-Bauer
+(`wdllist/chase.go`, Rust `chase.rs`), auf dessen Graphen und Thread:
+die **Jagd** (chase). Sie verfolgt die Schachkette als Pfad in die Tiefe,
+der Verteidiger nur mit Jagdzügen (Schachs, Schläge und Umwandlungen,
+die mit Tabellen meist Terminals sind, und Züge in Knoten, die bekannt
+halten), der Angreifer mit allen Antworten; endet eine Kette, geht sie
+zurück und tauscht den letzten Schach. Eine Wiederholung eines Knotens
+auf dem Pfad schließt die Kette. Jeder berührte Knoten liegt im Graphen
+(Angreifer komplett expandiert, Verteidiger mit den probierten Schachs),
+der Fixpunkt bleibt der Richter. Wo die Kette scheitert, bekommt der
+Knoten wie bisher seinen Politik-Zug, Breitensuche-Abschluss und
+Erweiterung laufen unverändert.
+
+**Exakte Holds mit Tarjans Lowlink.** Der erste Entwurf memoisierte
+jeden "hält" und produzierte 97.000 Holds, die der Fixpunkt verwarf: eine
+Kette, die auf einem Vorfahren schließt, hält nur, wenn der Vorfahre am
+Ende hält (das GHI-Problem). Jetzt trägt jeder Hold die Tiefe des
+höchsten Vorfahren, den seine Wiederholungen erreichen. Ist das die
+eigene Tiefe, ist die Struktur in sich geschlossen und der Hold endgültig
+(`chHold`); sonst ist er bedingt (`chHoldCond`) und steht in der Liste
+dieses Vorfahren: schließt der in sich, werden alle gelisteten Knoten
+endgültig, schließt er bedingt, wandern sie zu seinem Vorfahren,
+scheitert er oder wird er geschnitten, werden sie vergessen. Fehlschläge
+sind pfadunabhängig (jeder Schach hat eine Antwort, nach der der König
+entkommt, egal woher der Knoten kam) und endgültig (`chFail`); Schnitte
+merken sich die Resttiefe (`chCut`) und werden nur mit mehr Tiefe erneut
+gejagt. Seitdem verwirft der Fixpunkt keinen Hold mehr (0 "forgotten" in
+allen Läufen), die Rücknahme bleibt als Versicherung.
+
+**Ordnung und Vertiefung.** Der Angreifer probiert die Antworten
+"Fehlschlag zuerst": bekannte Fehlschläge, dann die mit den wenigsten
+Schachs danach (die Flucht), neue Stellungen vor bekannten, bekannte Holds
+zuletzt; eine scheiternde Kette muss billig scheitern, weil darüber jeder
+Schach jedes Knotens an die Reihe kommt. Der Verteidiger wählt den Schach
+nach einer Zwei-Halbzug-Vorschau (`lookAhead`), die den Schluss sucht:
+8 × die wenigsten Schachs nach der schlechtesten Antwort, minus 40 je
+Antwort in eine neue Stellung, minus 20 je Antwort in eine bekannte
+offene; Schachs, nach denen eine Antwort für den Angreifer gewinnt
+(Tabellen, Graph, Memo), fallen weg. Die Jagd vom Frageknoten vertieft
+iterativ (Deckel 16, 32, 64, 128, 256 Halbzüge; der Memo behält, was die
+flachen Jagden entschieden haben): mit festem Deckel 256 lief die Kette
+hunderte Halbzüge ohne Wiederholung (der König wandert über das Brett),
+und die Schnitte vervielfachten sich mit jedem alternativen Schach
+darüber (1,47 Mio. Schnitte bei 164 Tsd. Holds).
+
+**Wo gejagt wird.** Vom Frageknoten immer (unbegrenzt), an den
+Politik-Knoten der Wellen nur, wenn der Verteidiger materiell schwächer
+ist (Q9/R5/B3/N3/P1), und dann mit 4.096 Jagdknoten Budget: das
+Dauerschach ist das Mittel der schwächeren Seite, und die Jagd an jedem
+Wellenknoten einer stärkeren Verteidigung (KRR+PP gegen KQ, Frage "Weiß
+gewinnt") lief mit den Turmschachs gegen den weißen König auf 5,8 Mio.
+Stellungen, wo der Abstieg die Frage in 31 ms entschied.
+
+**Zwei Fallen dabei.** `link` (eine Kante mit Zählern) rief `propagate`
+nach jeder neuen Kante, auch wenn der Knoten schon entschieden war, und
+jede Wiederholung nahm den Eltern einen Zug vom Zähler: nach Qh4+ Rg5
+stand der Angreiferknoten als verloren, das Zertifikat hatte sechs
+Stellungen und der König ein Feld. Jetzt wird genau beim Statuswechsel
+propagiert (`expandPartial` nutzt dasselbe `link`). Und die Pfad-Prüfung
+muss vor der Memo-Abfrage stehen: ein Knoten auf dem Pfad trägt noch den
+Memo seiner letzten Jagd, ein `chCut` dort verbarg die Wiederholung.
+
+**Ausgebaut und verworfen:** die Antwort-Ordnung nach der Distanz des
+Königs zu den eigenen Steinen (die Fehlschlag-Blätter zeigten immer den
+König hinter einem Turm, die Ordnung änderte nichts: 1,18 statt 1,15 Mio.
+Knoten); ein Schnitt, der den Knoten sofort beendet statt Alternativen zu
+probieren (die Ketten schlossen bis Deckel 128 nicht); und der
+**beschränkte Abstieg**: `mid` auf dem Zertifikat-Graphen mit
+Jagdzügen als einzigen Verteidigerzügen, dn = 0 ruft den Fixpunkt, pn = 0
+heißt "der Angreifer entkommt jeder Kette" (hielt KQP-KRRP in 101 ms mit
+24 Tsd. Besuchen, trashte aber auf KQ-KRR mit 4,2 Mio. Besuchen bei
+245 Tsd. Expansionen ohne einen Fixpunkt, die bekannte DAG-Sättigung).
+
+**Messung** (Zertifikat-Bauer, Jagdknoten in Go und Rust identisch):
+
+| Stellung | Frage | vorher | mit Jagd |
+|---|---|---|---|
+| KQ-KRR Dauerschach (5 Steine, Vier-Steiner als Orakel) | Schwarz gewinnt | offen bei 16 Mi | widerlegt (Deckel 64), Zertifikat 78.280 (König auf 60 Feldern, 65 Verteidiger-Stellungen), 3.266.718 Jagdknoten, 1.453.445 Stellungen, Go 58,7 s / Rust 22,0 s |
+| KQP-KRRP vier Remis (7 Steine, Syzygy) | Schwarz gewinnt | – | widerlegt, Zertifikat 3.467 (König auf 57 Feldern), 123.800 Jagdknoten, 165.784 Stellungen, Go 1,9 s / Rust 0,96 s |
+| KP-K Randbauer, KBP-K falscher Läufer (ohne Tabellen) | Weiß gewinnt | 1.423 / 53.048 sicher | 1.410 / 54.262 sicher (die Jagden scheitern sofort, der blanke König hat keinen Schach) |
+
+Das Zertifikat der KQ-KRR-Stellung erklärt, warum die Politik dort
+scheiterte: es ist kein Käfig, der König läuft über 60 Felder, und die
+Dame hat trotzdem immer ein Schach; eine Breitensuche-Politik mit einem
+Schach je Knoten findet diese Menge nur mit der richtigen Wahl an jedem
+der 13.833 Angreifer-Stellungen. Zwischen Jagd (1,45 Mio. Stellungen)
+und Zertifikat liegt noch Faktor 19; vor der Pfad-Prüfung-vor-Memo-
+Korrektur hatte die Jagd mit 28.712 ein kleineres Zertifikat gefunden
+(Zufall der Ordnung, die Korrektur ist trotzdem richtig).
+
+**Drei neue Sieben-Steiner** in `WdlPositions` (Stockfish 19 mit Syzygy,
+20 s): `KQP-KRRP perpetual, four draws` (`3k4/p7/8/8/8/8/P4rr1/K6Q w`,
+0/4/13), `KQ-KRRPP perpetual, one draw` (`3k4/p3p3/8/8/8/8/5rr1/K6Q w`,
+0/1/14, nur Qh8+) und `KQP-KRRP perpetual, two draws`
+(`3k4/p7/8/8/8/7P/5rr1/K6Q w`, 0/2/8, Qb1 und Qd1+). Die beiden
+letzten bleiben **offen**: ihr Remis ist kein reines Dauerschach. Nach
+Qh8+ Kd7 hat Weiß keine schließende Schachkette (die Jagd scheitert
+nach 121 Tsd. Knoten, Stockfish bestätigt es: die Remislinie Qh3+ e6
+Qh7+ Kd6 Qd3+ Ke5 Qe3+ Kf5 Qd3+ Kf6 Qd8+ Kg7 **Qd7** braucht einen
+stillen Zug), und Qb1 ist still. Dort muss die Politik den stillen Zug
+finden und die Jagd darunter die Ketten; die erste Breitensuche-Welle
+endet aber nicht (4 Mio. Jagdknoten, der schwarze Bauer läuft bis e4),
+weil eine Politik ohne Schluss den ganzen Raum aufzieht. Das ist die
+nächste Baustelle, mit den beiden Stellungen als Maßstab.
+
 **Nächste Hebel**, nach erwartetem Nutzen:
 
-1. Dauerschach-Sucher (Schachketten als Pfad, siehe oben), jetzt an
-   Sieben-Steinern mit Syzygy-Terminals zu messen.
+1. Gemischte Remis (stiller Zug plus Schachketten): die Politik nach der
+   Jagd-Vorschau wählen lassen, die Welle begrenzen, bevor sie den Raum
+   aufzieht; Maßstab die zwei offenen Sieben-Steiner.
 2. Speicher je Knoten (Ziel 150 Byte, siehe oben).
 3. Beide Fragen in einem Graphen (die Gewinne der einen Frage sind die
    Verluste der anderen).

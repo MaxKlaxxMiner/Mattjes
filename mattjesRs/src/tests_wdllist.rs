@@ -15,7 +15,10 @@ use crate::wdllist::{self, Options};
 /// move wins", then "the opponent wins"; both disproven = draw. `names` as
 /// in wdlpn_solve. Options: B = brute force, p = the proof-number descent
 /// alone, e/E/x/X = epsilon 1/8, 1/2, 1, 2, w = stored numbers almost
-/// unclipped, l = numbers on the log scale, v = progress lines.
+/// unclipped, l = numbers on the log scale, C = the certificate builder
+/// without the perpetual-check chase, P = the certificate builder alone,
+/// t = the four-piece tables as oracle, s = Syzygy WDL on top, v = progress
+/// lines.
 pub fn wdllist_solve(names: &str, options: &str) {
     let has = |o: char| options.contains(o);
     let selected = |p: &WdlPosition| -> bool {
@@ -41,7 +44,7 @@ pub fn wdllist_solve(names: &str, options: &str) {
     } else {
         None
     };
-    let mut opt = Options { brute_force: has('B'), no_race: has('p'), max_positions: 16 << 20, oracle: set.as_ref().map(|s| crate::mateab::Tables { set: s, wdl: syzygy.as_ref() }), ..Default::default() };
+    let mut opt = Options { brute_force: has('B'), no_race: has('p'), no_chase: has('C'), no_descent: has('P'), max_positions: 16 << 20, oracle: set.as_ref().map(|s| crate::mateab::Tables { set: s, wdl: syzygy.as_ref() }), ..Default::default() };
     for (letter, eps) in [('e', 1), ('E', 4), ('x', 8), ('X', 16)] {
         if has(letter) {
             opt.epsilon = eps;
@@ -63,9 +66,12 @@ pub fn wdllist_solve(names: &str, options: &str) {
         "brute force (reachable graph)".to_string()
     } else if opt.no_race {
         format!("proof-number descent alone, epsilon {}/8, numbers {}", opt.epsilon, cap_name)
+    } else if opt.no_descent {
+        "certificate builder alone".to_string()
     } else {
         format!("proof-number descent racing the certificate builder, epsilon {}/8, numbers {}", opt.epsilon, cap_name)
     };
+    let mode = if opt.no_chase && !opt.no_race { format!("{}, no chase", mode) } else { mode };
     let mode = if has('s') {
         format!("{}, four-piece tables and Syzygy WDL as oracle", mode)
     } else if has('t') {
@@ -104,15 +110,16 @@ pub fn wdllist_solve(names: &str, options: &str) {
                     wdllist::Outcome::Undecided => "undecided".to_string(),
                 }
             };
+            let visits = if r.method == "certificate" { format!("{} chase nodes", group(r.chase_nodes)) } else { format!("{} visits", group(r.visits)) };
             println!(
-                "    q{} {:<18} {:<28} by {:<11} {:>10} positions, {:>10} expansions, {:>10} visits, {} won, {} fixed points, {} resets, {} exhausts, {}",
+                "    q{} {:<18} {:<28} by {:<11} {:>10} positions, {:>10} expansions, {:>22}, {} won, {} fixed points, {} resets, {} exhausts, {}",
                 q + 1,
                 format!("{}:", question),
                 verdict,
                 r.method,
                 group(r.positions as u64),
                 group(r.expansions as u64),
-                group(r.visits),
+                visits,
                 group(r.won as u64),
                 r.safe_checks,
                 r.resets,

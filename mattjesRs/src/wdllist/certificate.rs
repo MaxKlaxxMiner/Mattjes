@@ -102,7 +102,7 @@ impl<'a> Graph<'a> {
         out
     }
 
-    fn has_child(&self, i: u32, c: u32) -> bool {
+    pub(super) fn has_child(&self, i: u32, c: u32) -> bool {
         self.children[i as usize].contains(&c)
     }
 
@@ -160,11 +160,25 @@ fn chebyshev(a: i32, b: i32) -> i32 {
 impl<'a> Searcher<'a> {
     /// Adds the next k untried policy moves of a defender node (generation
     /// on the first call); false when the position budget is used up
-    /// (checked before the node is touched, as in expand).
+    /// (checked before the node is touched, as in expand). When the
+    /// defender is the weaker side, a node not chased yet (or cut by the
+    /// budget) is chased first with CHASE_NODE_BUDGET: a closing check
+    /// chain is its move, the policy only steps in where the chain fails
+    /// or is cut.
     fn expand_partial(&mut self, i: u32, k: usize) -> bool {
         if self.g.full() {
             self.aborted = true;
             return false;
+        }
+        if self.chase_nodes && self.g.chaseable(i) {
+            match self.chase_top(i, CHASE_NODE_BUDGET) {
+                ChaseResult::Hold => return true,
+                ChaseResult::Cut if self.aborted => return false,
+                _ => {}
+            }
+            if self.g.status[i as usize] != ST_UNKNOWN {
+                return true;
+            }
         }
         let b = self.g.board(i);
         let mut buf = new_buffer();
@@ -185,42 +199,26 @@ impl<'a> Searcher<'a> {
             }
             let mut c = b;
             c.do_move(moves[j]);
-            let (ci, is_new, ok) = self.g.get_or_put(c.key);
-            if !ok {
-                self.aborted = true;
+            let before = self.g.children[i as usize].len();
+            if self.link(i, &c).is_none() {
                 return false;
             }
-            if !is_new && self.g.has_child(i, ci) {
-                continue;
+            if self.g.children[i as usize].len() > before {
+                added += 1;
             }
-            if is_new {
-                self.g.add(&c);
-            }
-            self.g.children[i as usize].push(ci);
-            self.g.parents[ci as usize].push(i);
-            self.g.edges += 1;
-            added += 1;
-            if self.g.status[ci as usize] == ST_LOSS && self.g.status[i as usize] == ST_UNKNOWN {
-                self.g.status[i as usize] = ST_WIN;
-            } else if self.g.status[ci as usize] == ST_WIN {
-                self.g.remaining[i as usize] -= 1;
-            }
-        }
-        if self.g.status[i as usize] == ST_UNKNOWN && self.g.remaining[i as usize] == 0 {
-            self.g.status[i as usize] = ST_LOSS;
-        }
-        if self.g.status[i as usize] != ST_UNKNOWN {
-            self.g.propagate(i);
         }
         true
     }
 
     /// Expands breadth-first from the frontier until no open node is left:
-    /// attacker nodes completely, defender nodes with one policy move. A node
-    /// is queued once per wave (FL_REGION).
+    /// attacker nodes completely, defender nodes with one policy move (one
+    /// more when they are in the frontier again). A node is queued once per
+    /// wave (FL_REGION). A defender node the chase has already given its
+    /// move (edges, but reached by a wave, not by the frontier) keeps it.
     fn closure(&mut self, frontier: Vec<u32>) {
         let mut queue = frontier;
         let mut next: Vec<u32> = Vec::new();
+        let mut from_frontier = true;
         while !queue.is_empty() && !self.aborted {
             next = Vec::new();
             for &i in &queue {
@@ -241,8 +239,13 @@ impl<'a> Searcher<'a> {
                         let line = format!("cert closure: {} positions, {} expansions, {} edges, {} defender placements ({}), {}", self.g.recs.len(), self.g.expansions, self.g.edges, self.g.defender_configs.as_ref().map_or(0, |c| c.len()), self.g.king_squares(), fmt_dur(self.start.elapsed()));
                         self.report(&line);
                     }
-                } else if !self.expand_partial(i, 1) {
-                    break;
+                } else {
+                    if self.g.chase[i as usize] == CH_HOLD || !from_frontier && self.g.flags[i as usize] & FL_EXPANDED != 0 {
+                        continue; // chased: it has its move
+                    }
+                    if !self.expand_partial(i, 1) {
+                        break;
+                    }
                 }
                 for idx in before..self.g.recs.len() {
                     self.push_once(&mut next, idx as u32);
@@ -259,6 +262,7 @@ impl<'a> Searcher<'a> {
                 break; // the rest of the queue stays marked until below
             }
             queue = std::mem::take(&mut next);
+            from_frontier = false;
         }
         // an interrupted wave leaves its queue and the next one marked
         for &i in queue.iter().chain(next.iter()) {
@@ -310,9 +314,17 @@ impl<'a> Graph<'a> {
 impl<'a> Searcher<'a> {
     /// Sets up the certificate builder of a question.
     pub(crate) fn new_cert(root: &Board, side_to_move_attacks: bool, opt: Options<'a>) -> Searcher<'a> {
-        let g = Graph::new(root, side_to_move_attacks, false, opt.max_positions, true, opt.oracle);
+        let mut g = Graph::new(root, side_to_move_attacks, false, opt.max_positions, true, opt.oracle);
+        g.shape = opt.progress.clone();
+        let no_chase = opt.no_chase;
         let mut s = Searcher::new(g, opt);
         s.start = Instant::now();
+        s.cond_lists = vec![Vec::new(); CHASE_MAX_DEPTH + 2];
+        // a perpetual check is the weaker side's resource: only then are the
+        // policy nodes chased (a stronger defender's checks are an attack,
+        // and chasing them cost millions of positions on KQ-KRRPP)
+        let side = s.g.defender_side();
+        s.chase_nodes = !no_chase && material(root, side) < material(root, 1 - side);
         s
     }
 
@@ -333,8 +345,25 @@ impl<'a> Searcher<'a> {
         // may have expanded nodes below this one): start from the open
         // nodes without children below the question node
         s.frontier = s.g.open_unexpanded(n);
+        let no_chase = s.opt.no_chase;
         while !s.aborted {
             s.rounds += 1;
+            // the chase from the question node first: a perpetual check is
+            // found as a chain, and after a rejected hold the chain is
+            // repaired from the top (the leak is far below the check that
+            // was wrong, the widening at the leak would never reach it)
+            if !no_chase && s.g.status[n as usize] == ST_UNKNOWN && s.g.chaseable(n) {
+                let res = s.chase_top(n, 0);
+                let line = format!("cert chase from the question node: {}, {} chains, {} chase nodes, {} positions, {}", res, s.chases, s.g.chase_visits, s.g.recs.len(), fmt_dur(s.start.elapsed()));
+                s.report(&line);
+                if s.aborted {
+                    break;
+                }
+                if s.g.attacker_won(n) || s.g.defender_holds(n) {
+                    break;
+                }
+                s.frontier = s.g.open_unexpanded(n);
+            }
             let frontier = std::mem::take(&mut s.frontier);
             s.closure(frontier);
             if s.aborted {
@@ -348,6 +377,7 @@ impl<'a> Searcher<'a> {
                 s.aborted = true;
                 break;
             }
+            let forgotten = s.g.reset_chase();
             s.frontier = s.g.unsafe_defenders(n);
             let (mut won, mut safe) = (0, 0);
             for i in 0..s.g.status.len() {
@@ -357,7 +387,7 @@ impl<'a> Searcher<'a> {
                     safe += 1;
                 }
             }
-            let line = format!("cert round {}: {} positions, {} expansions, {} edges, {} won, {} safe, {} defender nodes widened, {}", s.rounds, s.g.recs.len(), s.g.expansions, s.g.edges, won, safe, s.frontier.len(), fmt_dur(s.start.elapsed()));
+            let line = format!("cert round {}: {} positions, {} expansions, {} edges, {} won, {} safe, {} defender nodes widened, {} chains, {} chase nodes, {} holds forgotten, {}", s.rounds, s.g.recs.len(), s.g.expansions, s.g.edges, won, safe, s.frontier.len(), s.chases, s.g.chase_visits, forgotten, fmt_dur(s.start.elapsed()));
             s.report(&line);
             if s.frontier.is_empty() {
                 s.aborted = true; // cannot happen: an unsafe root has an unsafe defender with untried moves below it
@@ -366,9 +396,14 @@ impl<'a> Searcher<'a> {
             }
         }
         r.rounds = s.rounds;
-        r.aborted = s.aborted;
+        r.chases = s.chases;
+        r.resets = s.resets;
         r.stuck = s.stuck;
         s.g.fill_result(&mut r, n);
+        // a decision stands even when the run was cut off afterwards (the
+        // other racer's stop reaches a chase whose structure the fixed
+        // point then confirms)
+        r.aborted = s.aborted && r.outcome == Outcome::Undecided;
         r
     }
 }
