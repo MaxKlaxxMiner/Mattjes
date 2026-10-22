@@ -1011,7 +1011,19 @@ sondern je Runde) und die Welle selbst beobachten.
    Verluste der anderen).
 3. Politik: freie Königsfelder statt Klebens gegen Springer; taktische
    Vorschau (Schach-Gabeln) für KR-KB-artige Verteidigungen.
-4. Stop-Flag im Fixpunkt pollen (Stop bis zu zwei Sekunden verspätet).
+4. ~~Stop-Flag im Fixpunkt pollen (Stop bis zu zwei Sekunden verspätet).~~
+   Gebaut (2026-10-22): `safeSet(stopped)` pollt das Stop-Flag alle
+   `StopPoll` = 65.536 Schritte (Knoten der Anfangsschleife und der
+   Breitensuche); ein gestoppter Fixpunkt markiert nichts (die
+   Kratzflags setzt der nächste zurück) und meldet `true`, alle fünf
+   Aufrufer brechen dann ab. Gemessen: ein Fixpunkt auf 2,5 Mio.
+   Stellungen dauert 328 ms (Rust) / 399 ms (Go), die Zeile `fixed
+   point at ... took ...` zeigt es; bei 16 Mi waren es die zwei Sekunden,
+   jetzt liegt die Latenz im Fixpunkt unter einer Millisekunde.
+   Ergebnisse ohne Stop unverändert (Regression knotengleich).
+   `tests/uci-stop.sh <binary> "<fen>" [pause] [hash]` misst die Latenz
+   von `stop` bis `bestmove` (Stichproben treffen den Fixpunkt selten:
+   alt wie neu rund 45 ms außerhalb davon).
 5. ~~`Threads` beachten (die zwei Fragen parallel statt nacheinander).~~
    Gebaut (2026-10-22): mit `Threads` ≥ 2 laufen die zwei Fragen eines
    offenen Zugs in zwei Threads (getrennte Graphen, der Fortschritt unter

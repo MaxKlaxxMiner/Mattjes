@@ -184,9 +184,9 @@ fn experiments() {
     // --- step 2: explicit graph (docs/m7-wdl-search.md), "test <names> <options>": B brute force, p descent alone, e/E/x/X epsilon, w/l number variants, v progress; expansions must match Go ---
     // options t = four-piece tables as oracle, s = Syzygy WDL on top (SYZYGY_DEFAULT_DIR)
     // option n = Patricia's net in the certificate builder's policy, i = the descent's numbers from the net (docs/nnue-patricia.md)
-    // tests_wdllist::wdllist_solve(&test_arg(0, ""), &test_arg(1, "x"));
+    tests_wdllist::wdllist_solve(&test_arg(0, ""), &test_arg(1, "x"));
     // --- rollouts (module rollout, docs/nnue-patricia.md): "test <names> <options> <maxPlies>", options t/s oracle, v lines; every root move played out ---
-    tests_rollout::rollout_positions(&test_arg(0, ""), &test_arg(1, "s"), test_int(2, 200));
+    // tests_rollout::rollout_positions(&test_arg(0, ""), &test_arg(1, "s"), test_int(2, 200)); // 2026-10-22: 561 of 567 root moves with Syzygy, 478 with the four-piece tables, 284 without
     // tests_rollout::rollout_line(&test_arg(0, "8/8/4k3/8/8/8/RK6/2R2n2 b - - 1 1"), &test_arg(1, "s"), test_int(2, 200));
     // --- Patricia's network (module nnue): "test <fenfile>" prints the reference lines of tests/patricia-eval.sh, then the incremental check and the throughput ---
     // tests_nnue::nnue_verify(&test_arg(0, "tests/nnue-smoke.txt")); // 2026-10-22: 55 positions identical to the reference build (docs/nnue-patricia.md)

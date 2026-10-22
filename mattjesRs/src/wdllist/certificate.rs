@@ -413,7 +413,10 @@ impl<'a> Searcher<'a> {
             if s.aborted {
                 break;
             }
-            s.g.safe_set();
+            if s.fixed_point() {
+                s.aborted = true;
+                break;
+            }
             if s.g.attacker_won(n) || s.g.defender_holds(n) {
                 break;
             }

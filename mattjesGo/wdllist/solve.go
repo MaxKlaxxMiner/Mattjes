@@ -129,6 +129,10 @@ const Inf = 1 << 30
 // StopNodes is the polling interval of Stop (a power of two).
 const StopNodes = 1 << 12
 
+// StopPoll is the polling interval of Stop inside the fixed point, in nodes
+// scanned or dequeued (a power of two).
+const StopPoll = 1 << 16
+
 // MaxDepth caps the descent (a node beyond it returns its thresholds, i.e.
 // stays unknown); the graph has no other depth bound.
 const MaxDepth = 1024
@@ -665,8 +669,8 @@ func (s *searcher) runPN(q *bitboard.Board, extra int) Result {
 				s.expand(uint32(i))
 			}
 		}
-		if !s.aborted {
-			g.safeSet()
+		if !s.aborted && g.safeSet(s.stopRequested) {
+			s.aborted = true
 		}
 	} else {
 		for !s.aborted {
@@ -676,7 +680,10 @@ func (s *searcher) runPN(q *bitboard.Board, extra int) Result {
 			}
 			if dn == 0 || pn == 0 {
 				// the heuristic decided, the fixed point has to confirm it
-				g.safeSet()
+				if g.safeSet(s.stopRequested) {
+					s.aborted = true
+					break
+				}
 				if g.defenderHolds(n) || g.AttackerWon(n) {
 					break
 				}
@@ -737,6 +744,11 @@ type searcher struct {
 	chaseNodes                                   bool   // chase at policy nodes too (those where defenderChases holds)
 	chaseFails, chaseCuts, chaseHolds, chaseCond int
 	quietMoves                                   int // quiet moves the chase tried
+}
+
+// stopRequested: the stop flag is set (the fixed point polls it).
+func (s *searcher) stopRequested() bool {
+	return s.opt.Stop != nil && s.opt.Stop.Load()
 }
 
 func (s *searcher) report(line string) {
@@ -826,8 +838,12 @@ func (s *searcher) expand(i uint32) {
 	}
 	// the fixed point now and then: safe nodes are decided for good
 	if !s.opt.BruteForce && g.expansions-g.lastCheck >= max(4096, len(g.recs)/4) {
-		g.safeSet()
-		s.report(fmt.Sprintf("fixed point at %d expansions: %d positions, %s", g.expansions, len(g.recs), fmtDur(time.Since(s.start))))
+		fpStart := time.Now()
+		if g.safeSet(s.stopRequested) {
+			s.aborted = true
+			return
+		}
+		s.report(fmt.Sprintf("fixed point at %d expansions: %d positions, took %s, %s", g.expansions, len(g.recs), fmtDur(time.Since(fpStart)), fmtDur(time.Since(s.start))))
 	}
 }
 
@@ -1064,8 +1080,8 @@ func (s *searcher) mid(i uint32, thPn, thDn uint32, depth int) (uint32, uint32) 
 			s.exhausts++
 			s.report(fmt.Sprintf("saturated at node %d (depth %d, pn %d dn %d, thresholds %d/%d): child %d returned %d/%d twice under %d/%d, expanding its subgraph", i, depth, pn, dn, thPn, thDn, c, rpn, rdn, cThPn, cThDn))
 			s.exhaust(c)
-			if !s.aborted {
-				g.safeSet()
+			if !s.aborted && g.safeSet(s.stopRequested) {
+				s.aborted = true
 			}
 			if g.AttackerWon(i) {
 				g.flags[i] &^= flOnPath
@@ -1124,8 +1140,11 @@ func (g *Graph) resetNumbers() {
 // safeSet runs the fixed point: unsafe is the least fixed point from the
 // won nodes and the unexpanded open nodes (an attacker node is unsafe if
 // any child is, a defender node if all children are); every open node that
-// is not unsafe becomes safe for good.
-func (g *Graph) safeSet() {
+// is not unsafe becomes safe for good. The stop flag (stopped, nil = none)
+// is polled every StopPoll steps: a stopped run marks nothing (the scratch
+// flags are reset by the next run) and reports true; with 16 Mi positions
+// a fixed point takes seconds, and a GUI's stop waited for it.
+func (g *Graph) safeSet(stopped func() bool) (aborted bool) {
 	g.safeChecks++
 	g.lastCheck = g.expansions
 	n := len(g.recs)
@@ -1134,8 +1153,12 @@ func (g *Graph) safeSet() {
 		g.unsafeLevel = g.unsafeLevel[:0]
 		g.unsafeLevel = append(g.unsafeLevel, make([]uint16, n)...)
 	}
+	poll := func(step int) bool { return stopped != nil && step&(StopPoll-1) == 0 && stopped() }
 	var queue []uint32
 	for i := 0; i < n; i++ {
+		if poll(i) {
+			return true
+		}
 		g.flags[i] &^= flUnsafe
 		idx := uint32(i)
 		unsafe := false
@@ -1154,6 +1177,9 @@ func (g *Graph) safeSet() {
 	}
 	// breadth-first, so that unsafeLevel is the distance to the leak
 	for head := 0; head < len(queue); head++ {
+		if poll(head) {
+			return true
+		}
 		c := queue[head]
 		for e := g.firstParent[c]; e != noEdge; e = g.pedges[e].next {
 			p := g.pedges[e].node
@@ -1178,6 +1204,7 @@ func (g *Graph) safeSet() {
 			g.status[i] = stSafe
 		}
 	}
+	return false
 }
 
 // reachableSafe counts the positions reachable from the root through

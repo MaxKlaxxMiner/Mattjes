@@ -379,7 +379,10 @@ func (s *searcher) runCert(q *bitboard.Board, extra int) Result {
 		if s.aborted {
 			break
 		}
-		g.safeSet()
+		if g.safeSet(s.stopRequested) {
+			s.aborted = true
+			break
+		}
 		if g.AttackerWon(n) || g.defenderHolds(n) {
 			break
 		}

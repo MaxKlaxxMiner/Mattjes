@@ -129,6 +129,10 @@ pub const INF: u32 = 1 << 30;
 /// The polling interval of the stop flag (a power of two).
 pub const STOP_NODES: u64 = 1 << 12;
 
+/// The polling interval of the stop flags inside the fixed point, in nodes
+/// scanned or dequeued (a power of two).
+pub const STOP_POLL: usize = 1 << 16;
+
 /// Caps the descent (a node beyond it returns its thresholds, i.e. stays
 /// unknown); the graph has no other depth bound.
 pub const MAX_DEPTH: usize = 1024;
@@ -588,8 +592,12 @@ impl<'a> Graph<'a> {
     /// nodes and the unexpanded open nodes (an attacker node is unsafe if
     /// any child is, a defender node if all children are); every open node
     /// that is not unsafe becomes safe for good.
+    /// The stop flags (None = none) are polled every STOP_POLL steps: a
+    /// stopped run marks nothing (the scratch flags are reset by the next
+    /// run) and returns true; with 16 Mi positions a fixed point takes
+    /// seconds, and a GUI's stop waited for it.
     #[allow(clippy::needless_range_loop)]
-    fn safe_set(&mut self) {
+    fn safe_set(&mut self, stop: Option<&AtomicBool>, race_stop: Option<&AtomicBool>) -> bool {
         self.safe_checks += 1;
         self.last_check = self.expansions;
         let n = self.recs.len();
@@ -598,8 +606,12 @@ impl<'a> Graph<'a> {
             l.clear();
             l.resize(n, 0);
         }
+        let poll = |step: usize| step & (STOP_POLL - 1) == 0 && (stop.is_some_and(|s| s.load(Ordering::Relaxed)) || race_stop.is_some_and(|s| s.load(Ordering::Relaxed)));
         let mut queue: Vec<u32> = Vec::new();
         for i in 0..n {
+            if poll(i) {
+                return true;
+            }
             self.flags[i] &= !FL_UNSAFE;
             let unsafe_ = if self.status[i] != ST_UNKNOWN {
                 self.attacker_won(i as u32)
@@ -617,6 +629,9 @@ impl<'a> Graph<'a> {
         // breadth-first, so that unsafe_level is the distance to the leak
         let mut head = 0;
         while head < queue.len() {
+            if poll(head) {
+                return true;
+            }
             let c = queue[head] as usize;
             head += 1;
             let mut e = self.first_parent[c];
@@ -644,6 +659,7 @@ impl<'a> Graph<'a> {
                 self.status[i] = ST_SAFE;
             }
         }
+        false
     }
 
     /// Counts the positions reachable from the root through
@@ -986,8 +1002,8 @@ fn run_pn(&mut self, q: &Board, extra: usize) -> Result {
             }
             i += 1;
         }
-        if !s.aborted {
-            s.g.safe_set();
+        if !s.aborted && s.fixed_point() {
+            s.aborted = true;
         }
     } else {
         while !s.aborted {
@@ -997,7 +1013,10 @@ fn run_pn(&mut self, q: &Board, extra: usize) -> Result {
             }
             if dn == 0 || pn == 0 {
                 // the heuristic decided, the fixed point has to confirm it
-                s.g.safe_set();
+                if s.fixed_point() {
+                    s.aborted = true;
+                    break;
+                }
                 if s.g.defender_holds(n) || s.g.attacker_won(n) {
                     break;
                 }
@@ -1091,6 +1110,14 @@ impl<'a> Searcher<'a> {
         self.opt.stop.as_ref().is_some_and(|s| s.load(Ordering::Relaxed)) || self.opt.race_stop.as_ref().is_some_and(|s| s.load(Ordering::Relaxed))
     }
 
+    /// Runs the fixed point with the stop flags; true when it was stopped
+    /// (nothing marked).
+    fn fixed_point(&mut self) -> bool {
+        let stop = self.opt.stop.clone();
+        let race_stop = self.opt.race_stop.clone();
+        self.g.safe_set(stop.as_deref(), race_stop.as_deref())
+    }
+
     /// Adds all children of a node and propagates wins. It aborts (the
     /// stop flag, the position budget) before touching the node, never in
     /// the middle of it.
@@ -1172,8 +1199,12 @@ impl<'a> Searcher<'a> {
         }
         // the fixed point now and then: safe nodes are decided for good
         if !self.opt.brute_force && self.g.expansions - self.g.last_check >= 4096.max(self.g.recs.len() / 4) {
-            self.g.safe_set();
-            let line = format!("fixed point at {} expansions: {} positions, {}", self.g.expansions, self.g.recs.len(), fmt_dur(self.start.elapsed()));
+            let fp_start = Instant::now();
+            if self.fixed_point() {
+                self.aborted = true;
+                return;
+            }
+            let line = format!("fixed point at {} expansions: {} positions, took {}, {}", self.g.expansions, self.g.recs.len(), fmt_dur(fp_start.elapsed()), fmt_dur(self.start.elapsed()));
             self.report(&line);
         }
     }
@@ -1348,8 +1379,8 @@ impl<'a> Searcher<'a> {
                 let line = format!("saturated at node {} (depth {}, pn {} dn {}, thresholds {}/{}): child {} returned {}/{} twice under {}/{}, expanding its subgraph", i, depth, pn, dn, th_pn, th_dn, c, rpn, rdn, c_th_pn, c_th_dn);
                 self.report(&line);
                 self.exhaust(c);
-                if !self.aborted {
-                    self.g.safe_set();
+                if !self.aborted && self.fixed_point() {
+                    self.aborted = true;
                 }
                 if self.g.attacker_won(i) {
                     self.g.flags[i as usize] &= !FL_ON_PATH;
