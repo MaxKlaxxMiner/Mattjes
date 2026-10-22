@@ -794,11 +794,88 @@ endet aber nicht (4 Mio. Jagdknoten, der schwarze Bauer läuft bis e4),
 weil eine Politik ohne Schluss den ganzen Raum aufzieht. Das ist die
 nächste Baustelle, mit den beiden Stellungen als Maßstab.
 
+## Gemischte Remis: freie Ausweichzüge, stille Züge am Jagdstart (2026-10-22)
+
+Der Versuch, die beiden offenen Sieben-Steiner mit stillen Zügen in der
+Jagd zu lösen. Ergebnis vorweg: die reinen Dauerschachs werden billiger
+(KQ-KRR halbiert), die beiden offenen Stellungen bleiben offen, und der
+Grund ist jetzt bekannt: ihr Remis ist überhaupt keine Schachkette.
+
+**Was die Stockfish-Linien zeigen** (`tests/sf-pv.sh`, 20 bis 30 s):
+nach Qh8+ Kd7 in `KQ-KRRPP` laufen die Linien als Schachreihen mit
+stillen Damenzügen dazwischen (Qd7, Qd4, Qc4 als Fesselung), und
+zwischendurch geben die Türme dem weißen König Schach (Rg1+ Kb2 Rf2+
+Ka3 ...), der ausweichen muss. Nach Qb1 in `KQP-KRRP` ist es gar kein
+Dauerschach: der h-Bauer läuft h4 h5 h6 h7, Schwarz muss einen Turm
+gegen ihn geben (Kc7 h4 Rc2 h5 Rh2 h6 a6 h7 Rc5 Qe1 Rhxh7), und jede
+Linie endet in einer Syzygy-Stellung. Das erste ist ein dynamisches
+Remis aus Schachs und Drohungen, das zweite ein Bauernlauf; beide
+Zertifikate enthalten an jedem stillen Zug alle rund 40 Antworten des
+Angreifers statt der fünf nach einem Schach.
+
+**Drei Regeln in der Jagd**, davon zwei behalten:
+
+1. **Ausweichen ist frei.** Steht der Verteidiger im Schach, sind alle
+   seine Züge Jagdkandidaten (erzwungen, wenige, kein eigenes Tempo), und
+   die Gegenschachs des Angreifers werden in der Antwortordnung nach
+   hinten gestellt (Score 1000: keine billige Widerlegung mehr, die
+   Antworten mit den wenigsten Schachs danach bleiben vorn). Die Vorschau
+   `lookAhead` zählt nach einem Gegenschach keine Schachs. Das halbiert
+   KQ-KRR (siehe Tabelle). **Nur für einen Verteidiger mit Figur**
+   (`defenderHasPiece`: Dame, Turm, Läufer oder Springer): der blanke
+   König kann nicht jagen, und seine freien Ausweichzüge ließen die Jagd
+   an jedem Politik-Knoten den Schachs des Angreifers bis zum Deckel
+   folgen (KBP-K falscher Läufer war in 110 s nicht fertig; ohne Figur
+   wird jetzt gar nicht gejagt, Randbauer und falscher Läufer stehen
+   wieder exakt auf den Zahlen ohne Jagd).
+2. **Stille Züge nur am Startknoten der Jagd** (`ChaseQuietMoves` = 1 je
+   Pfad, `ChaseQuietTopOnly`, Breite `ChaseQuietWidth` = 3 nach derselben
+   Vorschau, erst nachdem alle Jagdzüge des Knotens gescheitert sind, und
+   erst dann bewertet, weil ein stiller Zug der Vorschau die ganze
+   Zugliste des Angreifers öffnet; ein stiller Zug, nach dem eine Antwort
+   gar kein Schach lässt, wird nicht probiert). Fehlschläge und Schnitte
+   tragen das Budget, mit dem sie probiert wurden (`chaseQuiet`), ein
+   Pfad mit mehr Budget jagt den Knoten erneut; Holds sind budgetfrei,
+   ihre Struktur steht im Graphen. Die Jagd ist damit die Vorschau der
+   Politik für einen stillen Zug: Qb1 an der Wurzel ist jetzt ein
+   Jagdkandidat. Gelöst hat es nichts, geschadet auch nichts.
+3. **Verworfen: stille Züge an jedem Knoten der Kette** (erst mit Budget
+   1 je Pfad, dann mit "ein stiller Zug nach jedem Schach"): die Jagd
+   wird zur Vollbreitensuche, KQ-KRRPP schnitt bei Deckel 16 nach 416
+   Tsd. Jagdknoten mit 1,9 Mio. neuen Stellungen, ohne Deckel 32 zu
+   erreichen. Ebenfalls verworfen: ein Politik-Term +800 für
+   Bauernvorstöße (der Bauernlauf nach Qb1): die Welle endete trotzdem
+   nicht (8,3 Mio. Stellungen, die Dame auf 7.762 Platzierungen), und
+   die Pattfallen KQ-KP löste er auch nicht per Zertifikat (die bleiben
+   Sache des Abstiegs: 4,0 und 5,9 Mio. Stellungen). Keine Zahl, kein
+   Term.
+
+**Messung** (Zertifikat-Bauer allein, `P`, Jagdknoten in Go und Rust
+identisch; Zeiten mit fremder Engine nebenher, nur Größenordnung):
+
+| Stellung | Frage | vorher | jetzt |
+|---|---|---|---|
+| KQ-KRR Dauerschach (Vier-Steiner als Orakel) | Schwarz gewinnt | Zertifikat 78.280 (Deckel 64), 3.266.718 Jagdknoten, 1.453.445 Stellungen | Zertifikat 37.789 (Deckel 32), 1.662.905 Jagdknoten, 1.312.429 Stellungen, Go 45 s / Rust 17 s |
+| KQP-KRRP vier Remis (Syzygy) | Schwarz gewinnt | Zertifikat 3.467, 123.800 Jagdknoten | Zertifikat 932 (Deckel 16), 104.879 Jagdknoten, 149.166 Stellungen |
+| KP-K Randbauer, KBP-K falscher Läufer (ohne Tabellen) | Weiß gewinnt | 1.410 / 54.262 sicher, 757 / 33.118 Jagdknoten | 1.423 / 53.048 sicher, 0 Jagdknoten (= ohne Jagd) |
+| KQ-KRRPP ein Remis, KQP-KRRP zwei Remis | Schwarz gewinnt | offen | offen: die Jagd vom Frageknoten scheitert sauber (163 Tsd. / 32 Tsd. Jagdknoten), die Welle endet nicht |
+
+**Lehre.** Die Jagd ist das Werkzeug für Schachketten, und sie ist damit
+fertig: freie Ausweichzüge und der stille Zug am Start sind ihr Rand.
+Die beiden offenen Stellungen brauchen etwas anderes, einen
+Zertifikat-Bauer, der eine Welle mit vierzig Angreifer-Antworten je
+stillem Zug beherrscht: eine begrenzte Welle mit Fixpunkt dazwischen
+und eine Politik, die Drohung und Bauernlauf kennt (die Remisseite aus
+dem M4-Entwurf), beides mit Zahlen zu belegen. Ob ihr Zertifikat in 16
+Mi Stellungen passt, ist offen; Stockfishs `cp 0` ist eine Bewertung,
+kein Beweis.
+
 **Nächste Hebel**, nach erwartetem Nutzen:
 
-1. Gemischte Remis (stiller Zug plus Schachketten): die Politik nach der
-   Jagd-Vorschau wählen lassen, die Welle begrenzen, bevor sie den Raum
-   aufzieht; Maßstab die zwei offenen Sieben-Steiner.
+1. Gemischte Remis als Zertifikat-Problem: die Welle begrenzen (Budget
+   je Runde, Fixpunkt dazwischen, Erweiterung nur am Leck), Politik mit
+   Drohung und Bauernlauf; Maßstab die zwei offenen Sieben-Steiner und
+   die KQ-KP-Pattfallen (heute nur per Abstieg).
 2. Speicher je Knoten (Ziel 150 Byte, siehe oben).
 3. Beide Fragen in einem Graphen (die Gewinne der einen Frage sind die
    Verluste der anderen).

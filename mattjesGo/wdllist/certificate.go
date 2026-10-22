@@ -187,7 +187,8 @@ func (s *searcher) expandPartial(i uint32, k int) bool {
 		s.aborted = true
 		return false
 	}
-	if s.chaseNodes && g.chaseable(i) {
+	b := g.board(i)
+	if s.chaseNodes && g.chaseable(i) && g.defenderHasPiece(&b) {
 		switch s.chaseTop(i, ChaseNodeBudget) {
 		case chaseHold:
 			return true
@@ -200,7 +201,6 @@ func (s *searcher) expandPartial(i uint32, k int) bool {
 			return true
 		}
 	}
-	b := g.board(i)
 	var buf chess.MoveBuffer
 	n := b.GenMoves(&buf)
 	if g.flags[i]&flExpanded == 0 {
@@ -332,7 +332,7 @@ func (s *searcher) runCert(q *bitboard.Board, extra int) Result {
 		// found as a chain, and after a rejected hold the chain is repaired
 		// from the top (the leak is far below the check that was wrong,
 		// the widening at the leak would never reach it)
-		if !opt.NoChase && g.status[n] == stUnknown && g.chaseable(n) {
+		if !opt.NoChase && g.status[n] == stUnknown && g.chaseable(n) && g.defenderHasPiece(q) {
 			res := s.chaseTop(n, 0)
 			s.report(fmt.Sprintf("cert chase from the question node: %s, %d chains, %d chase nodes, %d positions, %s", res, s.chases, g.chaseVisits, len(g.recs), fmtDur(time.Since(s.start))))
 			if s.aborted {

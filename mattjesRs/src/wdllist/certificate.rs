@@ -170,7 +170,8 @@ impl<'a> Searcher<'a> {
             self.aborted = true;
             return false;
         }
-        if self.chase_nodes && self.g.chaseable(i) {
+        let b = self.g.board(i);
+        if self.chase_nodes && self.g.chaseable(i) && self.g.defender_has_piece(&b) {
             match self.chase_top(i, CHASE_NODE_BUDGET) {
                 ChaseResult::Hold => return true,
                 ChaseResult::Cut if self.aborted => return false,
@@ -180,7 +181,6 @@ impl<'a> Searcher<'a> {
                 return true;
             }
         }
-        let b = self.g.board(i);
         let mut buf = new_buffer();
         let n = b.gen_moves(&mut buf);
         if self.g.flags[i as usize] & FL_EXPANDED == 0 {
@@ -352,7 +352,7 @@ impl<'a> Searcher<'a> {
             // found as a chain, and after a rejected hold the chain is
             // repaired from the top (the leak is far below the check that
             // was wrong, the widening at the leak would never reach it)
-            if !no_chase && s.g.status[n as usize] == ST_UNKNOWN && s.g.chaseable(n) {
+            if !no_chase && s.g.status[n as usize] == ST_UNKNOWN && s.g.chaseable(n) && s.g.defender_has_piece(q) {
                 let res = s.chase_top(n, 0);
                 let line = format!("cert chase from the question node: {}, {} chains, {} chase nodes, {} positions, {}", res, s.chases, s.g.chase_visits, s.g.recs.len(), fmt_dur(s.start.elapsed()));
                 s.report(&line);

@@ -57,6 +57,27 @@ import (
 // alternatives (the chains never closed), and the proof-number descent
 // restricted to chasing moves on the same graph (fast on the seven-piece
 // position, thrashing at four million visits on KQ-KRR).
+//
+// A mixed perpetual needs quiet moves in the chain: in KQ-KRRPP
+// (3k4/p3p3/8/8/8/8/5rr1/K6Q w) the only draw is Qh8+, and after Kd7 no
+// chain of checks holds; the Stockfish lines are runs of checks with a
+// quiet queen move between them (Qd7, Qd4: a pin or a threat that keeps
+// the next check), and the rooks check the white king in between, which
+// has to step aside. So the defender's moves fall into three kinds. An
+// escape from check is free (forced, few, no tempo of the defender's
+// own). A quiet move (neither a check nor a capture into the tables nor
+// a move into a holding node) spends one of the ChaseQuietMoves of the
+// path (ChaseQuietTopOnly: at the node the chase starts from only); it
+// is tried after every chasing move of the node has failed, the best
+// ChaseQuietWidth by the same look-ahead, and a quiet move after which
+// some reply leaves no check at all is not tried (two quiet moves in a
+// row are no chase). Quiet moves at every node of the chain were
+// measured first and made the chase a full-width search (KQ-KRRPP: cap
+// 16 cut at 416 thousand chase nodes and 1.9 million positions). A hold
+// is a hold whatever the budget it was found with (its structure is in
+// the graph), but a failure or a cut is memoized with the budget it was
+// tried with (chaseQuiet) and chased again when a path arrives with
+// more.
 
 const (
 	chUnknown  uint8 = iota // not chased yet, cut by a budget, or a conditional hold whose ancestor failed: chase again
@@ -83,6 +104,22 @@ const ChaseFirstDepth = 16
 // the widening, which chase the node again when they reach it.
 const ChaseNodeBudget = 1 << 12
 
+// ChaseQuietMoves is the number of quiet moves the defender may spend on
+// one path of a chase (a mixed perpetual: checks, a quiet move, checks).
+const ChaseQuietMoves = 1
+
+// ChaseQuietTopOnly restricts the quiet moves to the node a chase starts
+// from: the chase is then the policy's look-ahead for a quiet move (its
+// chains below are pure), and the next quiet move of a mixed perpetual
+// is found by the chase of the widening round at the node where the
+// chains ended. Measured against quiet moves anywhere on the path.
+const ChaseQuietTopOnly = true
+
+// ChaseQuietWidth is the number of quiet moves tried per defender node
+// (the best by the look-ahead): a quiet move opens the attacker's whole
+// move list, so the alternatives are kept few.
+const ChaseQuietWidth = 3
+
 type chaseResult uint8
 
 const (
@@ -95,6 +132,19 @@ const (
 const noLow = ChaseMaxDepth + 1
 
 func (r chaseResult) String() string { return [...]string{"fail", "hold", "cut"}[r] }
+
+// defenderHasPiece: the defender has a queen, rook, bishop or knight on
+// the board, so it can give check and the chase makes sense; a lone king
+// (or king and pawns) never chases, and its escapes from check would
+// let the chase follow the attacker's checks to the cap at every policy
+// node (seen on KBP-K with the wrong bishop).
+func (g *Graph) defenderHasPiece(b *bitboard.Board) bool {
+	side := 0
+	if g.attackerWhite {
+		side = 1
+	}
+	return b.Pieces[side][1]|b.Pieces[side][2]|b.Pieces[side][3]|b.Pieces[side][4] != 0
+}
 
 // chaseHeld: the node holds by the chase memo (for good or on the path).
 func (g *Graph) chaseHeld(i uint32) bool {
@@ -121,9 +171,9 @@ func (s *searcher) chaseTop(i uint32, budget uint64) chaseResult {
 	for capN := ChaseFirstDepth; ; capN *= 2 {
 		s.chaseCap = min(capN, ChaseMaxDepth)
 		before, nodesBefore := len(s.g.recs), s.g.chaseVisits
-		res, _ := s.chase(i, 0)
+		res, _ := s.chase(i, 0, ChaseQuietMoves)
 		if s.g.chaseVisits-nodesBefore >= 1<<14 {
-			s.report(fmt.Sprintf("chase from node %d, cap %d: %s, %d nodes, %d new positions, %d fails, %d cuts, %d holds (%d conditional) so far, %s", i, s.chaseCap, res, s.g.chaseVisits-nodesBefore, len(s.g.recs)-before, s.chaseFails, s.chaseCuts, s.chaseHolds, s.chaseCond, fmtDur(time.Since(s.start))))
+			s.report(fmt.Sprintf("chase from node %d, cap %d: %s, %d nodes, %d new positions, %d fails, %d cuts, %d holds (%d conditional), %d quiet moves so far, %s", i, s.chaseCap, res, s.g.chaseVisits-nodesBefore, len(s.g.recs)-before, s.chaseFails, s.chaseCuts, s.chaseHolds, s.chaseCond, s.quietMoves, fmtDur(time.Since(s.start))))
 		}
 		if res != chaseCut || s.aborted || s.chaseCap == ChaseMaxDepth || s.chaseLimit != 0 && s.g.chaseVisits >= s.chaseLimit {
 			return res
@@ -132,10 +182,11 @@ func (s *searcher) chaseTop(i uint32, budget uint64) chaseResult {
 }
 
 // chase follows the check chain below node i: a defender node needs one
-// move whose chain closes, an attacker node needs every reply to close.
-// Returns the result and, for a hold, its low link (the depth of the
-// highest ancestor its repetitions reach; noLow if none).
-func (s *searcher) chase(i uint32, depth int) (chaseResult, int) {
+// move whose chain closes, an attacker node needs every reply to close;
+// quiet is the number of quiet moves the defender may still spend on
+// this path. Returns the result and, for a hold, its low link (the depth
+// of the highest ancestor its repetitions reach; noLow if none).
+func (s *searcher) chase(i uint32, depth int, quiet int) (chaseResult, int) {
 	g := s.g
 	if g.defenderHolds(i) {
 		return chaseHold, noLow
@@ -155,9 +206,11 @@ func (s *searcher) chase(i uint32, depth int) (chaseResult, int) {
 	case chHoldCond:
 		return chaseHold, int(g.chaseDepth[i])
 	case chFail:
-		return chaseFail, noLow
+		if int(g.chaseQuiet[i]) >= quiet {
+			return chaseFail, noLow
+		}
 	case chCut:
-		if s.chaseCap-depth <= int(g.chaseDepth[i]) {
+		if s.chaseCap-depth <= int(g.chaseDepth[i]) && int(g.chaseQuiet[i]) >= quiet {
 			return chaseCut, noLow
 		}
 	}
@@ -166,7 +219,7 @@ func (s *searcher) chase(i uint32, depth int) (chaseResult, int) {
 	}
 	g.chaseVisits++
 	if g.chaseVisits&(1<<20-1) == 0 {
-		s.report(fmt.Sprintf("chase: %d nodes, %d positions, %d fails, %d cuts, %d holds (%d conditional), depth %d, %s", g.chaseVisits, len(g.recs), s.chaseFails, s.chaseCuts, s.chaseHolds, s.chaseCond, depth, fmtDur(time.Since(s.start))))
+		s.report(fmt.Sprintf("chase: %d nodes, %d positions, %d fails, %d cuts, %d holds (%d conditional), %d quiet moves, depth %d, %s", g.chaseVisits, len(g.recs), s.chaseFails, s.chaseCuts, s.chaseHolds, s.chaseCond, s.quietMoves, depth, fmtDur(time.Since(s.start))))
 	}
 	g.flags[i] |= flOnPath
 	g.chaseDepth[i] = uint16(depth)
@@ -174,9 +227,9 @@ func (s *searcher) chase(i uint32, depth int) (chaseResult, int) {
 	var res chaseResult
 	var low int
 	if g.attackerAt(i) {
-		res, low = s.chaseAttacker(i, depth)
+		res, low = s.chaseAttacker(i, depth, quiet)
 	} else {
-		res, low = s.chaseDefender(i, depth)
+		res, low = s.chaseDefender(i, depth, quiet)
 	}
 	g.flags[i] &^= flOnPath
 	dependents := s.condLists[depth]
@@ -198,13 +251,13 @@ func (s *searcher) chase(i uint32, depth int) (chaseResult, int) {
 		s.condLists[low] = append(s.condLists[low], dependents...)
 	case res == chaseFail:
 		s.chaseFails++
-		g.chase[i] = chFail
+		g.chase[i], g.chaseQuiet[i] = chFail, uint8(quiet)
 		for _, d := range dependents {
 			g.chase[d] = chUnknown
 		}
 	default:
 		s.chaseCuts++
-		g.chase[i], g.chaseDepth[i] = chCut, uint16(s.chaseCap-depth)
+		g.chase[i], g.chaseDepth[i], g.chaseQuiet[i] = chCut, uint16(s.chaseCap-depth), uint8(quiet)
 		if s.chaseLimit != 0 && g.chaseVisits >= s.chaseLimit {
 			g.chase[i] = chUnknown // cut by the budget, not by the depth: chase again at any depth
 		}
@@ -221,7 +274,7 @@ func (s *searcher) chase(i uint32, depth int) (chaseResult, int) {
 // defender the fewest checks (the escape), new positions before known
 // ones, the known holds last; a chain that fails must fail cheaply, since
 // every check of every node above it is tried in turn.
-func (s *searcher) chaseAttacker(i uint32, depth int) (chaseResult, int) {
+func (s *searcher) chaseAttacker(i uint32, depth int, quiet int) (chaseResult, int) {
 	g := s.g
 	if g.flags[i]&flExpanded == 0 {
 		s.expand(i)
@@ -245,7 +298,7 @@ func (s *searcher) chaseAttacker(i uint32, depth int) (chaseResult, int) {
 	for _, c := range g.children[i] {
 		score := 0
 		switch {
-		case g.AttackerWon(c) || g.chase[c] == chFail:
+		case g.AttackerWon(c) || g.chase[c] == chFail && int(g.chaseQuiet[c]) >= quiet:
 			return chaseFail, noLow
 		case g.defenderHolds(c) || g.chase[c] == chHold:
 			continue // closes for free
@@ -254,7 +307,11 @@ func (s *searcher) chaseAttacker(i uint32, depth int) (chaseResult, int) {
 			continue // closes on an ancestor
 		default:
 			b := g.board(c)
-			score = 2 * checkCount(&b)
+			if b.InCheck() {
+				score = 1000 // a counter-check: the defender escapes, no cheap refutation
+			} else {
+				score = 2 * checkCount(&b)
+			}
 			if g.flags[c]&flExpanded != 0 {
 				score++ // a known position: the defender has been here
 			}
@@ -265,7 +322,7 @@ func (s *searcher) chaseAttacker(i uint32, depth int) (chaseResult, int) {
 	sort.SliceStable(replies[:nr], func(a, b int) bool { return replies[a].score < replies[b].score })
 	res := chaseHold
 	for _, r := range replies[:nr] {
-		rres, rlow := s.chase(r.c, depth+1)
+		rres, rlow := s.chase(r.c, depth+1, quiet)
 		switch rres {
 		case chaseFail:
 			return chaseFail, noLow
@@ -278,14 +335,27 @@ func (s *searcher) chaseAttacker(i uint32, depth int) (chaseResult, int) {
 	return res, low
 }
 
+// chaseCandidate is a defender move of the chase with the quiet budget it
+// passes below (a quiet move spends one, a check or an escape from check
+// none).
+type chaseCandidate struct {
+	m     chess.Move
+	score int
+	below int
+}
+
 // chaseDefender tries the defender's chasing moves in order: moves into
 // positions that hold (decided, chased or on the path) first, then the
-// checks by a two-ply look-ahead (lookAhead) that seeks the closure (a
-// check with a reply that wins for the attacker is refuted and skipped).
-// Every tried move becomes an edge; a node without such a move fails at
-// once and is left untouched (an expanded defender node without children
-// would count as safe in the fixed point).
-func (s *searcher) chaseDefender(i uint32, depth int) (chaseResult, int) {
+// checks (every legal move when the defender is in check) by a two-ply
+// look-ahead (lookAhead) that seeks the closure (a move with a reply that
+// wins for the attacker is refuted and skipped); when they all fail and
+// the defender has given enough checks since its last quiet move, the
+// best ChaseQuietWidth quiet moves by the same look-ahead follow, scored
+// only then (a quiet move opens the attacker's whole move list to the
+// look-ahead). Every tried move becomes an edge; a node without a
+// candidate fails at once and is left untouched (an expanded defender
+// node without children would count as safe in the fixed point).
+func (s *searcher) chaseDefender(i uint32, depth int, quiet int) (chaseResult, int) {
 	g := s.g
 	if g.full() {
 		s.aborted = true
@@ -294,21 +364,20 @@ func (s *searcher) chaseDefender(i uint32, depth int) (chaseResult, int) {
 	b := g.board(i)
 	var buf chess.MoveBuffer
 	n := b.GenMoves(&buf)
-	type candidate struct {
-		m     chess.Move
-		score int
-	}
-	var cands [chess.MaxMoves]candidate
+	hasPiece := g.defenderHasPiece(&b)
+	inCheck := hasPiece && b.InCheck() // escapes are free only for a defender that can chase
+	var cands [chess.MaxMoves]chaseCandidate
 	nc := 0
+	var quietMoves [chess.MaxMoves]chess.Move
+	nq := 0
 	for _, m := range buf[:n] {
 		c := b
 		c.DoMove(m)
 		score := 0
-		known := false
-		if idx, ok := g.Index(&c); ok {
-			known = true
+		idx, known := g.Index(&c)
+		if known {
 			switch {
-			case g.AttackerWon(idx) || g.chase[idx] == chFail:
+			case g.AttackerWon(idx):
 				continue
 			case g.defenderHolds(idx) || g.chase[idx] == chHold:
 				score = 3000
@@ -329,11 +398,15 @@ func (s *searcher) chaseDefender(i uint32, depth int) (chaseResult, int) {
 			}
 		}
 		if score == 0 {
-			if !c.InCheck() {
+			if !inCheck && !c.InCheck() {
+				if hasPiece && quiet > 0 && (!ChaseQuietTopOnly || depth == 0) {
+					quietMoves[nq] = m
+					nq++
+				}
 				continue
 			}
 			var refuted bool
-			score, refuted = s.lookAhead(&c)
+			score, _, refuted = s.lookAhead(&c, quiet)
 			if refuted {
 				continue
 			}
@@ -341,48 +414,87 @@ func (s *searcher) chaseDefender(i uint32, depth int) (chaseResult, int) {
 				score++
 			}
 		}
-		cands[nc] = candidate{m, score}
+		if known && g.chase[idx] == chFail && int(g.chaseQuiet[idx]) >= quiet {
+			continue
+		}
+		cands[nc] = chaseCandidate{m, score, quiet}
 		nc++
 	}
-	if nc == 0 {
-		return chaseFail, noLow
+	sort.SliceStable(cands[:nc], func(a, b int) bool { return cands[a].score > cands[b].score })
+	res, low, cut := s.chaseCandidates(i, &b, cands[:nc], depth)
+	if res == chaseHold || cut || nq == 0 {
+		return res, low
+	}
+	// every chasing move failed: the quiet moves, scored now
+	nc = 0
+	for _, m := range quietMoves[:nq] {
+		c := b
+		c.DoMove(m)
+		if idx, known := g.Index(&c); known && g.chase[idx] == chFail && int(g.chaseQuiet[idx]) >= quiet-1 {
+			continue
+		}
+		score, minChecks, refuted := s.lookAhead(&c, quiet-1)
+		if refuted || minChecks == 0 {
+			continue
+		}
+		cands[nc] = chaseCandidate{m, score, quiet - 1}
+		nc++
 	}
 	sort.SliceStable(cands[:nc], func(a, b int) bool { return cands[a].score > cands[b].score })
-	res := chaseFail
-	for _, cand := range cands[:nc] {
-		if s.aborted {
-			return chaseCut, noLow
-		}
-		c := b
-		c.DoMove(cand.m)
-		ci, ok := s.link(i, &c)
-		if !ok {
-			return chaseCut, noLow
-		}
-		if g.AttackerWon(i) {
-			return chaseFail, noLow
-		}
-		if g.defenderHolds(i) {
-			return chaseHold, noLow
-		}
-		cres, clow := s.chase(ci, depth+1)
-		switch cres {
-		case chaseHold:
-			return chaseHold, clow
-		case chaseCut:
-			res = chaseCut
-		}
+	nc = min(nc, ChaseQuietWidth)
+	s.quietMoves += nc
+	qres, qlow, _ := s.chaseCandidates(i, &b, cands[:nc], depth)
+	if qres == chaseHold {
+		return qres, qlow
+	}
+	if qres == chaseCut {
+		res = chaseCut
 	}
 	return res, noLow
 }
 
-// lookAhead scores a check (c is the position after it, the attacker to
-// move): 1000 when every reply holds already, else 8 times the smallest
-// number of checks the defender has left after a reply, minus 40 per reply
-// into a new position and 20 per reply into a known open one (the chain
-// should close, not roam); refuted when a reply refutes the check (it
-// wins for the attacker by the tables, the graph or the memo).
-func (s *searcher) lookAhead(c *bitboard.Board) (score int, refuted bool) {
+// chaseCandidates links and chases the candidates of defender node i in
+// order: the result, a hold's low link, and whether the run was cut off
+// by the budget or the stop flag (the result is chaseCut then).
+func (s *searcher) chaseCandidates(i uint32, b *bitboard.Board, cands []chaseCandidate, depth int) (res chaseResult, low int, cut bool) {
+	g := s.g
+	res = chaseFail
+	for _, cand := range cands {
+		if s.aborted {
+			return chaseCut, noLow, true
+		}
+		c := *b
+		c.DoMove(cand.m)
+		ci, ok := s.link(i, &c)
+		if !ok {
+			return chaseCut, noLow, true
+		}
+		if g.AttackerWon(i) {
+			return chaseFail, noLow, false
+		}
+		if g.defenderHolds(i) {
+			return chaseHold, noLow, false
+		}
+		cres, clow := s.chase(ci, depth+1, cand.below)
+		switch cres {
+		case chaseHold:
+			return chaseHold, clow, false
+		case chaseCut:
+			res = chaseCut
+		}
+	}
+	return res, noLow, false
+}
+
+// lookAhead scores a defender move (c is the position after it, the
+// attacker to move): 1000 when every reply holds already, else 8 times
+// the smallest number of checks the defender has left after a reply,
+// minus 40 per reply into a new position and 20 per reply into a known
+// open one (the chain should close, not roam); minChecks is that smallest
+// number; refuted when a reply refutes the move (it wins for the attacker
+// by the tables, the graph or the memo of a chase with at least the quiet
+// budget the path has below the move).
+func (s *searcher) lookAhead(c *bitboard.Board, quiet int) (score, minChecks int, refuted bool) {
 	g := s.g
 	var buf chess.MoveBuffer
 	n := c.GenMoves(&buf)
@@ -393,8 +505,8 @@ func (s *searcher) lookAhead(c *bitboard.Board) (score int, refuted bool) {
 		d.DoMove(r)
 		if idx, ok := g.Index(&d); ok {
 			switch {
-			case g.AttackerWon(idx) || g.chase[idx] == chFail:
-				return 0, true
+			case g.AttackerWon(idx) || g.chase[idx] == chFail && int(g.chaseQuiet[idx]) >= quiet:
+				return 0, 0, true
 			case g.defenderHolds(idx) || g.chaseHeld(idx) || g.flags[idx]&flOnPath != 0:
 				continue
 			}
@@ -403,19 +515,22 @@ func (s *searcher) lookAhead(c *bitboard.Board) (score int, refuted bool) {
 			if r.Capture != chess.None || r.Promo != chess.None {
 				switch v, _, _ := g.oracle.Probe(&d); v {
 				case mateab.Loss:
-					return 0, true // the defender to move loses
+					return 0, 0, true // the defender to move loses
 				case mateab.Win, mateab.Draw:
 					continue
 				}
 			}
 			penalty += 40
 		}
+		if d.InCheck() {
+			continue // a counter-check: the defender escapes, the chain goes on
+		}
 		worst = min(worst, checkCount(&d))
 	}
 	if worst == 1000 {
-		return 1000, false
+		return 1000, 1000, false
 	}
-	return 8*worst - penalty, false
+	return 8*worst - penalty, worst, false
 }
 
 // checkCount is the number of checking moves of the side to move.

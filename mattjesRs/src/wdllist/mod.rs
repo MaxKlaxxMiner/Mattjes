@@ -186,9 +186,11 @@ pub struct Graph<'a> {
     /// The chase memo per node (certificate builder only, CH_* in
     /// chase.rs); chase_depth the depth on the path, the depth of the
     /// ancestor a conditional hold relies on, or the depth a cut node had
-    /// left; chase_visits the node count.
+    /// left; chase_quiet the quiet-move budget a failure or cut was tried
+    /// with; chase_visits the node count.
     chase: Vec<u8>,
     chase_depth: Vec<u16>,
+    chase_quiet: Vec<u8>,
     chase_visits: u64,
     /// Receives the certificate's shape line (diagnostics).
     shape: Option<Progress>,
@@ -226,6 +228,7 @@ impl<'a> Graph<'a> {
             unsafe_level: if certificate { Some(Vec::new()) } else { None },
             chase: Vec::new(),
             chase_depth: Vec::new(),
+            chase_quiet: Vec::new(),
             chase_visits: 0,
             shape: None,
         };
@@ -383,6 +386,7 @@ impl<'a> Graph<'a> {
             *configs.entry(h).or_insert(0) += 1;
             self.chase.push(CH_UNKNOWN);
             self.chase_depth.push(0);
+            self.chase_quiet.push(0);
         }
         let (mut pn, mut dn) = (1u32, 1u32);
         if status == ST_LOSS && !attacker {
@@ -941,6 +945,8 @@ pub(crate) struct Searcher<'a> {
     chase_cuts: usize,
     chase_holds: usize,
     chase_cond: usize,
+    /// Quiet moves the chase tried.
+    quiet_moves: usize,
 }
 
 impl<'a> Searcher<'a> {
@@ -969,6 +975,7 @@ impl<'a> Searcher<'a> {
             chase_cuts: 0,
             chase_holds: 0,
             chase_cond: 0,
+            quiet_moves: 0,
         }
     }
 

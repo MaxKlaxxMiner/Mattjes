@@ -176,9 +176,11 @@ type Graph struct {
 	// chase (certificate builder only) is the chase memo per node
 	// (chUnknown/chHold/chHoldCond/chFail/chCut, chase.go), chaseDepth the
 	// depth on the path, the depth of the ancestor a conditional hold relies
-	// on, or the depth a cut node had left; chaseVisits the node count
+	// on, or the depth a cut node had left; chaseQuiet the quiet-move
+	// budget a failure or cut was tried with; chaseVisits the node count
 	chase       []uint8
 	chaseDepth  []uint16
+	chaseQuiet  []uint8
 	chaseVisits uint64
 	// oracle decides positions on sight (tables or dead material)
 	oracle mateab.Oracle
@@ -344,6 +346,7 @@ func (g *Graph) add(b *bitboard.Board) uint32 {
 		g.defenderConfigs[g.defenderConfig(b)]++
 		g.chase = append(g.chase, chUnknown)
 		g.chaseDepth = append(g.chaseDepth, 0)
+		g.chaseQuiet = append(g.chaseQuiet, 0)
 	}
 	pn, dn := uint32(1), uint32(1)
 	switch {
@@ -633,6 +636,7 @@ type searcher struct {
 	chaseLimit                                   uint64 // chase node count at which a budgeted chase is cut (0 = none)
 	chaseNodes                                   bool   // chase at policy nodes too (the defender is the weaker side)
 	chaseFails, chaseCuts, chaseHolds, chaseCond int
+	quietMoves                                   int // quiet moves the chase tried
 }
 
 func (s *searcher) report(line string) {
