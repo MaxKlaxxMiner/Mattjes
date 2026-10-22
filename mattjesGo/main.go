@@ -151,8 +151,11 @@ func experiments() {
 	// wdlpnSolve(testArg(0, ""), 256, testArg(2, "sat"), testArg(1, "mxb"))
 	// --- step 2: explicit graph (docs/m7-wdl-search.md), "test <names> <options>": B brute force (reachable graph), e/E/x/X epsilon, v progress lines ---
 	// options t = four-piece tables as oracle, s = Syzygy WDL on top (syzygyDefaultDir)
-	// option n = Patricia's net in the certificate builder's policy (docs/nnue-patricia.md)
-	wdllistSolve(testArg(0, ""), testArg(1, "x"))
+	// option n = Patricia's net in the certificate builder's policy, i = the descent's numbers from the net (docs/nnue-patricia.md)
+	// wdllistSolve(testArg(0, ""), testArg(1, "x"))
+	// --- rollouts (package rollout, docs/nnue-patricia.md): "test <names> <options> <maxPlies>", options t/s oracle, v lines; every root move played out ---
+	rolloutPositions(testArg(0, ""), testArg(1, "s"), testInt(2, 200))
+	// rolloutLine(testArg(0, "8/8/4k3/8/8/8/RK6/2R2n2 b - - 1 1"), testArg(1, "s"), testInt(2, 200))
 	// syzygyProbe(syzygyDefaultDir, testArg(0, "3k4/p7/8/8/8/8/P4rr1/K6Q w - - 0 1")) // single probes, semicolon separated (seven pieces: no table, Unknown)
 	// --- Patricia's network (package nnue): "test <fenfile>" prints the reference lines of tests/patricia-eval.sh, then the incremental check and the throughput ---
 	// nnueVerify(testArg(0, "tests/nnue-smoke.txt")) // 2026-10-22: 55 positions identical to the reference build (docs/nnue-patricia.md)

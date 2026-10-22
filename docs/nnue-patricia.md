@@ -205,7 +205,49 @@ gewinnt" 116.238 (statt 5.004), einsamer Springer 204.096 (statt
 Information, wie klar die Stellung ist: ein knapper zweiter Zug und ein
 hoffnungsloser bekommen dieselbe Strafe. Ausgebaut.
 
+## Dritter Einsatz: Rollouts, Package `rollout` (2026-10-22)
+
+Stufe 2 der M6-Richtung: eine Stellung ausspielen, bis Gewinn, Verlust
+oder Remis klar ist. `rollout.Play(root, Options{MaxPlies, Oracle})`
+spielt beide Seiten nach dem Netz und endet bei einem Tabellentreffer
+(eigene Tabellen, Syzygy, totes Material), Matt, Patt, Wiederholung
+oder der Längengrenze (Vorgabe 200 Halbzüge); Ergebnis für die Seite am
+Zug der Ausgangsstellung, mit Linie, Abbruchgrund und Zahl der
+Bewertungen. Ein Halbzug: jedes Kind wird bewertet, ein Akkumulator je
+Stellung, die Kinder inkrementell, das Netz nach dem Material gewählt;
+ein Kind, das das Orakel für den Gegner als verloren kennt, wird sofort
+genommen (der Tabellengewinn ist der Zweck), ein für ihn gewonnenes nie,
+ein bekanntes Remis zählt null, Matt in eins wird erkannt. Dazu zwei
+Korrekturen, beide aus dem ersten Lauf:
+
+- **Wiederholungen meiden.** Der gierige Spieler pendelte; mit beiden
+  Seiten gierig endete sogar KQ-K nach 16 Halbzügen als Wiederholung.
+  Ein Kind, das schon auf der Linie liegt, bekommt die Strafe 2^28 und
+  wird nur genommen, wenn nichts anderes bleibt.
+- **Hängende Figuren.** Die statische Bewertung sieht nicht, dass die
+  Dame im Griff des Königs steht (Dc6+ Kxc6 in KQ-K). `hanging` schätzt
+  den besten Schlag des Gegners (geschlagener Stein minus Schläger,
+  wenn auf dem Feld zurückgeschlagen werden kann) und zieht ihn doppelt
+  ab.
+
+**Maßstab:** `rolloutPositions(names, options, maxPlies)` spielt jeden
+Wurzelzug der WDL-Teststellungen aus und vergleicht die geratenen
+Gewinne, Remis und Verluste mit den bekannten Zahlen ("höchstens n von
+m richtig" ist die Überdeckung der Klassen, ohne Tabellen stehen die
+Züge einzeln nicht fest). Go und Rust liefern dieselben Zeilen.
+
+| Orakel | richtig von 567 Wurzelzügen | Bemerkungen |
+|---|---|---|
+| Vier-Steiner und Syzygy | 561 | fast alles Sofort-Treffer; Sieben-Steiner: KRRN-KNP 27/27 nach 3,3 Halbzügen, "ein Remis" 15/15, "vier Remis" 13/17 und "zwei Remis" 8/10 (Remisstellungen für Gewinne gehalten) |
+| nur die Vier-Steiner | 478 | KQQ-KN 39/39, KRR-KN 12/12, einsamer Springer 26/27 und 9/10, KRRN-KNP 20/27, KQ-KBN 6/24 (der Läufer-Springer-Block wird in 200 Halbzügen nicht geknackt) |
+| totes Material allein | 284 | KQQ-KN wird mattgesetzt (37/37), KQ-K, KR-K, KBB-K nicht in 200 Halbzügen: ohne Suche keine Matttechnik, das ist Tabellensache |
+
+Vor den zwei Korrekturen: 241 bzw. 460. Kosten: Rust 156 ms für alle
+567 Rollouts mit den Vier-Steinern, Go 1,9 s.
+
 ## Nächster Schritt
 
-Das Netz als Zugordnung der Rollouts in Stufe 2 der M6-Richtung
-(Varianten ausspielen, bis Gewinn, Verlust oder Remis klar ist).
+Die Rollouts in den UCI-Treiber: je Wurzelzug ein Rollout als Vorhersage,
+geratene Gewinne zuerst in die exakte Suche (MultiPV findet den ersten
+bewiesenen Gewinn früher), und die Linie als Vorgabe für den Abstieg
+(kleine Beweiszahlen entlang der Linie).
