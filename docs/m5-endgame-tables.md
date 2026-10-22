@@ -942,17 +942,42 @@ die Basis):
   nach der Spiegelung alle auf der Diagonale). Die Prüfung muss auf den gespiegelten
   Feldern laufen, nicht auf den rohen.
 
-Stand: 14 Materialien geschrieben und mit je 100.000 Zufallsstellungen geprüft, alle
-stimmen; eine Anfrage mit Schlagauflösung kostet rund 1 µs (Go). Offen: der Lauf über
-die ganze Basis (`syzygyOwnWrite("")` plus `syzygyOwnVerify("")`, Minuten wegen der
-Bauerntabellen mit 11 Mio. Indizes mal 24 Kandidaten), für Fünf- und Sechs-Steiner
-eine Vorauswahl der Kandidaten statt Durchprobieren (360 Kandidaten bei fünf
-Einzelsteinen; Idee: die Wechselrate des Werts beim Verschieben des schnellsten Steins
-auf einer Stichprobe schätzen, nur die besten drei bauen), die Einbindung (UCI legt die
+**Die ganze Basis (2026-10-22):** alle 35 Materialien geschrieben (234 s, alle
+Kandidaten durchprobiert) und mit je 20.000 Zufallsstellungen durch den Prober gegen
+die DTM-Basis geprüft, alle stimmen. Summe der Dateien **1.321.784 Byte gegen
+1.262.704 Byte Syzygy (1,05)**, die Dateiköpfe und Deskriptoren eingerechnet. Die
+großen Bauerntabellen liegen gleichauf oder vorn (KPKP 252.200 gegen 245.328, KRKP
+188.688 gegen 179.408, KNKP 150.048 gegen 148.048, KQKP 61.488 gegen 58.064, KBPK
+84.104 gegen 81.424), die winzigen Dreisteiner kosten durch Kopf und Mindestblöcke das
+Dreifache (KBK 336 gegen 80, das sind 256 Byte), KBBK, KQKR, KQKB, KNNK, KNKN liegen
+unter Syzygy. Eine Anfrage mit Schlagauflösung kostet in Go rund 1 µs.
+
+**Determinismus und ein Tempo-Fund.** Go und Rust sollen byteidentische Dateien
+schreiben, auf jeder Maschine. Dafür darf das Ergebnis nicht von der Worker-Zahl
+abhängen: die Ersetzung läuft in festen Chunks von 65.536 Symbolen (ein Paar über die
+Chunkgrenze bleibt stehen, egal wer den Chunk bearbeitet), die Kandidaten werden
+vollständig sortiert (Zahl, links, rechts). Die erste Fassung zählte die Paare je
+Chunk in eigenen Hash-Tabellen und mischte sie: 40-mal langsamer (KRKN 48 s statt
+1,2 s, in Rust genauso), weil die verschiedenen Paare jedes Chunks fast die des ganzen
+Stroms sind und das Mischen von zwölf Tabellen mit je hunderttausenden Einträgen je
+Durchlauf mehr kostet als das Zählen. Jetzt liest jeder Worker den ganzen Strom und
+zählt nur die Paare, deren linkes Symbol in seinen Anteil fällt: disjunkte Tabellen,
+nichts zu mischen, KRKN 0,85 s, KPKP 0,94 s (`MATTJES_PAIRS_PROFILE=1` druckt die
+drei Phasen). **Rust-Port** `src/pairs/mod.rs` mit `tests_pairs::pairs_measure`:
+die Zeilen beider Testbänke sind bis auf die Zeiten identisch, die Prüfsummen-Spalte
+(FNV über den Container) zeigt byteidentische Container; Rust packt rund 15 %
+schneller, eine zufällige Anfrage kostet 200 bis 250 ns statt 300 bis 340 ns.
+
+Offen: für Fünf- und Sechs-Steiner eine Vorauswahl der Kandidaten statt
+Durchprobieren (360 Kandidaten bei fünf Einzelsteinen; Idee: die Wechselrate des Werts
+beim Verschieben des schnellsten Steins auf einer Stichprobe schätzen, nur die besten
+drei bauen) und ein Packer, der das Wörterbuch an einer Stichprobe baut und den Strom
+danach in einem Durchlauf tokenisiert (Re-Pair über 250 Mio. Symbole braucht sonst
+hunderte Durchläufe über den ganzen Strom); die Einbindung (UCI legt die
 `syzygy.Tables` immer an: `SyzygyPath` falls gesetzt, dazu `AddOwn` auf den
 Cache-Ordner und `SetBase`; der Hintergrund-Job schreibt nach jeder fertigen
-DTM-Tabelle die WDL-Datei), die DTM-Datei danach mit Remis als Don't-care, und der
-Rust-Port.
+DTM-Tabelle die WDL-Datei); die DTM-Datei danach mit Remis als Don't-care; der
+Rust-Port von Schreiber und Leser.
 
 ## Offen
 

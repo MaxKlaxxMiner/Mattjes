@@ -55,6 +55,16 @@ func pairsSyzygy(dir string, names string, opt pairs.Options) {
 	fmt.Printf("total: ours %d, syzygy %d, ratio %.2f\n\n", sumOurs, sumTheirs, float64(sumOurs)/float64(max(sumTheirs, 1)))
 }
 
+// fnv64 is FNV-1a over the bytes: the checksum column that shows Go and Rust
+// write identical containers.
+func fnv64(data []byte) uint64 {
+	h := uint64(0xcbf29ce484222325)
+	for _, b := range data {
+		h = (h ^ uint64(b)) * 0x100000001b3
+	}
+	return h
+}
+
 // pairsMeasure packs every symbol stream dir/<material>.wdl (as egtbWdlSize
 // dumps them: one byte per position, values 0..2) with the pairs packer,
 // checks every position against the stream, times random probes and prints
@@ -76,7 +86,7 @@ func pairsMeasure(dir string, names string, opt pairs.Options, verify bool) {
 	}
 	sort.Strings(files)
 	fmt.Printf("=== pairs: blocks %d bytes, index 2^%d (0 = auto), %d pairs per pass, min count %d, %d symbols, symbol length %d ===\n", opt.BlockBytes, opt.IndexBits, opt.PairsPerPass, opt.MinCount, opt.MaxSymbols, opt.MaxSymbolLen)
-	fmt.Printf("%-6s %11s %9s %9s %6s | %9s %5s %7s %4s %3s %4s | %6s %6s\n", "table", "positions", "packed", "syzygy", "ratio", "tokens", "syms", "blocks", "bits", "idx", "pass", "pack s", "probe")
+	fmt.Printf("%-6s %11s %9s %9s %6s | %9s %5s %7s %4s %3s %4s | %16s | %6s %6s\n", "table", "positions", "packed", "syzygy", "ratio", "tokens", "syms", "blocks", "bits", "idx", "pass", "checksum", "pack s", "probe")
 	var sumPacked, sumSyzygy int64
 	var sumPack time.Duration
 	ok := true
@@ -137,7 +147,10 @@ func pairsMeasure(dir string, names string, opt pairs.Options, verify bool) {
 		if syzygy > 0 {
 			ratio = fmt.Sprintf("%.2f", float64(st.Bytes)/float64(syzygy))
 		}
-		fmt.Printf("%-6s %11d %9d %9d %6s | %9d %5d %7d %4d %3d %4d | %6.2f %4d ns%s\n", name, st.Positions, st.Bytes, syzygy, ratio, st.Tokens, st.Symbols, st.Blocks, st.MaxCodeLen, st.IndexBits, st.Passes, packTime.Seconds(), probe.Nanoseconds(), map[bool]string{true: "", false: " (sink)"}[sink >= 0])
+		if sink < 0 {
+			panic("unreachable")
+		}
+		fmt.Printf("%-6s %11d %9d %9d %6s | %9d %5d %7d %4d %3d %4d | %016x | %6.2f %4d ns\n", name, st.Positions, st.Bytes, syzygy, ratio, st.Tokens, st.Symbols, st.Blocks, st.MaxCodeLen, st.IndexBits, st.Passes, fnv64(packed), packTime.Seconds(), probe.Nanoseconds())
 		sumPacked += int64(st.Bytes)
 		sumSyzygy += syzygy
 		sumPack += packTime

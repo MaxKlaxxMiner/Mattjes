@@ -24,8 +24,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // Options tune the packer; zero values take the defaults.
@@ -144,14 +147,25 @@ func PackStats(values []byte, alphabet int, opt Options) ([]byte, Stats) {
 	for s := range e.symLen {
 		e.symLen[s] = 1
 	}
+	var tCount, tChoose, tReplace time.Duration
 	for len(e.symLen) < opt.MaxSymbols {
+		t0 := time.Now()
 		counts := e.countPairs(opt.Workers)
+		t1 := time.Now()
 		chosen := e.choose(counts, opt)
+		t2 := time.Now()
 		if len(chosen) == 0 {
 			break
 		}
 		e.replace(chosen, opt.Workers)
+		t3 := time.Now()
+		tCount += t1.Sub(t0)
+		tChoose += t2.Sub(t1)
+		tReplace += t3.Sub(t2)
 		e.passes++
+	}
+	if os.Getenv("MATTJES_PAIRS_PROFILE") != "" {
+		fmt.Printf("pairs: %d passes, count %v, choose %v, replace %v\n", e.passes, tCount, tChoose, tReplace)
 	}
 	c := e.code()
 	if opt.BlockBytes > 0 {
@@ -211,37 +225,61 @@ func (c *pairCounts) grow() {
 	}
 }
 
-// countPairs counts every adjacent pair of the stream, in parallel chunks
-// (the pair across a chunk border belongs to the left chunk).
-func (e *encoder) countPairs(workers int) *pairCounts {
+// chunkSyms is the fixed chunk of the replacement pass: the result must not
+// depend on the number of workers (Go and Rust write identical files on any
+// machine), so the chunk borders are fixed and the workers take chunks from
+// a counter.
+const chunkSyms = 1 << 16
+
+// chunks runs fn over the fixed chunks of the stream on the workers.
+func (e *encoder) chunks(workers int, fn func(w, lo, hi int)) {
+	n := len(e.syms)
+	numChunks := (n + chunkSyms - 1) / chunkSyms
+	workers = max(1, min(workers, numChunks))
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for {
+				c := int(next.Add(1) - 1)
+				if c >= numChunks {
+					return
+				}
+				fn(w, c*chunkSyms, min(n, (c+1)*chunkSyms))
+			}
+		}(w)
+	}
+	wg.Wait()
+}
+
+// countPairs counts every adjacent pair of the stream. Every worker scans
+// the whole stream and counts the pairs whose left symbol falls into its
+// share, so the tables hold disjoint keys and nothing has to be merged
+// (merging per-chunk tables cost more than the counting: the distinct pairs
+// of every chunk are nearly those of the whole stream).
+func (e *encoder) countPairs(workers int) []*pairCounts {
 	n := len(e.syms)
 	workers = max(1, min(workers, n/(1<<16)+1))
 	tables := make([]*pairCounts, workers)
 	var wg sync.WaitGroup
-	chunk := (n + workers - 1) / workers
 	for w := 0; w < workers; w++ {
-		lo, hi := w*chunk, min(n-1, (w+1)*chunk)
 		wg.Add(1)
-		go func(w, lo, hi int) {
+		go func(w int) {
 			defer wg.Done()
 			t := newPairCounts(12)
 			s := e.syms
-			for i := lo; i < hi; i++ {
-				t.add(uint32(s[i])<<16|uint32(s[i+1]), 1)
+			for i := 0; i+1 < n; i++ {
+				if int(s[i])%workers == w {
+					t.add(uint32(s[i])<<16|uint32(s[i+1]), 1)
+				}
 			}
 			tables[w] = t
-		}(w, lo, hi)
+		}(w)
 	}
 	wg.Wait()
-	total := tables[0]
-	for _, t := range tables[1:] {
-		for i, n := range t.counts {
-			if n != 0 {
-				total.add(t.keys[i], n)
-			}
-		}
-	}
-	return total
+	return tables
 }
 
 type pairChoice struct {
@@ -252,18 +290,20 @@ type pairChoice struct {
 // choose picks the most frequent pairs for one pass: at least MinCount
 // occurrences, within MaxSymbolLen, pairwise disjoint in their symbols so
 // that one replacement cannot touch another's count.
-func (e *encoder) choose(counts *pairCounts, opt Options) []pairChoice {
+func (e *encoder) choose(tables []*pairCounts, opt Options) []pairChoice {
 	var cands []pairChoice
-	for i, n := range counts.counts {
-		if n < uint32(opt.MinCount) {
-			continue
+	for _, counts := range tables {
+		for i, n := range counts.counts {
+			if n < uint32(opt.MinCount) {
+				continue
+			}
+			k := counts.keys[i]
+			l, r := uint16(k>>16), uint16(k)
+			if e.symLen[l]+e.symLen[r] > opt.MaxSymbolLen {
+				continue
+			}
+			cands = append(cands, pairChoice{l, r, n})
 		}
-		k := counts.keys[i]
-		l, r := uint16(k>>16), uint16(k)
-		if e.symLen[l]+e.symLen[r] > opt.MaxSymbolLen {
-			continue
-		}
-		cands = append(cands, pairChoice{l, r, n})
 	}
 	sort.Slice(cands, func(a, b int) bool {
 		if cands[a].count != cands[b].count {
@@ -306,40 +346,28 @@ func (e *encoder) replace(chosen []pairChoice, workers int) {
 		newSym[c.left] = s
 	}
 	n := len(e.syms)
-	workers = max(1, min(workers, n/(1<<16)+1))
-	chunk := (n + workers - 1) / workers
-	ends := make([]int, workers)
-	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
-		lo, hi := w*chunk, min(n, (w+1)*chunk)
-		wg.Add(1)
-		go func(w, lo, hi int) {
-			defer wg.Done()
-			s := e.syms
-			out := lo
-			for i := lo; i < hi; {
-				c := s[i]
-				if r := right[c]; r >= 0 && i+1 < hi && s[i+1] == uint16(r) {
-					s[out] = newSym[c]
-					i += 2
-				} else {
-					s[out] = c
-					i++
-				}
-				out++
+	numChunks := (n + chunkSyms - 1) / chunkSyms
+	ends := make([]int, numChunks)
+	e.chunks(workers, func(_, lo, hi int) {
+		s := e.syms
+		out := lo
+		for i := lo; i < hi; {
+			c := s[i]
+			if r := right[c]; r >= 0 && i+1 < hi && s[i+1] == uint16(r) {
+				s[out] = newSym[c]
+				i += 2
+			} else {
+				s[out] = c
+				i++
 			}
-			ends[w] = out
-		}(w, lo, hi)
-	}
-	wg.Wait()
-	// stitch the compacted chunks together
-	out := ends[0]
-	for w := 1; w < workers; w++ {
-		lo := w * chunk
-		if lo >= n {
-			break
+			out++
 		}
-		out += copy(e.syms[out:], e.syms[lo:ends[w]])
+		ends[lo/chunkSyms] = out
+	})
+	// stitch the compacted chunks together
+	out := 0
+	for c := 0; c < numChunks; c++ {
+		out += copy(e.syms[out:], e.syms[c*chunkSyms:ends[c]])
 	}
 	e.syms = e.syms[:out]
 }
@@ -506,8 +534,10 @@ func (c *coded) container(blockBytes int, idxBits int) ([]byte, Stats) {
 	binary.LittleEndian.PutUint32(out[16:], uint32(c.symbols))
 	binary.LittleEndian.PutUint32(out[20:], uint32(numBlocks))
 	out[24] = byte(c.minLen)
-	for l := c.minLen; l <= c.maxLen; l++ {
-		out = binary.LittleEndian.AppendUint16(out, uint16(c.count[l]))
+	if c.maxLen > 0 {
+		for l := c.minLen; l <= c.maxLen; l++ {
+			out = binary.LittleEndian.AppendUint16(out, uint16(c.count[l]))
+		}
 	}
 	out = append(out, c.table...)
 	out = append(out, index...)
@@ -695,9 +725,11 @@ func Open(data []byte) (*Table, error) {
 	}
 	t.bytes = need
 	var count [MaxCodeLen + 2]int
-	for l := t.minLen; l <= maxLen; l++ {
-		count[l] = int(binary.LittleEndian.Uint16(data[pos:]))
-		pos += 2
+	if maxLen > 0 {
+		for l := t.minLen; l <= maxLen; l++ {
+			count[l] = int(binary.LittleEndian.Uint16(data[pos:]))
+			pos += 2
+		}
 	}
 	t.table = data[pos : pos+3*numSyms]
 	pos += 3 * numSyms
