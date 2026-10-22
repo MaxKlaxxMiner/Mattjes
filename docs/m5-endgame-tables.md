@@ -1018,8 +1018,37 @@ mit 3 %-Stichprobe: identische Größen). Prüfung an der Basis gegen das Durchp
 
 Die Abweichungen sitzen in den kleinen Tabellen (KRBK 4.791 statt 4.077, KQKB 7.807
 statt 6.933), bei den großen trifft die Stichprobe (KPKP 252.837 statt 252.137, KRKN
-104.727 statt 102.197). Für Fünf-Steiner (118 Mio. Stellungen je Strom bei KQKBN)
-sind 2 Mi Stichprobe 1,7 %, bei 360 Kandidaten je Seite.
+104.727 statt 102.197).
+
+**Der erste Fünf-Steiner, KQKBN (2026-10-22, Testbank `syzygyBuild("KQKBN")`, die
+Tabelle exakt im RAM erzeugt, 63 s):** 150 Mio. legale Stellungen, 40 % durch einen
+Schlag entschieden, zwei Ströme zu 114,7 Mio. Stellungen, 360 Kandidaten je Seite mit
+2-Mi-Stichprobe (1,7 %), drei Finalisten ganz gebaut: **1.188.612 Byte gegen 1.054.544
+Byte Syzygy (1,13) in 240 s**. Reihenfolgen kNqKB/2 (Weiß am Zug: 860 KB, 4.094
+Symbole, Codes bis 20 Bit) und qBkKN/2 (Schwarz am Zug: 328 KB). Der Abstand zu den
+Vier-Steinern (1,05) kommt aus der Stichprobe und aus dem Packer an 115 Mio. Symbolen
+(4.095 Symbole reichen für den Strom nicht mehr aus, tbgen hat dieselbe Grenze).
+
+**Einbindung (2026-10-22):** die UCI legt die `syzygy.Tables` immer an (`attachWdl`,
+sobald die Basis geladen ist und bei jeder Änderung von `SyzygyPath` oder
+`EgtbPath`): die Syzygy-Dateien, falls ein Pfad gesetzt ist, dazu `AddOwn` auf
+`mattjes-egtb-cache/wdl/` für alle Materialien ohne Original, die Basis als
+Rückfrage für Schläge in Materialien ohne Datei; Zeile `info string wdl: N own
+tables in ...`. Der Hintergrund-Job schreibt mit `EgtbWriteCache` nach jeder fertig
+gerechneten Tabelle (Abhängigkeiten und Ziel, aus den exakten Werten, bevor
+`SaveTable` sie quantisiert) die WDL-Datei (`writeWdl`, nur wenn sie fehlt; Zeile
+`info string egtb: WDL written to ... (bytes, candidate orders, time)`), und
+`finishJob` registriert die neuen Dateien (`AddOwn`). Rust gleich (`attach_wdl`,
+`write_wdl_file`, der Wurzel-Probe der Tabellenstufe bekommt die Basis über
+`probe_wdl_with`). Treiber `tests/uci-gen-wdl.sh <binary> "<fen>"` (Erzeugung mit
+WDL-Schreiben von einer Fünf-Steiner-Stellung, druckt alle `info string` bis
+`ready`). Durchlauf mit KQ-KBN (`8/8/8/8/3k4/8/8/K1Q2bn1 w`, `go infinite`, fünf
+Worker neben der Suche): Go erzeugt KBNKQ in 71 s, schreibt die WDL-Datei nach
+4 min 27 s (1.188.612 Byte, 360 Kandidaten), dann die quantisierte DTM, meldet
+`wdl: 1 own tables added` und antwortet Matt in 11 mit Variante; Rust 55 s und
+205 s, die WDL-Datei **byteidentisch** mit der von Go. Falle beim Testen: eine
+Stellung, die die WDL-Suche selbst entscheidet (KRR-KN: alle zwölf Züge verlieren in
+1,2 s), pausiert den Job wie entworfen, der Treiber wartet dann vergebens.
 
 Offen: ein Packer, der das Wörterbuch an einer Stichprobe baut und den Strom danach in
 einem Durchlauf tokenisiert (siehe unten), und

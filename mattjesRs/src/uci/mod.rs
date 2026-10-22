@@ -74,7 +74,8 @@ pub struct Engine<W: Write + Send + 'static> {
     generate5: bool,   // EgtbGenerate5: build missing five-piece tables during go infinite
     generate6: bool,   // EgtbGenerate6: the same for six pieces
     cache_dir: PathBuf, // EgtbPath
-    syzygy: Option<Arc<crate::syzygy::Tables>>, // SyzygyPath: WDL tables for the search oracle, shared with the search thread
+    syzygy: Option<Arc<crate::syzygy::Tables>>, // the WDL tables of the search oracle (SyzygyPath plus our own files), shared with the search thread
+    syzygy_path: String,
     algo: String,      // Search: the algorithm for positions the tables do not settle
     hash_mb: usize,    // Hash: the transposition table of the search
     mobility: String,  // MatePnMobility: on (leaves start with their move count), off (1/1), lazy (move count when entered)
@@ -143,6 +144,7 @@ pub fn run<R: Read + Send + 'static, W: Write + Send + 'static>(input: R, out: W
         rollouts: true,
         cache_dir: egtb::default_cache_dir(),
         syzygy: None,
+        syzygy_path: String::new(),
         algo: DEFAULT_ALGO.to_string(),
         hash_mb: DEFAULT_HASH_MB,
         mobility: DEFAULT_MOBILITY.to_string(),
@@ -388,21 +390,14 @@ impl<W: Write + Send + 'static> Engine<W> {
             self.cache_dir = PathBuf::from(&value);
             if let Some(set) = self.set.as_mut() {
                 set.cache_dir = self.cache_dir.clone();
+                self.attach_wdl();
             }
         } else if name.eq_ignore_ascii_case("SyzygyPath") {
             // the WDL tables become part of the search oracle (Syzygy answers
             // win, draw or loss without a distance, the fifty-move rule is
             // ignored); the files are mapped on first use
-            self.syzygy = None;
-            if !value.is_empty() && value != "<empty>" {
-                match crate::syzygy::Tables::open(std::path::Path::new(&value)) {
-                    Ok(tb) => {
-                        self.send(&format!("info string syzygy: {} WDL tables in {}, up to {} pieces", tb.count(), value, tb.largest()));
-                        self.syzygy = Some(Arc::new(tb));
-                    }
-                    Err(e) => self.send(&format!("info string syzygy: {}", e)),
-                }
-            }
+            self.syzygy_path = value;
+            self.attach_wdl();
         } else {
             self.send(&format!("info string unknown option {} or bad value {:?}", name, value));
         }
@@ -423,6 +418,34 @@ impl<W: Write + Send + 'static> Engine<W> {
             let _ = o.flush();
         });
         self.set = Some(set);
+        self.attach_wdl();
+    }
+
+    /// Builds the WDL tables of the search oracle: the Syzygy files of
+    /// SyzygyPath, when set, and our own files in the cache folder for every
+    /// other material (the originals win); the base answers captures into
+    /// materials without a file (probe_wdl_with). Called once the base is
+    /// loaded and whenever SyzygyPath or the cache folder changes, and after
+    /// a job wrote new files.
+    fn attach_wdl(&mut self) {
+        let Some(set) = self.set.as_ref() else { return }; // before the base is loaded: ensure_tables calls again
+        let mut tb = None;
+        if !self.syzygy_path.is_empty() && self.syzygy_path != "<empty>" {
+            match crate::syzygy::Tables::open(std::path::Path::new(&self.syzygy_path)) {
+                Ok(t) => {
+                    self.send(&format!("info string syzygy: {} WDL tables in {}, up to {} pieces", t.count(), self.syzygy_path, t.largest()));
+                    tb = Some(t);
+                }
+                Err(e) => self.send(&format!("info string syzygy: {}", e)),
+            }
+        }
+        let mut tb = tb.unwrap_or_else(crate::syzygy::Tables::new);
+        if let Ok(n) = tb.add_own(&set.wdl_path()) {
+            if n > 0 {
+                self.send(&format!("info string wdl: {} own tables in {}", n, set.wdl_path().display()));
+            }
+        }
+        self.syzygy = Some(Arc::new(tb));
     }
 
     /// Writes every table that lives in RAM only (generated while
@@ -529,7 +552,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                 // search has nothing left to do for such a move, the mate
                 // searches skip a known draw or loss and still search a
                 // known win for its distance
-                if let Some(v) = self.syzygy.as_ref().and_then(|t| t.probe_wdl(&child)) {
+                if let Some(v) = self.syzygy.as_ref().and_then(|t| t.probe_wdl_with(&child, self.set.as_ref())) {
                     r.wdl = if v >= crate::syzygy::CURSED_WIN {
                         Verdict::Loss
                     } else if v <= crate::syzygy::BLESSED_LOSS {
@@ -731,6 +754,9 @@ impl<W: Write + Send + 'static> Engine<W> {
                         say(&e.to_string());
                     }
                 }
+                if write {
+                    write_wdl_file(set, gi, workers, &say); // from the exact values, before anything quantises them
+                }
                 if gi == ti || !write {
                     return;
                 }
@@ -779,6 +805,7 @@ impl<W: Write + Send + 'static> Engine<W> {
         self.restart = false;
         let name = j.mat.name();
         self.set.as_mut().expect("tables are loaded before a job runs").adopt(set);
+        self.attach_wdl(); // the files the job wrote
         match egtb::peak_memory() {
             Some((committed, working)) => self.send(&format!("info string egtb: {} ready, peak memory {} committed / {} working set", name, egtb::format_bytes(committed), egtb::format_bytes(working))),
             None => self.send(&format!("info string egtb: {} ready", name)),
@@ -1058,6 +1085,22 @@ fn parent_value(cv: Value) -> Value {
 
 /// Joins the words of a console status line with single spaces: the column
 /// alignment of the generator is noise in a GUI's proportional font.
+/// Writes the own WDL table of an exact table to the cache folder when the
+/// file is missing: the candidate orders are judged on samples and the
+/// finalists packed (seconds for the base, minutes for five pieces).
+fn write_wdl_file(set: &Set, gi: usize, workers: usize, say: &dyn Fn(&str)) {
+    let t = &set.tables[gi];
+    let path = set.wdl_file(&t.mat);
+    if path.exists() || !t.is_generated() || !t.is_exact() {
+        return;
+    }
+    let start = Instant::now();
+    match crate::syzygy::write::write_wdl(set, t, &path, crate::pairs::Options { workers, ..Default::default() }, crate::syzygy::write::BuildOptions::default(), workers, None) {
+        Ok(b) => say(&format!("WDL written to {} ({} bytes, {} candidate orders, {:?})", path.display(), b.bytes(), b.candidates, Duration::from_secs(start.elapsed().as_secs()))),
+        Err(e) => say(&format!("WDL: {}", e)),
+    }
+}
+
 fn compact(line: &str) -> String {
     line.split_whitespace().collect::<Vec<_>>().join(" ")
 }

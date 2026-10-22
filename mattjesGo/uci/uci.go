@@ -34,6 +34,7 @@ import (
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mateab"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/pairs"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/syzygy"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/tt"
 )
@@ -283,25 +284,14 @@ func (e *Engine) setOption(words []string) {
 		e.cacheDir = value
 		if e.set != nil {
 			e.set.CacheDir = value
+			e.attachWdl()
 		}
 	case strings.EqualFold(name, "SyzygyPath"):
 		// the WDL tables become part of the search oracle (Syzygy answers
 		// win, draw or loss without a distance, the fifty-move rule is
 		// ignored); the files are mapped on first use
-		if e.syzygy != nil {
-			e.syzygy.Close()
-			e.syzygy = nil
-		}
 		e.syzygyPath = value
-		if value != "" && value != "<empty>" {
-			tb, err := syzygy.Open(value)
-			if err != nil {
-				e.send("info string syzygy: %v", err)
-			} else {
-				e.syzygy = tb
-				e.send("info string syzygy: %d WDL tables in %s, up to %d pieces", tb.Count(), value, tb.Largest())
-			}
-		}
+		e.attachWdl()
 	default:
 		e.send("info string unknown option %s or bad value %q", name, value)
 	}
@@ -318,6 +308,58 @@ func (e *Engine) ensureTables() {
 		e.send("info string %s", compact(line))
 		e.flush()
 	})
+	e.attachWdl()
+}
+
+// attachWdl builds the WDL tables of the search oracle: the Syzygy files of
+// SyzygyPath, when set, and our own files in the cache folder for every
+// other material (the originals win), with the base answering captures into
+// materials without a file. Called once the base is loaded and whenever
+// SyzygyPath or the cache folder changes.
+func (e *Engine) attachWdl() {
+	if e.set == nil {
+		return // before the base is loaded: ensureTables calls again
+	}
+	if e.syzygy != nil {
+		e.syzygy.Close()
+		e.syzygy = nil
+	}
+	var tb *syzygy.Tables
+	if e.syzygyPath != "" && e.syzygyPath != "<empty>" {
+		t, err := syzygy.Open(e.syzygyPath)
+		if err != nil {
+			e.send("info string syzygy: %v", err)
+		} else {
+			tb = t
+			e.send("info string syzygy: %d WDL tables in %s, up to %d pieces", tb.Count(), e.syzygyPath, tb.Largest())
+		}
+	}
+	if tb == nil {
+		tb = syzygy.New()
+	}
+	if n, err := tb.AddOwn(e.set.WdlPath()); err == nil && n > 0 {
+		e.send("info string wdl: %d own tables in %s", n, e.set.WdlPath())
+	}
+	tb.SetBase(e.set)
+	e.syzygy = tb
+	e.flush()
+}
+
+// writeWdl writes the own WDL table of an exact table to the cache folder
+// when the file is missing: the candidate orders are judged on samples and
+// the finalists packed (seconds for the base, minutes for five pieces).
+func writeWdl(set *egtb.Set, t *egtb.Table, workers int, progress func(string)) {
+	path := set.WdlFile(t.Mat)
+	if !fileMissing(path) || t.Values == nil || !t.Exact() {
+		return
+	}
+	start := time.Now()
+	b, err := syzygy.WriteWDL(set, t, path, pairs.Options{Workers: workers}, syzygy.BuildOptions{}, workers, nil)
+	if err != nil {
+		progress("WDL: " + err.Error())
+		return
+	}
+	progress(fmt.Sprintf("WDL written to %s (%d bytes, %d candidate orders, %s)", path, b.Bytes(), b.Candidates, time.Since(start).Round(time.Second)))
 }
 
 // saveTables writes every table that lives in RAM only (generated while
@@ -640,6 +682,9 @@ func (e *Engine) startJobFrom(m egtb.Material, set *egtb.Set) bool {
 					progress(err.Error())
 				}
 			}
+			if write {
+				writeWdl(set, gt, workers, progress) // from the exact values, before anything quantises them
+			}
 			if gt == t || !write {
 				return
 			}
@@ -692,6 +737,11 @@ func (e *Engine) finishJob(set *egtb.Set) {
 	name := e.job.mat.Name()
 	e.job = nil
 	e.set.Adopt(set)
+	if e.syzygy != nil {
+		if n, err := e.syzygy.AddOwn(e.set.WdlPath()); err == nil && n > 0 {
+			e.send("info string wdl: %d own tables added", n)
+		}
+	}
 	if committed, working, ok := egtb.PeakMemory(); ok {
 		e.send("info string egtb: %s ready, peak memory %s committed / %s working set", name, egtb.FormatBytes(committed), egtb.FormatBytes(working))
 	} else {
