@@ -335,7 +335,7 @@ func (e *Engine) startSearch(p goParams) {
 		case "matelist":
 			r = runMatelist(&root, maxPlies, maxPositions, stop, rep)
 		case "fastwdl":
-			r = runWdl(&root, multiPV, rep, known, stop, e.hashMB<<20/(wdlGraphs*wdlBytesPerPosition), oracle)
+			r = runWdl(&root, multiPV, rep, known, stop, e.hashMB<<20/(wdlGraphs*wdlBytesPerPosition), oracle, e.netInit)
 		}
 		r.elapsed = time.Since(rep.start)
 		r.aborted = stop.Load()

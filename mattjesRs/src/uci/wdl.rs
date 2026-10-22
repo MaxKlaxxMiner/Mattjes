@@ -100,7 +100,8 @@ pub const WDL_BUDGET_GROWTH: usize = 4;
 /// decision; the search ends when every move is decided, when the top
 /// multi_pv moves are proven wins (nothing can rank above them), when the
 /// full budget left moves open, or on stop.
-pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &Arc<Reporter<W>>, known: &[RootMove], stop: &Arc<AtomicBool>, max_positions: usize, oracle: Tables<'_>) -> Core {
+#[allow(clippy::too_many_arguments)]
+pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &Arc<Reporter<W>>, known: &[RootMove], stop: &Arc<AtomicBool>, max_positions: usize, oracle: Tables<'_>, net_init: bool) -> Core {
     let mut buf = new_buffer();
     let n = root.gen_moves(&mut buf);
     let mut entries: Vec<WdlEntry> = Vec::with_capacity(n);
@@ -138,7 +139,8 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
         *l = Instant::now();
         rep_progress.text(&format!("wdl: {}", line));
     });
-    let opt = Options { epsilon: 8, max_positions, stop: Some(stop.clone()), progress: Some(progress), progress_every: 1 << 22, oracle: Some(oracle), ..Default::default() };
+    // level 1 of the net initialisation measured best over the wins (docs/nnue-patricia.md)
+    let opt = Options { epsilon: 8, max_positions, stop: Some(stop.clone()), progress: Some(progress), progress_every: 1 << 22, oracle: Some(oracle), net_init: if net_init { 1 } else { 0 }, ..Default::default() };
     // two shared graph pairs for all root moves: 0 "we win after the
     // move" (we attack), 1 "the opponent wins after it"
     let mut solvers = [wdllist::Solver::new(root, true, opt.clone()), wdllist::Solver::new(root, false, opt.clone())];

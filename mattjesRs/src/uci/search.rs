@@ -347,6 +347,7 @@ impl<W: Write + Send + 'static> Engine<W> {
         let table = if algo == "matelist" { None } else { self.search_table(&algo) };
         let max_positions = (self.hash_mb << 20) / MATELIST_BYTES_PER_POSITION;
         let max_positions_wdl = (self.hash_mb << 20) / (super::wdl::WDL_GRAPHS * super::wdl::WDL_BYTES_PER_POSITION);
+        let net_init = self.net_init;
         let set = self.set.take().expect("tables are loaded before searching");
         self.demand = Some(set.demand_handle()); // read by on_demand_tick while the search thread owns the set
         let (out, tx, search_tx) = (self.out.clone(), self.tx.clone(), self.search_tx.clone());
@@ -377,7 +378,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                         (c, Some(SearchTable::Buckets(t)))
                     }
                     ("matelist", table) => (run_matelist(&root, max_plies, max_positions, &stop, &rep), table),
-                    ("fastwdl", table) => (super::wdl::run_wdl(&root, multi_pv, &rep, &known, &stop, max_positions_wdl, oracle), table),
+                    ("fastwdl", table) => (super::wdl::run_wdl(&root, multi_pv, &rep, &known, &stop, max_positions_wdl, oracle, net_init), table),
                     (_, table) => (Core::default(), table),
                 }
             };

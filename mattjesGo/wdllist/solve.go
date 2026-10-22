@@ -34,6 +34,7 @@ import (
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mateab"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/nnue"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/ttstore"
 )
 
@@ -84,6 +85,13 @@ type Options struct {
 	// one accumulator per defender node, incremental per move); the
 	// measured experiment.
 	NetWeight int
+	// NetInit initialises the proof numbers of new nodes in the descent
+	// from Patricia's network (biasNumbers: an attacker the net sees ahead
+	// gets a small proof number and a large disproof number, and the other
+	// way round; one accumulator per expanded node, the children
+	// incremental); the measured experiment. 0 = off, 1 = one doubling per
+	// 150 cp up to three, 2 = one per 100 cp up to five.
+	NetInit int
 	// NoDescent runs the certificate builder alone (no proof-number
 	// descent racing it), for measuring the builder.
 	NoDescent bool
@@ -437,6 +445,24 @@ func (g *Graph) add(b *bitboard.Board) uint32 {
 	return i
 }
 
+// biasNumbers scales the fresh numbers of node i by the network's view
+// (eval in centipawns for the attacker): level 1 = every 150 cp one
+// doubling, at most three; level 2 = every 100 cp, at most five. An
+// attacker the net sees ahead gets a smaller proof number and a larger
+// disproof number (the proof should be cheap, the disproof expensive),
+// one it sees behind the other way round; the mobility stays the base of
+// the number that counts the moves.
+func (g *Graph) biasNumbers(i uint32, eval int, level int) {
+	step, limit := 150, 3
+	if level >= 2 {
+		step, limit = 100, 5
+	}
+	bias := max(-limit, min(limit, eval/step))
+	up, down := uint32(max(0, bias)), uint32(max(0, -bias))
+	g.pn[i] = clip(g.pn[i]<<down, DefaultNumberCap)
+	g.dn[i] = clip(g.dn[i]<<up, DefaultNumberCap)
+}
+
 // leafNumber is the mobility of a fresh leaf as a number: n moves, or on
 // the log scale 1 + log2(n) rounded down (bits.Len).
 func (g *Graph) leafNumber(n int) uint32 {
@@ -733,6 +759,13 @@ func (s *searcher) expand(i uint32) {
 	n := b.GenMoves(&buf)
 	g.flags[i] |= flExpanded
 	g.expansions++
+	var acc *nnue.Accumulator
+	var net *nnue.Net
+	if s.opt.NetInit > 0 && g.pn != nil {
+		net = nnue.Load(nnue.PhaseOf(&b))
+		acc = new(nnue.Accumulator)
+		acc.Refresh(net, &b)
+	}
 	for j := 0; j < n; j++ {
 		c := b
 		c.DoMove(buf[j])
@@ -743,6 +776,16 @@ func (s *searcher) expand(i uint32) {
 		}
 		if isNew {
 			g.add(&c)
+			if acc != nil && g.status[ci] == stUnknown {
+				d := nnue.DeltaOf(&b, buf[j])
+				var child nnue.Accumulator
+				child.Update(net, acc, &d)
+				eval := child.Evaluate(net, c.WhiteMove) // for the side to move in the child
+				if !g.attackerAt(ci) {
+					eval = -eval // the attacker's view
+				}
+				g.biasNumbers(ci, eval, s.opt.NetInit)
+			}
 		}
 		g.addEdge(i, ci)
 	}

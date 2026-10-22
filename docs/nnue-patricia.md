@@ -162,11 +162,42 @@ Zertifikat-Bauer braucht aber den Zug, der die sichere Menge klein hält,
 und das ist eine Struktureigenschaft, keine Bewertung. Die Option bleibt
 mit Vorgabe 0 als Haken drin, der Term kostet nichts, wenn er aus ist.
 
+## Zweiter Einsatz: die Beweiszahlen des Abstiegs (gemessen, Gewinn)
+
+Dort, wo "wer steht besser" die Frage ist, hilft das Netz: neue Knoten
+des Abstiegs bekamen bisher pn = 1 und dn = Mobilität (Angreiferknoten)
+bzw. umgekehrt. `Options.NetInit` (Testbank `i` = Stufe 1, `I` = Stufe
+2; UCI-Option `WdlNetInit`, Vorgabe an, Stufe 1) skaliert sie nach der
+Netzbewertung aus Angreifersicht: Stufe 1 je 150 cp eine Verdopplung,
+höchstens drei; Stufe 2 je 100 cp, höchstens fünf. Sieht das Netz den
+Angreifer vorn, bleibt die Beweiszahl klein und die Widerlegungszahl
+wächst (der Beweis soll billig sein, die Widerlegung teuer), sieht es
+ihn hinten, umgekehrt (`biasNumbers`, df-pn mit heuristischer
+Initialisierung). Ein Akkumulator je expandiertem Knoten, die Kinder
+inkrementell; nur im Abstiegsgraphen. Abstieg allein (`p`), Expansionen,
+Go = Rust auf die Zahl:
+
+| Stellung | ohne Netz | Stufe 1 | Stufe 2 |
+|---|---|---|---|
+| KQ-KN (ohne Tabellen) | 136.751 | 174.267 | 144.724 |
+| KBB-K | 305.441 | 263.451 | 288.296 |
+| KQ-KR | 5.930 | 4.472 | 9.609 |
+| KBN-K | 2.301.901 | 1.787.220 | 1.727.493 |
+| KRR-KN Benchmark, "Weiß gewinnt" (Vier-Steiner-Basis) | 10.272 | 5.004 | 8.237 |
+| KRRN-KN einsamer Springer, Weiß gewinnt (Basis) | 44.520 | 30.809 | 29.313 |
+| KQ-KBN (ohne Tabellen) | offen bei 16 Mi | offen | offen |
+
+Stufe 1 gewinnt überall außer bei KQ-KN (ein Viertel mehr) und ist die
+Vorgabe: KRR-KN halbiert, der einsame Springer ein Drittel weniger,
+KBN-K ein Fünftel. Mit Syzygy sind die Sechs- und Sieben-Steiner-Wurzeln
+Tabellentreffer, dort ändert sich nichts. UCI-Rauchtest KQQ-KN: 3
+Gewinne und 2 Remis wie vorher (79.574 statt 51.311 Stellungen, Go und
+Rust gleich). Kosten: in Rust 1,8 µs je Expansion plus 0,24 µs je Kind,
+im Rauschen; in Go 46 µs plus 8 µs je Kind, dort spürbar.
+
 ## Nächster Schritt
 
-Das Netz dort einsetzen, wo "wer steht besser" die Frage ist: die
-Initialisierung der Beweiszahlen im Abstieg (neue Knoten bekommen heute
-pn = dn = 1; ein Angreifer, den das Netz vorn sieht, bekäme eine kleine
-Beweiszahl, df-pn mit heuristischer Initialisierung), gemessen an den
-offenen Gewinnen KBN-K, KQ-KBN und den Springer-Stellungen; und als
-Zugordnung der Rollouts in Stufe 2 der M6-Richtung.
+Das Netz als Zugordnung der Rollouts in Stufe 2 der M6-Richtung
+(Varianten ausspielen, bis Gewinn, Verlust oder Remis klar ist), und
+eine zweite Initialisierungsform messen: die Netzbewertung nicht nur
+als Faktor auf die Mobilität, sondern als Rang unter den Geschwistern.

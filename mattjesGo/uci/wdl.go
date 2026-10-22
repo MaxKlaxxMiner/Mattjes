@@ -105,7 +105,7 @@ const wdlBudgetGrowth = 4
 // reported after every decision; the search ends when every move is
 // decided, when the top multiPV moves are proven wins (nothing can rank
 // above them), when the full budget left moves open, or on stop.
-func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, stop *atomic.Bool, maxPositions int, oracle mateab.Oracle) searchEnd {
+func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, stop *atomic.Bool, maxPositions int, oracle mateab.Oracle, netInit bool) searchEnd {
 	var buf chess.MoveBuffer
 	n := root.GenMoves(&buf)
 	entries := make([]wdlEntry, n)
@@ -143,6 +143,9 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 		rep.text("wdl: " + line)
 	}
 	opt := wdllist.Options{Epsilon: 8, MaxPositions: maxPositions, Stop: stop, Progress: progress, ProgressEvery: 1 << 22, Oracle: oracle}
+	if netInit {
+		opt.NetInit = 1 // level 1 measured best over the wins (docs/nnue-patricia.md)
+	}
 	// two shared graph pairs for all root moves: 0 "we win after the
 	// move" (we attack), 1 "the opponent wins after it"
 	solvers := [2]*wdllist.Solver{wdllist.NewSolver(root, true, opt), wdllist.NewSolver(root, false, opt)}

@@ -99,6 +99,12 @@ pub struct Options<'a> {
     /// accumulator per defender node, incremental per move); the measured
     /// experiment.
     pub net_weight: i32,
+    /// Initialises the proof numbers of new nodes in the descent from
+    /// Patricia's network (bias_numbers: an attacker the net sees ahead
+    /// gets a small proof number and a large disproof number, and the
+    /// other way round); the measured experiment. 0 = off, 1 = one doubling
+    /// per 150 cp up to three, 2 = one per 100 cp up to five.
+    pub net_init: u8,
     /// Widens the child's threshold (in eighths, as in matepn).
     pub epsilon: u32,
     /// Clips the stored node numbers (0 = DEFAULT_NUMBER_CAP).
@@ -1099,6 +1105,11 @@ impl<'a> Searcher<'a> {
         let n = b.gen_moves(&mut buf);
         g.flags[i as usize] |= FL_EXPANDED;
         g.expansions += 1;
+        let net = if self.opt.net_init > 0 && g.defender_configs.is_none() { Some(crate::nnue::load(crate::nnue::phase_of(&b))) } else { None };
+        let mut acc = crate::nnue::Accumulator::default();
+        if let Some(net) = net {
+            acc.refresh(net, &b);
+        }
         for &m in &buf[..n] {
             let mut c = b;
             c.do_move(m);
@@ -1109,6 +1120,20 @@ impl<'a> Searcher<'a> {
             }
             if is_new {
                 g.add(&c);
+                if let Some(net) = net {
+                    if g.status[ci as usize] == ST_UNKNOWN {
+                        let d = crate::nnue::Delta::of(&b, m);
+                        let mut child = crate::nnue::Accumulator::default();
+                        child.update(net, &acc, &d);
+                        let mut eval = child.evaluate(net, c.white_move); // for the side to move in the child
+                        if !g.attacker_at(ci) {
+                            eval = -eval; // the attacker's view
+                        }
+                        let (pn, dn) = bias_numbers(g.pn[ci as usize], g.dn[ci as usize], eval, self.opt.net_init);
+                        g.pn[ci as usize] = pn;
+                        g.dn[ci as usize] = dn;
+                    }
+                }
             }
             g.add_edge(i, ci);
         }
@@ -1361,6 +1386,19 @@ fn child_numbers_local(g: &Graph<'_>, local: &[(u32, u32, bool); MAX_MOVES], ci:
     } else {
         g.child_numbers(c)
     }
+}
+
+/// Scales the fresh numbers of a node by the network's view (eval in
+/// centipawns for the attacker): level 1 = every 150 cp one doubling, at
+/// most three; level 2 = every 100 cp, at most five. An attacker the net
+/// sees ahead gets a smaller proof number and a larger disproof number,
+/// one it sees behind the other way round; the mobility stays the base of
+/// the number that counts the moves.
+fn bias_numbers(pn: u32, dn: u32, eval: i32, level: u8) -> (u32, u32) {
+    let (step, limit) = if level >= 2 { (100, 5) } else { (150, 3) };
+    let bias = (eval / step).clamp(-limit, limit);
+    let (up, down) = (bias.max(0) as u32, (-bias).max(0) as u32);
+    (clip(pn << down, DEFAULT_NUMBER_CAP), clip(dn << up, DEFAULT_NUMBER_CAP))
 }
 
 fn clip(x: u32, cap_n: u32) -> u32 {

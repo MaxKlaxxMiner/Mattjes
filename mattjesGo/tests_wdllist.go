@@ -49,6 +49,11 @@ func wdllistSolve(names string, options string) {
 	} else if has('N') {
 		opt.NetWeight = 5 // five points per centipawn: 300 cp weigh like a check
 	}
+	if has('i') {
+		opt.NetInit = 1 // the descent's proof numbers initialised by the net: a doubling per 150 cp, at most three
+	} else if has('I') {
+		opt.NetInit = 2 // a doubling per 100 cp, at most five
+	}
 	if has('t') || has('s') {
 		// t = the four-piece tables as oracle: every capture into them is a
 		// terminal, which the draw certificates of five-piece positions need;
@@ -95,6 +100,9 @@ func wdllistSolve(names string, options string) {
 	}
 	if opt.NetWeight > 0 {
 		mode += fmt.Sprintf(", Patricia's net in the policy (weight %d)", opt.NetWeight)
+	}
+	if opt.NetInit > 0 {
+		mode += fmt.Sprintf(", proof numbers initialised by Patricia's net (level %d)", opt.NetInit)
 	}
 	if opt.BruteForce {
 		mode = "brute force (reachable graph)"
