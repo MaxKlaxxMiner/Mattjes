@@ -937,6 +937,23 @@ bleibt vorerst 256 (Go liegt an der Spitze noch darüber); für Rust
 wäre 192 gedeckt. Alle Regressionswerte (Jagdknoten, Zertifikate,
 Besuche) sind in Go und Rust unverändert und identisch.
 
+**Tempo, A/B-Wechsellauf** (zuhause, Maschine frei, alte und neue
+Binary abwechselnd, je zwei bis drei Läufe; die verketteten Listen
+hätten den Fixpunkt bremsen können, sie tun es nicht):
+
+| Lauf | alt | neu |
+|---|---|---|
+| Rust KQ-KRR Zertifikat (`xtP`, 1,66 Mio. Jagdknoten) | 11,8 / 11,5 / 12,0 s | 11,9 / 11,1 / 11,4 s |
+| Rust KQ-KP Abstieg (`xp`, 4,05 Mio. Stellungen) | 10,4 / 8,5 s | 8,6 / 7,8 s |
+| Go KQ-KRR Zertifikat | 31,0 / 31,6 s | 20,1 / 19,4 s |
+| Go KQ-KP Abstieg | 15,1 / 14,9 s | 9,4 / 9,4 s |
+
+Rust: Zertifikat gleich schnell (±2 %), Abstieg rund 10 % schneller
+(kein Key-Array mehr, das mitwächst). Go: ein Drittel schneller in
+beiden, weil Millionen Slice-Köpfe mit Zeigern verschwunden sind, die
+der Garbage Collector bei `SetGCPercent(1)` ständig abgelaufen hat;
+die Arenen sind zeigerfreie Arrays.
+
 **Nächste Hebel**, nach erwartetem Nutzen:
 
 1. Gemischte Remis als Zertifikat-Problem: die Welle begrenzen (Budget
