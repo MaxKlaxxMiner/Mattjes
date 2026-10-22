@@ -3,6 +3,7 @@ package egtb
 import (
 	"fmt"
 	"math/bits"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -118,26 +119,68 @@ func (s *Set) Generate(t *Table, workers int, progress Progress) Stats {
 // work from another goroutine (nil = neither). After an abort the table (and
 // a dependency that was being generated) is left empty and Stats.Aborted set.
 func (s *Set) GenerateControlled(t *Table, workers int, ctrl *Control, progress Progress) Stats {
+	return s.GenerateNotify(t, workers, ctrl, progress, nil)
+}
+
+// TableDone is called by GenerateNotify after every completed table, the
+// dependencies first (each still exact in memory), the requested table last.
+type TableDone func(t *Table, st Stats)
+
+// GenerateNotify is GenerateControlled with a callback per completed table
+// (nil = none): a background job writes the dependencies as soon as they
+// exist, so that an interrupted job does not lose them. Dependencies beyond
+// the base are loaded from their exact file (RawPath) when one exists, and
+// computed otherwise; the quantised cache file cannot serve.
+func (s *Set) GenerateNotify(t *Table, workers int, ctrl *Control, progress Progress, done TableDone) Stats {
+	if progress == nil {
+		progress = func(string) {}
+	}
 	for _, d := range t.Mat.Dependencies() {
 		dt := s.AddMaterial(d) // beyond the base this registers the dependency on the fly
 		// the levels need the exact distances of the children as an array: a
 		// quantised or packed table (loaded earlier, or a cache file beyond
-		// the base, which is always both) is regenerated in memory instead
+		// the base, which is always both) is replaced by its exact file or
+		// regenerated in memory instead
 		if dt.available() && (!dt.Exact() || dt.Values == nil) {
-			if progress != nil {
-				progress(fmt.Sprintf("egtb: dependency %s is quantised (step %d) or packed, generating it exactly", dt.Mat.Name(), dt.Step))
-			}
+			progress(fmt.Sprintf("egtb: dependency %s is quantised (step %d) or packed, it is needed exactly", dt.Mat.Name(), dt.Step))
 			clearTables([]*Table{dt})
 		}
+		if !dt.available() && s.loadRaw(dt, progress) {
+			continue
+		}
 		if !dt.available() {
-			if st := s.GenerateControlled(dt, workers, ctrl, progress); st.Aborted {
+			if st := s.GenerateNotify(dt, workers, ctrl, progress, done); st.Aborted {
 				return st
 			}
 		}
 	}
-	if progress == nil {
-		progress = func(string) {}
+	st := s.generate(t, workers, ctrl, progress)
+	if !st.Aborted && done != nil {
+		done(t, st)
 	}
+	return st
+}
+
+// loadRaw loads the exact file of a table beyond the base, if there is one.
+func (s *Set) loadRaw(t *Table, progress Progress) bool {
+	if t.Mat.Pieces() <= 4 {
+		return false // the base is one file, always exact
+	}
+	path := s.RawPath(t)
+	if _, err := os.Stat(path); err != nil {
+		return false
+	}
+	start := time.Now()
+	if err := s.LoadRawTable(t, path); err != nil {
+		progress("egtb: " + err.Error())
+		return false
+	}
+	progress(fmt.Sprintf("egtb: loaded exact %s (%d MB) in %.1f s", path, t.Size>>20, time.Since(start).Seconds()))
+	return true
+}
+
+// generate computes one table whose dependencies are all exact in memory.
+func (s *Set) generate(t *Table, workers int, ctrl *Control, progress Progress) Stats {
 	start := time.Now()
 	t.Values = make([]Value, t.Size)
 	g := newGenerator(s, t)

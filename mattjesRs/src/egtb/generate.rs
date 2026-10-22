@@ -16,6 +16,12 @@ use crate::chess::{new_buffer, Move, Piece, Pos, WIDTH};
 /// Receives one line per phase.
 pub type Progress<'a> = &'a mut dyn FnMut(&str);
 
+/// Called by `generate_notify` after every completed table (set, table
+/// index, its stats).
+/// The two lifetimes keep the reborrow for the recursion short while the
+/// closure itself may live longer (`&mut (dyn Trait + 'a)` is invariant).
+pub type TableDone<'r, 'c> = &'r mut (dyn FnMut(&Set, usize, &Stats) + 'c);
+
 /// Describes a generated table.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct Stats {
@@ -139,23 +145,69 @@ impl Set {
     /// thread. After an abort the table (and a dependency that was being
     /// generated) is left empty and `Stats.aborted` set.
     pub fn generate_controlled(&mut self, ti: usize, workers: usize, ctrl: Option<&Control>, progress: Progress) -> Stats {
+        self.generate_notify(ti, workers, ctrl, progress, None)
+    }
+
+    /// `generate_controlled` with a callback per completed table (`TableDone`,
+    /// the dependencies first, each still exact in memory, the requested
+    /// table last): a background job writes the dependencies as soon as they
+    /// exist, so that an interrupted job does not lose them. Dependencies
+    /// beyond the base are loaded from their exact file (`raw_path`) when one
+    /// exists, and computed otherwise; the quantised cache file cannot serve.
+    pub fn generate_notify(&mut self, ti: usize, workers: usize, ctrl: Option<&Control>, progress: Progress, mut done: Option<TableDone<'_, '_>>) -> Stats {
         for d in self.tables[ti].mat.dependencies() {
             let di = self.add_material(d); // beyond the base this registers the dependency on the fly
             // the levels need the exact distances of the children as an
             // array: a quantised or packed table (loaded earlier, or a cache
-            // file beyond the base, which is always both) is regenerated in
-            // memory instead
+            // file beyond the base, which is always both) is replaced by its
+            // exact file or regenerated in memory instead
             if self.tables[di].is_available() && (!self.tables[di].is_exact() || !self.tables[di].is_generated()) {
-                progress(&format!("egtb: dependency {} is quantised (step {}) or packed, generating it exactly", self.tables[di].mat.name(), self.tables[di].step()));
+                progress(&format!("egtb: dependency {} is quantised (step {}) or packed, it is needed exactly", self.tables[di].mat.name(), self.tables[di].step()));
                 self.tables[di].clear();
             }
+            if !self.tables[di].is_available() && self.load_raw(di, progress) {
+                continue;
+            }
             if !self.tables[di].is_available() {
-                let st = self.generate_controlled(di, workers, ctrl, progress);
+                let st = self.generate_notify(di, workers, ctrl, progress, done.as_deref_mut());
                 if st.aborted {
                     return st;
                 }
             }
         }
+        let st = self.generate_one(ti, workers, ctrl, progress);
+        if !st.aborted {
+            if let Some(d) = done {
+                d(self, ti, &st);
+            }
+        }
+        st
+    }
+
+    /// Loads the exact file of a table beyond the base, if there is one.
+    fn load_raw(&mut self, ti: usize, progress: Progress) -> bool {
+        if self.tables[ti].mat.pieces() <= 4 {
+            return false; // the base is one file, always exact
+        }
+        let path = self.raw_path(&self.tables[ti]);
+        if !path.exists() {
+            return false;
+        }
+        let start = Instant::now();
+        match self.load_raw_table(ti, &path) {
+            Ok(()) => {
+                progress(&format!("egtb: loaded exact {} ({} MB) in {:.1} s", path.display(), self.tables[ti].size >> 20, start.elapsed().as_secs_f64()));
+                true
+            }
+            Err(e) => {
+                progress(&format!("egtb: {}", e));
+                false
+            }
+        }
+    }
+
+    /// Computes one table whose dependencies are all exact in memory.
+    fn generate_one(&mut self, ti: usize, workers: usize, ctrl: Option<&Control>, progress: Progress) -> Stats {
         let start = Instant::now();
         self.tables[ti].values = (0..self.tables[ti].size).map(|_| std::sync::atomic::AtomicU8::new(0)).collect();
         let set: &Set = self;

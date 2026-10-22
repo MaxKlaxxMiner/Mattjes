@@ -178,9 +178,21 @@ func (s *Set) TablePath(t *Table) string {
 	return filepath.Join(s.CacheDir, fmt.Sprintf("%d-%s.bin", t.Mat.Pieces(), t.Mat.Name()))
 }
 
+// RawSuffix marks the exact twin of a cache file ("5-KBNKQ.bin.raw"): the
+// same container, but step 1. A generation writes it for every dependency it
+// had to compute, so that an interrupted job keeps them and a later
+// generation can load them instead of computing them again (the quantised
+// file cannot serve as a dependency). The user deletes them by hand.
+const RawSuffix = ".raw"
+
+// RawPath is the exact cache file of a material beyond the base.
+func (s *Set) RawPath(t *Table) string { return s.TablePath(t) + RawSuffix }
+
 // ParseFileName reads the material of a cache file name as TablePath writes
-// it ("5-KRRKN.bin"); ok is false for any other name, the base file included.
+// it ("5-KRRKN.bin", or its exact twin "5-KRRKN.bin.raw"); ok is false for
+// any other name, the base file included.
 func ParseFileName(name string) (Material, bool) {
+	name = strings.TrimSuffix(name, RawSuffix)
 	base, found := strings.CutSuffix(name, ".bin")
 	if !found {
 		return Material{}, false
@@ -413,6 +425,41 @@ func (s *Set) SaveTable(t *Table, path string) error {
 		t.Quantize(FileStep)
 	}
 	return writeFile(path, []*Table{t}, sum, t.Step, BlockBytes, IOWorkers)
+}
+
+// SaveRawTable writes one exact table (a material beyond the base) to path
+// unquantised (RawPath): the values stay exact in memory, the file can serve
+// a later generation as a dependency. The table must still be exact.
+func (s *Set) SaveRawTable(t *Table, path string) error {
+	if t.Values == nil {
+		return fmt.Errorf("egtb: table %s not generated", t.Mat.Name())
+	}
+	if !t.Exact() {
+		return fmt.Errorf("egtb: table %s is quantised (step %d), no exact file", t.Mat.Name(), t.Step)
+	}
+	return writeFile(path, []*Table{t}, t.rawChecksum(), 1, BlockBytes, IOWorkers)
+}
+
+// LoadRawTable reads an exact table (RawPath) completely into memory, as a
+// generation needs its dependencies. Checks the step, the size and, when
+// recorded, the checksum.
+func (s *Set) LoadRawTable(t *Table, path string) error {
+	sum, _, err := readFile(path, []*Table{t}, IOWorkers)
+	if err != nil {
+		clearTables([]*Table{t})
+		return err
+	}
+	if !t.Exact() {
+		step := t.Step
+		clearTables([]*Table{t})
+		return fmt.Errorf("egtb: %s is quantised (step %d), expected an exact table", path, step)
+	}
+	t.RawChecksum = sum
+	if want, known := TableChecksums[t.Mat.Name()]; known && sum != want {
+		clearTables([]*Table{t})
+		return fmt.Errorf("egtb: %s has checksum %016x, expected %016x", path, sum, want)
+	}
+	return nil
 }
 
 // LoadTable opens one table (a material beyond the base) from path: it

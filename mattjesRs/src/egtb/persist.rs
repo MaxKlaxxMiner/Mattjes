@@ -46,6 +46,13 @@ pub const BLOCK_BYTES: usize = 16 << 10;
 /// (`generate_controlled` regenerates it in memory instead).
 pub const FILE_STEP: u32 = 8;
 
+/// Marks the exact twin of a cache file ("5-KBNKQ.bin.raw"): the same
+/// container, but step 1. A generation writes it for every dependency it had
+/// to compute, so that an interrupted job keeps them and a later generation
+/// can load them instead of computing them again (the quantised file cannot
+/// serve as a dependency). The user deletes them by hand.
+pub const RAW_SUFFIX: &str = ".raw";
+
 /// Threads used to compress and decompress cache files (independent 4 MB blocks).
 pub const IO_WORKERS: usize = 8;
 
@@ -265,9 +272,19 @@ impl Set {
         self.cache_dir.join(format!("{}-{}.bin", t.mat.pieces(), t.mat.name()))
     }
 
+    /// The exact cache file of a material beyond the base ("5-KBNKQ.bin.raw",
+    /// `RAW_SUFFIX`).
+    pub fn raw_path(&self, t: &Table) -> PathBuf {
+        let mut p = self.table_path(t).into_os_string();
+        p.push(RAW_SUFFIX);
+        PathBuf::from(p)
+    }
+
     /// Reads the material of a cache file name as `table_path` writes it
-    /// ("5-KRRKN.bin"); None for any other name, the base file included.
+    /// ("5-KRRKN.bin", or its exact twin "5-KRRKN.bin.raw"); None for any
+    /// other name, the base file included.
     pub fn parse_file_name(name: &str) -> Option<Material> {
+        let name = name.strip_suffix(RAW_SUFFIX).unwrap_or(name);
         let base = name.strip_suffix(".bin")?;
         let (_, mat_name) = base.split_once('-')?;
         let m = Material::parse(mat_name).ok()?;
@@ -343,6 +360,49 @@ impl Set {
             t.quantize(FILE_STEP);
         }
         write_file(path, &[t], sum, t.step(), BLOCK_BYTES, IO_WORKERS)
+    }
+
+    /// Writes one exact table (a material beyond the base) to path
+    /// unquantised (`raw_path`): the values stay exact in memory, the file
+    /// can serve a later generation as a dependency. The table must still be
+    /// exact.
+    pub fn save_raw_table(&self, ti: usize, path: &Path) -> std::io::Result<()> {
+        let t = &self.tables[ti];
+        if !t.is_generated() {
+            return Err(io_err(format!("egtb: table {} not generated", t.mat.name())));
+        }
+        if !t.is_exact() {
+            return Err(io_err(format!("egtb: table {} is quantised (step {}), no exact file", t.mat.name(), t.step())));
+        }
+        write_file(path, &[t], t.raw_checksum(), 1, BLOCK_BYTES, IO_WORKERS)
+    }
+
+    /// Reads an exact table (`raw_path`) completely into memory, as a
+    /// generation needs its dependencies. Checks the step, the size and, when
+    /// recorded, the checksum.
+    pub fn load_raw_table(&mut self, ti: usize, path: &Path) -> std::io::Result<()> {
+        let result = read_file(path, &mut [&mut self.tables[ti]], IO_WORKERS);
+        let t = &mut self.tables[ti];
+        let sum = match result {
+            Ok(r) => r,
+            Err(e) => {
+                t.clear();
+                return Err(e);
+            }
+        };
+        if !t.is_exact() {
+            let step = t.step();
+            t.clear();
+            return Err(io_err(format!("egtb: {} is quantised (step {}), expected an exact table", path.display(), step)));
+        }
+        t.raw_checksum.store(sum, std::sync::atomic::Ordering::Relaxed);
+        if let Some(want) = recorded_checksum(&t.mat.name()) {
+            if sum != want {
+                t.clear();
+                return Err(io_err(format!("egtb: {} has checksum {:016x}, expected {:016x}", path.display(), sum, want)));
+            }
+        }
+        Ok(())
     }
 
     /// Opens one table (a material beyond the base) from path: it stays

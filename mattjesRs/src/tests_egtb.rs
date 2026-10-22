@@ -263,7 +263,22 @@ pub fn egtb_measure(names: &[&str], workers: usize, verify: bool) {
                 if e.kind() != std::io::ErrorKind::NotFound {
                     progress(&format!("egtb: {}", e));
                 }
-                st = set.generate(ti, workers, &mut progress);
+                // dependencies the generator has to compute are written
+                // exactly at once (raw_path), as the UCI job does; it loads
+                // such files itself
+                let mut done = |set: &egtb::Set, gi: usize, _: &egtb::Stats| {
+                    if gi == ti {
+                        return;
+                    }
+                    let path = set.raw_path(&set.tables[gi]);
+                    if !path.exists() {
+                        match set.save_raw_table(gi, &path) {
+                            Ok(()) => println!("egtb: written exact to {}", path.display()),
+                            Err(e) => println!("egtb: {}", e),
+                        }
+                    }
+                };
+                st = set.generate_notify(ti, workers, None, &mut progress, Some(&mut done));
                 false
             }
         };

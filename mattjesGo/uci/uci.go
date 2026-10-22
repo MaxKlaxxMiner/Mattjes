@@ -579,24 +579,39 @@ func (e *Engine) startJobFrom(m egtb.Material, set *egtb.Set) bool {
 			e.send("info string egtb: %s", compact(line))
 			e.flush()
 		}
-		st := set.GenerateControlled(t, workers, j.ctrl, progress)
+		// every table gets its log line; a dependency the job had to compute
+		// is written exactly (RawPath) right away, so that a job interrupted
+		// before the requested table loses nothing and a later generation
+		// loads it instead of computing it again (the quantised file below
+		// cannot serve as a dependency)
+		done := func(gt *egtb.Table, st egtb.Stats) {
+			if err := egtb.AppendLog(set.CacheDir, set.LogLine(gt, st, workers, "uci")); err != nil {
+				progress(err.Error())
+			}
+			if gt == t || !write {
+				return
+			}
+			if path := set.RawPath(gt); fileMissing(path) {
+				if err := set.SaveRawTable(gt, path); err != nil {
+					progress(err.Error())
+				} else {
+					progress("written exact to " + path)
+				}
+			}
+		}
+		st := set.GenerateNotify(t, workers, j.ctrl, progress, done)
 		if st.Aborted {
 			return
-		}
-		if err := egtb.AppendLog(set.CacheDir, set.LogLine(t, st, workers, "uci")); err != nil {
-			progress(err.Error())
 		}
 		for _, gt := range set.Tables[len(set.Base()):] {
 			if gt.Values == nil {
 				continue
 			}
-			if path := set.TablePath(gt); write {
-				if _, err := os.Stat(path); err != nil {
-					if err := set.SaveTable(gt, path); err != nil {
-						progress(err.Error())
-					} else {
-						progress("written to " + path)
-					}
+			if path := set.TablePath(gt); write && fileMissing(path) {
+				if err := set.SaveTable(gt, path); err != nil {
+					progress(err.Error())
+				} else {
+					progress("written to " + path)
 				}
 			}
 			gt.Fill() // drops the generator's bitset
@@ -604,6 +619,12 @@ func (e *Engine) startJobFrom(m egtb.Material, set *egtb.Set) bool {
 		e.jobDone <- set
 	}()
 	return true
+}
+
+// fileMissing reports whether nothing exists at path.
+func fileMissing(path string) bool {
+	_, err := os.Stat(path)
+	return err != nil
 }
 
 // finishJob takes the generated tables over and, when a search was running
@@ -735,9 +756,14 @@ func (e *Engine) openTable(m egtb.Material) (*egtb.Table, bool) {
 	if t == nil {
 		t = e.set.AddMaterial(m)
 	}
+	// the quantised file first, else the exact twin of an interrupted job
+	// (read block by block like any cache file, only with step 1)
 	path := e.set.TablePath(t)
-	if _, err := os.Stat(path); err != nil {
-		return t, false
+	if fileMissing(path) {
+		path = e.set.RawPath(t)
+		if fileMissing(path) {
+			return t, false
+		}
 	}
 	if err := e.set.LoadTable(t, path); err != nil {
 		e.send("info string %s: %v", path, err)

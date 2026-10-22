@@ -661,12 +661,35 @@ impl<W: Write + Send + 'static> Engine<W> {
                 let _ = writeln!(o, "info string egtb: {}", compact(line));
                 let _ = o.flush();
             };
-            let st = fork.generate_controlled(ti, workers, Some(&ctrl), &mut progress);
+            // every table gets its log line; a dependency the job had to
+            // compute is written exactly (raw_path) right away, so that a job
+            // interrupted before the requested table loses nothing and a
+            // later generation loads it instead of computing it again (the
+            // quantised file below cannot serve as a dependency)
+            let out_done = out.clone();
+            let mut done = move |set: &Set, gi: usize, st: &egtb::Stats| {
+                let say = |line: String| {
+                    let mut o = out_done.lock().unwrap();
+                    let _ = writeln!(o, "info string egtb: {}", line);
+                    let _ = o.flush();
+                };
+                if let Err(e) = egtb::append_log(&set.cache_dir, &set.log_line(gi, st, workers, "uci")) {
+                    say(e.to_string());
+                }
+                if gi == ti || !write {
+                    return;
+                }
+                let path = set.raw_path(&set.tables[gi]);
+                if !path.exists() {
+                    match set.save_raw_table(gi, &path) {
+                        Ok(()) => say(format!("written exact to {}", path.display())),
+                        Err(e) => say(e.to_string()),
+                    }
+                }
+            };
+            let st = fork.generate_notify(ti, workers, Some(&ctrl), &mut progress, Some(&mut done));
             if st.aborted {
                 return;
-            }
-            if let Err(e) = egtb::append_log(&fork.cache_dir, &fork.log_line(ti, &st, workers, "uci")) {
-                progress(&e.to_string());
             }
             for gi in fork.base().len()..fork.tables.len() {
                 if !fork.tables[gi].is_generated() {
@@ -781,9 +804,14 @@ impl<W: Write + Send + 'static> Engine<W> {
             Some(ti) => ti,
             None => set.add_material(m),
         };
-        let path = set.table_path(&set.tables[ti]);
+        // the quantised file first, else the exact twin of an interrupted job
+        // (read block by block like any cache file, only with step 1)
+        let mut path = set.table_path(&set.tables[ti]);
         if !path.exists() {
-            return (ti, false);
+            path = set.raw_path(&set.tables[ti]);
+            if !path.exists() {
+                return (ti, false);
+            }
         }
         match set.load_table(ti, &path) {
             Ok(()) => (ti, true),

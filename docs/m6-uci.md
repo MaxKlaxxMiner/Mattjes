@@ -179,6 +179,39 @@ Nach jeder Erzeugung hängt auch der UCI-Job eine Zeile an `measure.log`, mit de
 Feldern wie `egtb-measure` plus `peak_commit_mb`/`peak_ws_mb` und der Quelle `uci`;
 daraus werden die Konstanten in `Requirements` und `TableChecksums` nachgetragen.
 
+**Abhängigkeiten sofort exakt schreiben (2026-10-22):** Ein Arena-Lauf des Autors
+(`tests/arena-log01.txt`, Bauern-Test, `matepn`, `EgtbGenerate5` und `EgtbWriteCache`)
+zeigte den Fehler: `matepn` forderte KQPKP an, dessen Abhängigkeitskette 24
+Fünf-Steiner tief ist (KQQKP, KQRKP, ..., KQPKQ, ..., und je vier KQxKy darunter),
+nach acht Minuten waren elf davon fertig, `stop` pausierte den Job, Arena beendete die
+Engine, und **keine einzige Tabelle war auf der Platte**: Der Job schrieb erst nach
+der Zieltabelle, die fertigen Abhängigkeiten warteten exakt im RAM. Quantisiert
+speichern ging unterwegs nicht, weil die nächste Tabelle des Jobs sie exakt braucht
+(darum rechnet der Generator eine Abhängigkeit aus einer Cache-Datei, Schrittweite 8,
+immer neu; im Log wurde so auch das vorhandene KQQKN noch einmal gerechnet).
+
+Entscheidung des Autors: jede Abhängigkeit, die der Job rechnen musste, wird **sofort
+und exakt** als `5-KQQKQ.bin.raw` geschrieben (`egtb.RawSuffix`, `Set.RawPath`,
+`SaveRawTable`: derselbe Container mit Schrittweite 1, die Werte bleiben im RAM
+exakt), die Zieltabelle und alle Abhängigkeiten am Ende wie bisher quantisiert als
+`.bin`. Der Generator (`GenerateNotify` mit Callback je fertiger Tabelle; `Generate`
+und `GenerateControlled` bleiben) **lädt eine `.bin.raw`, statt die Abhängigkeit neu
+zu rechnen** (`LoadRawTable`, komplett in den RAM, Prüfsumme gegen `TableChecksums`),
+auch in `egtb-measure`, das die Raw-Dateien seiner Abhängigkeiten ebenso schreibt.
+Jede fertige Tabelle bekommt ihre Zeile in `measure.log`, nicht mehr nur das Ziel.
+Ein abgebrochener Job verliert damit höchstens die angefangene Tabelle; die Suche
+öffnet eine `.bin.raw`, wenn die `.bin` fehlt (`openTable`, blockweise wie jede
+Cache-Datei, nur mit Schrittweite 1). Die Raw-Dateien räumt der Autor von Hand weg,
+sobald keine weitere Erzeugung sie braucht (sie sind zwei- bis dreimal so groß wie
+die quantisierten).
+
+```
+info string egtb: KQQKQ wins 21,929,252, losses 22,725,436, draws 11,340,323, longest mate 59 plies = 30 moves, 19.7 s
+info string egtb: written exact to E:\...\mattjes-egtb-cache\5-KQQKQ.bin.raw
+...
+info string egtb: loaded exact E:\...\mattjes-egtb-cache\5-KQQKQ.bin.raw (231 MB) in 0.4 s     <- nächster Job
+```
+
 Vorgemerkt: Während einer Erzeugung sollen Hash und reguläre Suche ihren RAM komplett
 freigeben.
 
