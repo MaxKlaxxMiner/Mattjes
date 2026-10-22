@@ -849,12 +849,71 @@ Blockcache wie bei den DTM-Dateien). Eine Entropiestufe in `lz` bliebe bei gzip-
 Paarersetzung ebenfalls ein Kandidat (Syzygys DTZ-Dateien nutzen sie mit mehr
 Symbolen).
 
-Noch offen in dieser Reihenfolge: das Paket für Re-Pair plus Huffman (Go, dann Rust,
-byteidentisch) an diesen Symbolströmen messen; das eigene Dateiformat (eine Datei je
-Material unter `mattjes-egtb-cache/`, Index wie die DTM-Tabelle, Schlag-Don't-care
-auch im eigenen Prober); die Ableitung aus jeder fertigen DTM-Tabelle beim Schreiben;
-die DTM-Datei danach mit Remis als Don't-care; und im Orakel die Reihenfolge eigene
-WDL, Syzygy-WDL, DTM nur für die Distanz.
+### Der Packer: Package `pairs` (2026-10-22)
+
+Entscheidung des Autors: Syzygy-Kompatibilität ist nicht nötig, Syzygys Tempo und
+kompakte Struktur schon. Package `pairs` ist das Schema von tbgen in eigenem
+Container: Paarersetzung (jedes neue Symbol steht für zwei ältere, bis 4.095 Symbole,
+höchstens 256 Stellungen je Symbol), kanonischer Huffman über die Symbole (bis 32
+Bit), Blöcke von 32 oder 64 Byte (je Strom das kleinere Ergebnis) aus ganzen Symbolen,
+Größentabelle (u16 Stellungen je Block) und Index (6 Byte je 2^k Stellungen, k so,
+dass ein Eintrag rund 16 Blöcke deckt). Eine Anfrage (`Table.Value`) geht vom
+Indexeintrag die Größentabelle entlang bis zum Block, dekodiert dort Symbol für
+Symbol bis zur Stellung und steigt im Symbol zum Blatt ab; die Tabelle bleibt
+gepackt, es gibt keine entpackte Kopie. Der Packer zählt die Paare parallel
+(offene Adressierung je Worker), ersetzt bis 64 symbolfremde Paare je Durchlauf
+(Textbuch-Re-Pair ist einer, gemessen 10 % kleiner bei 20-facher Zeit, verworfen),
+Huffman-Längen nach zlib begrenzt (Kraft-Summe geprüft), Symbole nach Codelänge
+nummeriert, so dass die Symboltabelle 3 Byte je Symbol kostet (zwei 12-Bit-Nummern,
+Blatt = Wert plus 0xfff) und keine Längenbytes braucht.
+
+**Maßstab: Syzygys eigene Ströme.** `pairsSyzygy` dekodiert die Ströme einer
+Original-Datei komplett (`Tables.Streams`) und packt dieselben Werte mit demselben
+Don't-care-Muster neu; der Unterschied ist allein der Packer. Erste Fassung (5 Byte je
+Symbol, nur 32-Byte-Blöcke, dichter Index) 1,15, die beschriebene Fassung **1,02**
+(23 Ströme aus KBNvK, KQvKR, KRvKN, KPvKP, KBBvK, KBvKP, KQvKQ, KRvKB: 598.128 gegen
+587.028 Byte; der Code ist gleich groß, der Rest sind Symboltabelle und Index).
+
+**Der Index war der ganze Abstand.** Mit unserem Tabellenindex (Seite, Königspaar,
+Steine) packt derselbe Packer die Basis auf 3,79 MB (Faktor 3,0 zu Syzygy); die
+Digit-Reihenfolge umgestellt (Steine getauscht, Königspaar am schnellsten) im besten
+Fall je Tabelle 2,13 MB (1,69). Syzygy legt je Strom (Seite am Zug, Bauernlinie) die
+Steinreihenfolge einzeln fest, tbgen probiert sie aus: bei KBNvK läuft der weiße
+König am schnellsten (die drei anderen Steine als Tripel mit Symmetrie), bei KQvKR
+Weiß am Zug der schwarze König, Schwarz am Zug der Turm, bei KRvKN einmal der Turm
+und einmal der weiße König; bei KBBK springt der Unterschied zwischen zwei
+Reihenfolgen von 191 KB auf 9 KB. `syzygy/write.go` baut deshalb unsere Ströme über
+Syzygys Index (der Port in `encode.go`, `encInfo.setup` nimmt die Reihenfolge jetzt
+auch ohne Dateikopf): `Candidates` zählt die Kandidaten auf (bauernlos mit den
+Königen als einzigen Einzelsteinen: Königsreihenfolge mal Gruppenreihenfolge mal
+Kettenposition; sonst jedes geordnete Tripel aus Einzelsteinen als Führungsgruppe;
+Bauerntabellen: führende Bauern, andere Bauern, dann die Steine, Kettenpositionen
+beider Bauerngruppen), `Build` füllt je Kandidat die Ströme einer Seite in einem
+Durchlauf über die DTM-Tabelle (`NewSource`: Symbol oder Don't-care je Index, einmal
+je Tabelle), füllt Don't-care mit dem Vorgänger, packt und behält je Strom den
+kleinsten. Ergebnis auf fünf Tabellen, alle Kandidaten durchprobiert:
+
+| Material | Kandidaten | unsere Bytes | Syzygy | Verhältnis |
+|---|---|---|---|---|
+| KQK | 6 | 343 | 272 | 1,26 |
+| KBBK | 4 | 52.812 | 58.000 | 0,91 |
+| KBNK | 48 | 7.648 | 7.632 | 1,00 (dieselbe Reihenfolge wie tbgen) |
+| KRKN | 48 | 101.534 | 100.048 | 1,01 |
+| KPK | 6 | 7.945 | 7.824 | 1,02 |
+| Summe | | 170.282 | 173.776 | **0,98** |
+
+Eine zufällige Anfrage kostet in Go rund 300 ns (Testbank `pairsMeasure`, jede
+Stellung gegen den Strom geprüft). Offen: der Lauf über die ganze Basis
+(`syzygyBuild("")`, Minuten wegen der Bauerntabellen mit 11 Mio. Indizes mal 24
+Kandidaten), für Fünf- und Sechs-Steiner eine Vorauswahl der Kandidaten statt
+Durchprobieren (360 Kandidaten bei fünf Einzelsteinen; Idee: die Wechselrate des
+Werts beim Verschieben des schnellsten Steins auf einer Stichprobe schätzen, nur die
+besten drei bauen), das Dateiformat (eine Datei je Material unter
+`mattjes-egtb-cache/wdl/`, je Strom Reihenfolge und Container), der Leser im
+Package `syzygy` neben den `.rtbw` (gleicher Prober, eigener Dekoder), die
+Ableitung aus jeder fertigen DTM-Tabelle beim Schreiben, die DTM-Datei danach mit
+Remis als Don't-care, im Orakel die Reihenfolge eigene WDL, Syzygy-WDL, DTM nur für
+die Distanz, und der Rust-Port.
 
 ## Offen
 

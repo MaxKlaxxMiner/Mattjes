@@ -122,41 +122,57 @@ func Open(dir string) (*Tables, error) {
 		if err != nil || info.Size()&63 != 16 {
 			continue // incomplete file
 		}
-		be := &baseEntry{name: name, path: filepath.Join(dir, fn)}
-		for kind := 0; kind < 6; kind++ {
-			be.num += first[kind] + second[kind]
-		}
-		if be.num > MaxPieces {
+		be := newEntry(name, first, second)
+		if be == nil {
 			continue
 		}
-		be.hasPawns = first[5]+second[5] > 0
-		key, key2 := materialKey(first, second), materialKey(second, first)
-		be.symmetric = key == key2
-		if !be.hasPawns {
-			singles := 0
-			for kind := 0; kind < 6; kind++ {
-				if first[kind] == 1 {
-					singles++
-				}
-				if second[kind] == 1 {
-					singles++
-				}
-			}
-			be.kkEnc = singles == 2
-		} else {
-			be.pawns = [2]uint8{first[5], second[5]}
-			if second[5] != 0 && (first[5] == 0 || first[5] > second[5]) {
-				be.pawns[0], be.pawns[1] = be.pawns[1], be.pawns[0]
-			}
-		}
-		t.entries[key] = lookup{be, false}
-		if key != key2 {
-			t.entries[key2] = lookup{be, true}
-		}
-		t.list = append(t.list, be)
+		be.path = filepath.Join(dir, fn)
+		t.register(be, first, second)
 	}
 	sort.Slice(t.list, func(a, b int) bool { return t.list[a].name < t.list[b].name })
 	return t, nil
+}
+
+// newEntry describes the table of a material given as piece counts (the
+// first side first); nil beyond MaxPieces.
+func newEntry(name string, first, second [6]uint8) *baseEntry {
+	be := &baseEntry{name: name}
+	for kind := 0; kind < 6; kind++ {
+		be.num += first[kind] + second[kind]
+	}
+	if be.num > MaxPieces {
+		return nil
+	}
+	be.hasPawns = first[5]+second[5] > 0
+	be.symmetric = materialKey(first, second) == materialKey(second, first)
+	if !be.hasPawns {
+		singles := 0
+		for kind := 0; kind < 6; kind++ {
+			if first[kind] == 1 {
+				singles++
+			}
+			if second[kind] == 1 {
+				singles++
+			}
+		}
+		be.kkEnc = singles == 2
+	} else {
+		be.pawns = [2]uint8{first[5], second[5]}
+		if second[5] != 0 && (first[5] == 0 || first[5] > second[5]) {
+			be.pawns[0], be.pawns[1] = be.pawns[1], be.pawns[0]
+		}
+	}
+	return be
+}
+
+// register files a table under both colour assignments.
+func (t *Tables) register(be *baseEntry, first, second [6]uint8) {
+	key, key2 := materialKey(first, second), materialKey(second, first)
+	t.entries[key] = lookup{be, false}
+	if key != key2 {
+		t.entries[key2] = lookup{be, true}
+	}
+	t.list = append(t.list, be)
 }
 
 // Count is the number of tables found.
@@ -293,6 +309,77 @@ func (be *baseEntry) init() error {
 		}
 	}
 	return nil
+}
+
+// Describe reports the layout of a table's compressed streams (one per
+// encoding and side to move), for comparing our own packer against it; ok
+// is false when there is no such table ("KBNvK").
+func (t *Tables) Describe(name string) (lines []string, ok bool) {
+	for _, be := range t.list {
+		if be.name != name {
+			continue
+		}
+		if !t.prepare(be) {
+			return nil, false
+		}
+		num := 1
+		if be.hasPawns {
+			num = 4
+		}
+		for i, ei := range be.ei {
+			if i >= num && be.ei[i-num].precomp == ei.precomp {
+				continue // not split: one stream serves both sides to move
+			}
+			d := ei.precomp
+			if d.idxBits == 0 {
+				lines = append(lines, fmt.Sprintf("%s stream %d: constant value %d (%d positions)", name, i, d.constValue[0], d.size))
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("%s stream %d: %d positions, %d symbols, %d blocks of %d bytes (code %d), index 2^%d (%d bytes), sizes %d bytes, codes %d..%d bits",
+				name, i, d.size, len(d.symLen), d.realBlocks, 1<<d.blockSize, d.realBlocks<<d.blockSize, d.idxBits, len(d.indexTable), len(d.sizeTable), d.minLen, d.minLen+uint8(len(d.base))-1))
+			lines = append(lines, fmt.Sprintf("    pieces %v (Fathom codes: 1 pawn .. 6 king, 8 = black), norm %v, factors %v (1 = fastest)", ei.pieces[:be.num], ei.norm[:be.num], ei.factor[:be.num]))
+		}
+		return lines, true
+	}
+	return nil, false
+}
+
+// Streams decodes every compressed stream of a table completely (one per
+// encoding and side to move, Syzygy's five values 0..4 per position, in
+// the table's own index order) with the byte size each stream takes in the
+// file (symbol table, index, size table and code blocks); nil when there is
+// no such table. A yardstick for our own packer on identical data.
+func (t *Tables) Streams(name string) (values [][]byte, bytes []int) {
+	for _, be := range t.list {
+		if be.name != name || !t.prepare(be) {
+			continue
+		}
+		num := 1
+		if be.hasPawns {
+			num = 4
+		}
+		for i, ei := range be.ei {
+			if i >= num && be.ei[i-num].precomp == ei.precomp {
+				continue
+			}
+			d := ei.precomp
+			v := make([]byte, d.size)
+			if d.idxBits == 0 {
+				for j := range v {
+					v[j] = d.constValue[0]
+				}
+				values, bytes = append(values, v), append(bytes, 2)
+				continue
+			}
+			for j := range v {
+				v[j] = d.decompress(uint64(j))[0]
+			}
+			values = append(values, v)
+			bytes = append(bytes, 3*len(d.symLen)+len(d.indexTable)+len(d.sizeTable)+d.realBlocks<<d.blockSize)
+		}
+		return values, bytes
+	}
+	return nil, nil
 }
 
 // Name of the table for a material given as piece counts (white first,

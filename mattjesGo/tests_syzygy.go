@@ -10,6 +10,7 @@ import (
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mateab"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/pairs"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/syzygy"
 )
 
@@ -24,6 +25,60 @@ const syzygyDefaultDir = `C:\Users\MaxKlaxx\Desktop\spiele\chess\table`
 // own table to compare with.
 // syzygyProbe prints the WDL probe of each FEN (semicolon separated) and
 // the oracle's verdict with the four-piece base on top.
+// syzygyBuild builds our own WDL tables of the named base materials
+// ("KBNK;KQKR", "" = all) in Syzygy's structure with every candidate piece
+// order and prints the best order and size per stream next to the Syzygy
+// file (docs/m5-endgame-tables.md, "Eigene WDL-Tabellen"). verbose prints
+// every candidate.
+func syzygyBuild(names string, workers int, opt pairs.Options, verbose bool) {
+	set := egtbLoadOrGenerate(workers)
+	fmt.Printf("=== own WDL tables: blocks %d bytes, %d pairs per pass, min count %d, %d symbols, symbol length %d ===\n", opt.BlockBytes, opt.PairsPerPass, opt.MinCount, opt.MaxSymbols, opt.MaxSymbolLen)
+	var sumOurs, sumSyzygy int64
+	start := time.Now()
+	for _, t := range set.Base() {
+		if names != "" && !strings.Contains(";"+names+";", ";"+t.Mat.Name()+";") {
+			continue
+		}
+		tStart := time.Now()
+		src := syzygy.NewSource(set, t, workers)
+		var progress func(string)
+		if verbose {
+			progress = func(line string) { fmt.Println("    " + line) }
+		}
+		b := syzygy.Build(src, opt, workers, progress)
+		size := syzygyFileSize(t.Mat)
+		fmt.Printf("%-6s %9d legal, %4.1f%% capture-decided, %4d candidates: ours %8d, syzygy %8d, ratio %.2f (%.1f s)\n", t.Mat.Name(), src.Legal, 100*float64(src.Decided)/float64(max(src.Legal, 1)), b.Candidates, b.Bytes(), size, float64(b.Bytes())/float64(max(size, 1)), time.Since(tStart).Seconds())
+		for i, s := range b.Streams {
+			fmt.Printf("       stream %d: order %-12s %9d positions, %8d bytes: %s\n", i, s.Order, s.Size, len(s.Packed), s.Stats)
+		}
+		sumOurs += int64(b.Bytes())
+		sumSyzygy += size
+	}
+	fmt.Printf("total: ours %d, syzygy %d, ratio %.2f (%.1f s)\n\n", sumOurs, sumSyzygy, float64(sumOurs)/float64(max(sumSyzygy, 1)), time.Since(start).Seconds())
+}
+
+// syzygyDescribe prints the layout of the compressed streams of the named
+// tables ("KBNvK;KQvKR"): symbols, blocks, index, code lengths (the
+// yardstick for package pairs).
+func syzygyDescribe(dir string, names string) {
+	tb, err := syzygy.Open(dir)
+	if err != nil {
+		fmt.Printf("syzygy: %v\n", err)
+		return
+	}
+	for _, name := range strings.Split(names, ";") {
+		lines, ok := tb.Describe(strings.TrimSpace(name))
+		if !ok {
+			fmt.Printf("%s: no table\n", name)
+			continue
+		}
+		for _, l := range lines {
+			fmt.Println(l)
+		}
+	}
+	fmt.Println()
+}
+
 func syzygyProbe(dir string, fens string) {
 	tb, err := syzygy.Open(dir)
 	if err != nil {

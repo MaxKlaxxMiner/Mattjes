@@ -418,13 +418,25 @@ func initEncInfo(ei *encInfo, be *baseEntry, tb []byte, shift uint, t int, enc i
 	}
 	for i := 0; i < int(be.num); i++ {
 		ei.pieces[i] = (tb[i+1+mp] >> shift) & 0x0f
-		ei.norm[i] = 0
 	}
 	order := int((tb[0] >> shift) & 0x0f)
 	order2 := 0x0f
 	if morePawns {
 		order2 = int((tb[1] >> shift) & 0x0f)
 	}
+	return ei.setup(be, order, order2, t, enc)
+}
+
+// setup computes the groups (norm) and the factors of an encoding from its
+// piece order (ei.pieces), the chain position of the leading group (order)
+// and of the other colour's pawns (order2, 0x0f when there are none); t is
+// the file or rank class of a pawn table. Returns the table size.
+func (ei *encInfo) setup(be *baseEntry, order, order2 int, t int, enc int) uint64 {
+	for i := 0; i < int(be.num); i++ {
+		ei.norm[i] = 0
+		ei.factor[i] = 0
+	}
+	morePawns := enc != encPiece && be.pawns[1] > 0
 	var k int
 	switch {
 	case enc != encPiece:

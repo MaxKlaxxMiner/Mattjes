@@ -25,6 +25,7 @@ import (
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/pairs"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/uci"
 )
 
@@ -152,9 +153,17 @@ func experiments() {
 	// --- step 2: explicit graph (docs/m7-wdl-search.md), "test <names> <options>": B brute force (reachable graph), e/E/x/X epsilon, v progress lines ---
 	// options t = four-piece tables as oracle, s = Syzygy WDL on top (syzygyDefaultDir)
 	// option n = Patricia's net in the certificate builder's policy, i = the descent's numbers from the net (docs/nnue-patricia.md)
-	wdllistSolve(testArg(0, ""), testArg(1, "x"))
-	// --- own WDL tables (docs/m5-endgame-tables.md, "Eigene WDL-Tabellen"): WDL derived from the base, captures as don't care, packed sizes against the Syzygy files; dumps the symbol streams to tests/wdl for zstd/xz ---
-	// egtbWdlSize(12, "tests/wdl") // 2026-10-22: lz 3.05 MB (2-bit), zstd 1.36 MB, xz 1.09 MB against 1.26 MB Syzygy for all 35 materials; 16.5 s
+	// wdllistSolve(testArg(0, ""), testArg(1, "x"))
+	// --- package pairs (Syzygy's scheme, own container) on the WDL streams in tests/wdl: "test <names> <blockBytes> <indexBits> <pairsPerPass> <minCount> <maxSymbols> <maxSymbolLen>" ---
+	// syzygyDescribe(syzygyDefaultDir, "KBNvK;KQvKR;KRvKN;KPvKP;KBBvK;KBvKP") // the layout of the Syzygy streams (symbols, blocks, piece order)
+	// --- own WDL tables in Syzygy's structure (syzygy/write.go): every candidate piece order per stream, best kept; "test <names> <blockBytes> <indexBits> <pairsPerPass> <minCount> <maxSymbols> <maxSymbolLen> [v]" ---
+	// 2026-10-22: KQK;KBNK;KBBK;KRKN;KPK = 170,282 bytes against 173,776 Syzygy (0.98) in 28 s; "" = the whole base (minutes)
+	syzygyBuild(testArg(0, ""), 12, pairs.Options{BlockBytes: testInt(1, 0), IndexBits: testInt(2, 0), PairsPerPass: testInt(3, 64), MinCount: testInt(4, 8), MaxSymbols: testInt(5, 4095), MaxSymbolLen: testInt(6, 256), Workers: 12}, testArg(7, "") == "v")
+	// pairsMeasure("tests/wdl", testArg(0, ""), pairs.Options{BlockBytes: testInt(1, 0), IndexBits: testInt(2, 0), PairsPerPass: testInt(3, 64), MinCount: testInt(4, 8), MaxSymbols: testInt(5, 4095), MaxSymbolLen: testInt(6, 256), Workers: 12}, true) // every position verified, random probes timed
+	// pairsSyzygy(syzygyDefaultDir, testArg(0, "KBNvK;KQvKR;KRvKN;KPvKP;KBBvK;KBvKP;KQvKQ;KRvKB"), pairs.Options{BlockBytes: testInt(1, 0), IndexBits: testInt(2, 0), PairsPerPass: testInt(3, 64), MinCount: testInt(4, 8), MaxSymbols: testInt(5, 4095), MaxSymbolLen: testInt(6, 256), Workers: 12})
+	// --- own WDL tables (docs/m5-endgame-tables.md, "Eigene WDL-Tabellen"): WDL derived from the base, captures as don't care, packed with pairs per digit order (n/r/k/K) against the Syzygy files; the first order also with lz and dumped to tests/wdl for zstd/xz ---
+	// 2026-10-22, order n: lz 3.05 MB (2-bit), zstd 1.36 MB, xz 1.09 MB against 1.26 MB Syzygy for all 35 materials
+	// egtbWdlSize(12, testArg(0, "n;r;k;K"), "tests/wdl", pairs.Options{BlockBytes: testInt(1, 32), IndexBits: testInt(2, 0), PairsPerPass: testInt(3, 64), MinCount: testInt(4, 8), MaxSymbols: testInt(5, 4096), MaxSymbolLen: testInt(6, 256), Workers: 12}, testArg(7, "") == "v")
 	// --- rollouts (package rollout, docs/nnue-patricia.md): "test <names> <options> <maxPlies>", options t/s oracle, d depth 2, v lines; every root move played out ---
 	// rolloutPositions(testArg(0, ""), testArg(1, "s"), testInt(2, 200)) // 2026-10-22: 561 of 567 root moves with Syzygy, 478 (depth 2: 516) with the four-piece tables, 284 without
 	// rolloutLine(testArg(0, "8/8/4k3/8/8/8/RK6/2R2n2 b - - 1 1"), testArg(1, "s"), testInt(2, 200))
