@@ -1012,7 +1012,15 @@ sondern je Runde) und die Welle selbst beobachten.
 3. Politik: freie Königsfelder statt Klebens gegen Springer; taktische
    Vorschau (Schach-Gabeln) für KR-KB-artige Verteidigungen.
 4. Stop-Flag im Fixpunkt pollen (Stop bis zu zwei Sekunden verspätet).
-5. `Threads` beachten (die zwei Fragen parallel statt nacheinander).
+5. ~~`Threads` beachten (die zwei Fragen parallel statt nacheinander).~~
+   Gebaut (2026-10-22): mit `Threads` ≥ 2 laufen die zwei Fragen eines
+   offenen Zugs in zwei Threads (getrennte Graphen, der Fortschritt unter
+   Mutex), die Ergebnisse werden in der Reihenfolge des Zugs angewandt,
+   das zweite nur, solange es noch gebraucht wird; sobald eine Seite der
+   Frage entschieden ist, bleibt der Zug sequenziell. Rust ohne Tabellen,
+   bis zum vollen Budget (Hash 2048, MultiPV 3): Sieben-Steiner KRRN-KNP
+   11,2 statt 16,0 s, einsamer Springer 13,4 statt 14,6 s, kurze Läufe
+   gleich; dieselben Ergebnisse.
 6. Syzygy auch in der Tabellenstufe an der Wurzel (heute nur als
    Such-Orakel, die Wurzel antwortet über die Suche in Millisekunden).
 7. Speicher weiter: `wdlBytesPerPosition` nach Messung an der Spitze

@@ -115,7 +115,7 @@ pub const WDL_BUDGET_GROWTH: usize = 4;
 /// multi_pv moves are proven wins (nothing can rank above them), when the
 /// full budget left moves open, or on stop.
 #[allow(clippy::too_many_arguments)]
-pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &Arc<Reporter<W>>, known: &[RootMove], stop: &Arc<AtomicBool>, max_positions: usize, oracle: Tables<'_>, net_init: bool, rollouts: bool) -> Core {
+pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &Arc<Reporter<W>>, known: &[RootMove], stop: &Arc<AtomicBool>, max_positions: usize, oracle: Tables<'_>, net_init: bool, rollouts: bool, threads: usize) -> Core {
     let mut buf = new_buffer();
     let n = root.gen_moves(&mut buf);
     let mut entries: Vec<WdlEntry> = Vec::with_capacity(n);
@@ -204,7 +204,7 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
             let before = entries[i].class;
             // asks question q for the move with this round's increment and
             // books what the shared graphs grew by
-            let mut ask = |q: usize, entries: &mut Vec<WdlEntry>, positions: &mut u64, counted: &mut usize| {
+            let ask = |q: usize, solvers: &mut [wdllist::Solver<'_>], entries: &mut Vec<WdlEntry>, positions: &mut u64, counted: &mut usize| {
                 let r = solvers[q].run_move(mv, budget);
                 let total = solvers[0].positions() + solvers[1].positions();
                 *positions += (total - *counted) as u64;
@@ -219,11 +219,35 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
                 rollout::Outcome::Loss => [1, 0],
                 _ => order,
             };
+            let needed = |class: WdlClass, q: usize| q == 0 && matches!(class, WdlClass::Unknown | WdlClass::NoLoss) || q == 1 && matches!(class, WdlClass::Unknown | WdlClass::NoWin);
+            // with two threads both questions of an open move run at once
+            // (separate graphs); the results are applied in the move's
+            // order, the second only while it is still needed
+            let mut results: [Option<wdllist::Result>; 2] = [None, None];
+            if threads >= 2 && entries[i].class == WdlClass::Unknown {
+                let (s0, s1) = solvers.split_at_mut(1);
+                let (r0, r1) = std::thread::scope(|s| {
+                    let h0 = s.spawn(|| s0[0].run_move(mv, budget));
+                    let h1 = s.spawn(|| s1[0].run_move(mv, budget));
+                    (h0.join().expect("question 0"), h1.join().expect("question 1"))
+                });
+                let total = solvers[0].positions() + solvers[1].positions();
+                positions += (total - counted) as u64;
+                entries[i].positions += total - counted;
+                counted = total;
+                results = [Some(r0), Some(r1)];
+            }
             for &q in &move_order {
-                if q == 0 && matches!(entries[i].class, WdlClass::Unknown | WdlClass::NoLoss) {
+                if !needed(entries[i].class, q) {
+                    continue;
+                }
+                let r = match results[q].take() {
+                    Some(r) => r,
+                    None => ask(q, &mut solvers, &mut entries, &mut positions, &mut counted),
+                };
+                if q == 0 {
                     // we win? (the root is a defender node of the child: the
                     // opponent to move, we attack)
-                    let r = ask(0, &mut entries, &mut positions, &mut counted);
                     match r.outcome {
                         Outcome::Proven => {
                             entries[i].class = WdlClass::Win;
@@ -237,13 +261,8 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
                         }
                         Outcome::Undecided => {}
                     }
-                    if r.aborted && stop.load(Ordering::Relaxed) {
-                        core.aborted = true;
-                        break;
-                    }
-                } else if q == 1 && matches!(entries[i].class, WdlClass::Unknown | WdlClass::NoWin) {
+                } else {
                     // the opponent wins? (the root is an attacker node of the child)
-                    let r = ask(1, &mut entries, &mut positions, &mut counted);
                     match r.outcome {
                         Outcome::Proven => {
                             entries[i].class = WdlClass::Loss;
@@ -256,10 +275,10 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
                         }
                         Outcome::Undecided => {}
                     }
-                    if r.aborted && stop.load(Ordering::Relaxed) {
-                        core.aborted = true;
-                        break;
-                    }
+                }
+                if r.aborted && stop.load(Ordering::Relaxed) {
+                    core.aborted = true;
+                    break;
                 }
             }
             if core.aborted {

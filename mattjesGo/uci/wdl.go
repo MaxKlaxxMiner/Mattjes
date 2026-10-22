@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/bits"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -121,7 +122,7 @@ const wdlBudgetGrowth = 4
 // reported after every decision; the search ends when every move is
 // decided, when the top multiPV moves are proven wins (nothing can rank
 // above them), when the full budget left moves open, or on stop.
-func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, stop *atomic.Bool, maxPositions int, oracle mateab.Oracle, netInit bool, rollouts bool) searchEnd {
+func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, stop *atomic.Bool, maxPositions int, oracle mateab.Oracle, netInit bool, rollouts bool, threads int) searchEnd {
 	var buf chess.MoveBuffer
 	n := root.GenMoves(&buf)
 	entries := make([]wdlEntry, n)
@@ -151,7 +152,10 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 	end := searchEnd{}
 	var positions uint64
 	last := time.Now()
+	var progressMu sync.Mutex // both questions of a move may report at once (Threads)
 	progress := func(line string) {
+		progressMu.Lock()
+		defer progressMu.Unlock()
 		if time.Since(last) < progressInterval {
 			return
 		}
@@ -236,11 +240,42 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 			case rollout.Loss:
 				moveOrder = [2]int{1, 0}
 			}
+			needed := func(q int) bool {
+				return q == 0 && (m.class == wdlUnknown || m.class == wdlNoLoss) || q == 1 && (m.class == wdlUnknown || m.class == wdlNoWin)
+			}
+			// with two threads both questions of an open move run at once
+			// (separate graphs); the results are applied in the move's
+			// order, the second only while it is still needed
+			var results [2]*wdllist.Result
+			if threads >= 2 && needed(0) && needed(1) {
+				var rr [2]wdllist.Result
+				var wg sync.WaitGroup
+				for q := 0; q < 2; q++ {
+					wg.Add(1)
+					go func(q int) {
+						defer wg.Done()
+						rr[q] = solvers[q].RunMove(m.move, budget)
+					}(q)
+				}
+				wg.Wait()
+				total := solvers[0].Positions() + solvers[1].Positions()
+				positions += uint64(total - counted)
+				m.positions += total - counted
+				counted = total
+				results[0], results[1] = &rr[0], &rr[1]
+			}
 			for _, q := range moveOrder {
-				if q == 0 && (m.class == wdlUnknown || m.class == wdlNoLoss) {
+				if !needed(q) {
+					continue
+				}
+				r := results[q]
+				if r == nil {
+					rr := ask(q)
+					r = &rr
+				}
+				if q == 0 {
 					// we win? (the root is a defender node of the child: the
 					// opponent to move, we attack)
-					r := ask(0)
 					switch r.Outcome {
 					case wdllist.Proven:
 						m.class, m.pv, m.method = wdlWin, append([]chess.Move{m.move}, r.PV...), r.Method
@@ -253,13 +288,8 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 						}
 						m.method = r.Method
 					}
-					if r.Aborted && stop.Load() {
-						end.aborted = true
-						break
-					}
-				} else if q == 1 && (m.class == wdlUnknown || m.class == wdlNoWin) {
+				} else {
 					// the opponent wins? (the root is an attacker node of the child)
-					r := ask(1)
 					switch r.Outcome {
 					case wdllist.Proven:
 						m.class, m.pv, m.method = wdlLoss, append([]chess.Move{m.move}, r.PV...), r.Method
@@ -271,10 +301,10 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 						}
 						m.method = r.Method
 					}
-					if r.Aborted && stop.Load() {
-						end.aborted = true
-						break
-					}
+				}
+				if r.Aborted && stop.Load() {
+					end.aborted = true
+					break
 				}
 			}
 			if end.aborted {
