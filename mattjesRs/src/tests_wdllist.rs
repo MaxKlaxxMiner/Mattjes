@@ -92,13 +92,14 @@ pub fn wdllist_solve(names: &str, options: &str) {
         let start = Instant::now();
         let mut got: Option<Outcome> = Some(Outcome::Draw);
         let mut pv = Vec::new();
-        let (mut positions, mut expansions) = (0usize, 0usize);
+        let (mut positions, mut expansions, mut bytes) = (0usize, 0usize, 0usize);
         for (q, attacks) in [true, false].into_iter().enumerate() {
             let question = if attacks { "side to move wins" } else { "opponent wins" };
             let q_start = Instant::now();
             let r = wdllist::solve(&b, attacks, opt.clone());
             positions += r.positions;
             expansions += r.expansions;
+            bytes += r.bytes;
             let verdict = if r.stuck {
                 "STUCK (bug)".to_string()
             } else if r.aborted {
@@ -147,11 +148,17 @@ pub fn wdllist_solve(names: &str, options: &str) {
             "FAIL"
         };
         let result = got.map_or("undecided".to_string(), |o| o.to_string());
-        println!("    result {} ({}): {} positions, {} expansions in {}", result, verdict, group(positions as u64), group(expansions as u64), fmt_ms(elapsed));
+        println!("    result {} ({}): {} positions, {} expansions in {}, graphs {} MB ({} bytes per position)", result, verdict, group(positions as u64), group(expansions as u64), fmt_ms(elapsed), bytes >> 20, bytes / positions.max(1));
         if !pv.is_empty() {
             println!("    line ({} plies): {}", pv.len(), pv_string(&pv));
         }
     }
     print!("--- total: {} positions, {} expansions in {}", group(total_positions as u64), group(total_expansions as u64), fmt_ms(total_time));
-    println!("{}\n", if ok { "  [all ok]" } else { "  [FAILURES]" });
+    println!("{}", if ok { "  [all ok]" } else { "  [FAILURES]" });
+    if let Some((committed, working_set)) = crate::egtb::peak_memory() {
+        // the bytes per graph position (docs/m7-wdl-search.md): one
+        // position with the descent alone, so the graph is the process
+        println!("    peak memory: {} MB committed, {} MB working set", committed >> 20, working_set >> 20);
+    }
+    println!();
 }

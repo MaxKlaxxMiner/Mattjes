@@ -64,6 +64,7 @@ type Result struct {
 	Exhausts   int    // subgraphs expanded by brute force because the numbers had saturated
 	Chases     int    // certificate builder: check chains started (chase.go)
 	ChaseNodes uint64 // nodes the chase visited
+	Bytes      int    // bytes of the graph's arrays and store, by capacity (the memory accounting)
 	Aborted    bool
 	Stuck      bool // aborted because the descent made no progress (a bug, never a result)
 }
@@ -138,29 +139,86 @@ const (
 // ends after a few thousand positions must not pay for a 512 MB store.
 const initialSlots = 1 << 16
 
+// edge is an entry of an edge arena: the node at the other end and the
+// next entry of the same list (noEdge at the end).
+type edge struct {
+	node, next uint32
+}
+
+const noEdge = ^uint32(0)
+
+// addEdge appends the edge i -> c: c to the children of i (insertion
+// order), i to the parents of c (newest first).
+func (g *Graph) addEdge(i, c uint32) {
+	e := uint32(len(g.cedges))
+	g.cedges = append(g.cedges, edge{c, noEdge})
+	if g.lastChild[i] == noEdge {
+		g.firstChild[i] = e
+	} else {
+		g.cedges[g.lastChild[i]].next = e
+	}
+	g.lastChild[i] = e
+	g.nchildren[i]++
+	p := uint32(len(g.pedges))
+	g.pedges = append(g.pedges, edge{i, g.firstParent[c]})
+	g.firstParent[c] = p
+	g.edges++
+}
+
+// Bytes is the memory of the graph by the capacities of its arrays and the
+// store's slots (what the process holds for it, growth slack included).
+func (g *Graph) Bytes() int {
+	n := cap(g.recs) * bitboard.PackedFixedBytes
+	n += (cap(g.cedges) + cap(g.pedges)) * 8
+	n += (cap(g.firstChild) + cap(g.lastChild) + cap(g.firstParent)) * 4
+	n += cap(g.nchildren) + cap(g.status) + cap(g.white) + cap(g.nmoves) + cap(g.remaining) + cap(g.flags)
+	n += cap(g.level)*2 + (cap(g.pn)+cap(g.dn))*4
+	n += cap(g.unsafeLevel)*2 + cap(g.chase) + cap(g.chaseDepth)*2 + cap(g.chaseQuiet)
+	n += g.store.Bytes()
+	return n
+}
+
+// childrenOf copies the children of node i into buf and returns them.
+func (g *Graph) childrenOf(i uint32, buf *[chess.MaxMoves]uint32) []uint32 {
+	n := 0
+	for e := g.firstChild[i]; e != noEdge; e = g.cedges[e].next {
+		buf[n] = g.cedges[e].node
+		n++
+	}
+	return buf[:n]
+}
+
 // Graph is the explicit position graph of one question.
 type Graph struct {
 	attackerWhite bool
 	log           bool // numbers on the log scale (Options.LogNumbers)
 	store         *ttstore.Store
 	maxSlots      int
-	maxPositions  int // the position budget; an expansion starts only below it
-	keys          [][2]uint64
-	recs          [][bitboard.PackedFixedBytes]byte
-	children      [][]uint32 // child edges per node (nil until expanded)
-	parents       [][]uint32
-	status        []uint8
-	white         []bool
-	level         []uint16 // win/loss level in plies, filled by levels() for the line
-	nmoves        []uint8  // legal moves
-	remaining     []uint8  // legal moves not yet known to win for the opponent
-	pn, dn        []uint32
-	flags         []uint8
-	expansions    int
-	edges         int
-	visits        uint64
-	lastCheck     int // expansions at the last fixed-point run
-	safeChecks    int
+	maxPositions  int                               // the position budget; an expansion starts only below it
+	recs          [][bitboard.PackedFixedBytes]byte // the positions (32 bytes each, the key is recomputed from them)
+	// the edges live in two arenas of singly linked lists (edge): the
+	// children of a node in insertion order (firstChild to lastChild), the
+	// parents newest first (firstParent); 12 bytes per node and 16 per
+	// edge, where a slice per list cost 48 bytes of headers per node plus
+	// the growth slack (measured 250 bytes per position before, see
+	// docs/m7-wdl-search.md); nchildren counts the children
+	cedges, pedges []edge
+	firstChild     []uint32
+	lastChild      []uint32
+	firstParent    []uint32
+	nchildren      []uint8
+	status         []uint8
+	white          []bool
+	level          []uint16 // win/loss level in plies, filled by levels() for the line
+	nmoves         []uint8  // legal moves
+	remaining      []uint8  // legal moves not yet known to win for the opponent
+	pn, dn         []uint32
+	flags          []uint8
+	expansions     int
+	edges          int
+	visits         uint64
+	lastCheck      int // expansions at the last fixed-point run
+	safeChecks     int
 	// defenderConfigs counts, per placement of the defender's pieces, the
 	// positions in the graph with that placement (the certificate builder's
 	// policy prefers placements already in use: the king shuffles instead
@@ -220,7 +278,7 @@ func (g *Graph) Index(b *bitboard.Board) (uint32, bool) {
 // newGraph sets up the store for maxPositions (grown on demand) and adds
 // the root.
 func newGraph(root *bitboard.Board, sideToMoveAttacks bool, log bool, maxPositions int, oracle mateab.Oracle) *Graph {
-	g := &Graph{attackerWhite: root.WhiteMove == sideToMoveAttacks, log: log, oracle: oracle}
+	g := &Graph{attackerWhite: root.WhiteMove == sideToMoveAttacks, log: log, oracle: oracle, pn: []uint32{}, dn: []uint32{}}
 	g.setBudget(maxPositions)
 	g.store = ttstore.NewSlots(min(initialSlots, g.maxSlots))
 	g.store.Put(root.Key, 0)
@@ -259,9 +317,12 @@ func (g *Graph) getOrPut(key [2]uint64) (idx uint32, isNew, ok bool) {
 	if g.store.Slots() >= g.maxSlots {
 		return 0, false, false
 	}
-	grown := ttstore.NewSlots(min(g.store.Slots()*4, g.maxSlots))
-	for i, k := range g.keys {
-		grown.Put(k, uint64(i))
+	// doubling (a fourfold jump left the store four times the graph right
+	// after it: 66 bytes per position measured), the keys rehashed from
+	// the records instead of a 16-byte copy per node
+	grown := ttstore.NewSlots(min(g.store.Slots()*2, g.maxSlots))
+	for i := range g.recs {
+		grown.Put(g.board(uint32(i)).Key, uint64(i))
 	}
 	g.store = grown
 	v, isNew, ok = g.store.GetOrPut(key, next)
@@ -301,9 +362,10 @@ func (g *Graph) attackerAt(i uint32) bool { return g.white[i] == g.attackerWhite
 func (g *Graph) add(b *bitboard.Board) uint32 {
 	i := uint32(len(g.recs))
 	g.recs = append(g.recs, b.PackedFixedRecord())
-	g.keys = append(g.keys, b.Key)
-	g.children = append(g.children, nil)
-	g.parents = append(g.parents, nil)
+	g.firstChild = append(g.firstChild, noEdge)
+	g.lastChild = append(g.lastChild, noEdge)
+	g.firstParent = append(g.firstParent, noEdge)
+	g.nchildren = append(g.nchildren, 0)
 	g.white = append(g.white, b.WhiteMove)
 	g.level = append(g.level, 0)
 	g.flags = append(g.flags, 0)
@@ -359,8 +421,11 @@ func (g *Graph) add(b *bitboard.Board) uint32 {
 	default:
 		pn = g.leafNumber(n)
 	}
-	g.pn = append(g.pn, pn)
-	g.dn = append(g.dn, dn)
+	if g.pn != nil {
+		// the descent's numbers; the certificate builder's graph has none
+		g.pn = append(g.pn, pn)
+		g.dn = append(g.dn, dn)
+	}
 	return i
 }
 
@@ -524,7 +589,7 @@ func (s *searcher) begin(extra int) {
 // false when that expansion was cut off by the stop flag or the budget).
 func (s *searcher) locate(q *bitboard.Board) (uint32, bool) {
 	g := s.g
-	if q.Key == g.keys[0] {
+	if q.Key == g.board(0).Key {
 		return 0, true
 	}
 	if g.flags[0]&flExpanded == 0 {
@@ -609,6 +674,7 @@ func (g *Graph) fillResult(r *Result, n uint32) {
 		}
 	}
 	r.Positions, r.Expansions, r.Edges, r.Visits, r.SafeChecks, r.ChaseNodes = len(g.recs), g.expansions, g.edges, g.visits, g.safeChecks, g.chaseVisits
+	r.Bytes = g.Bytes()
 	if r.Outcome == Proven {
 		g.levels()
 		r.WinPlies = int(g.level[n])
@@ -659,7 +725,6 @@ func (s *searcher) expand(i uint32) {
 	n := b.GenMoves(&buf)
 	g.flags[i] |= flExpanded
 	g.expansions++
-	g.children[i] = make([]uint32, 0, n)
 	for j := 0; j < n; j++ {
 		c := b
 		c.DoMove(buf[j])
@@ -671,13 +736,12 @@ func (s *searcher) expand(i uint32) {
 		if isNew {
 			g.add(&c)
 		}
-		g.children[i] = append(g.children[i], ci)
-		g.parents[ci] = append(g.parents[ci], i)
-		g.edges++
+		g.addEdge(i, ci)
 	}
 	// wins through the new edges: a losing child wins the node, a winning
 	// child is one legal move less for the node
-	for _, ci := range g.children[i] {
+	for e := g.firstChild[i]; e != noEdge; e = g.cedges[e].next {
+		ci := g.cedges[e].node
 		if g.status[ci] == stLoss && g.status[i] == stUnknown {
 			g.status[i] = stWin
 		} else if g.status[ci] == stWin {
@@ -720,7 +784,8 @@ func (s *searcher) exhaust(c uint32) {
 				break
 			}
 		}
-		for _, ch := range g.children[i] {
+		for e := g.firstChild[i]; e != noEdge; e = g.cedges[e].next {
+			ch := g.cedges[e].node
 			if g.flags[ch]&flRegion == 0 && g.status[ch] == stUnknown {
 				g.flags[ch] |= flRegion
 				marked = append(marked, ch)
@@ -743,7 +808,8 @@ func (g *Graph) propagate(i uint32) {
 		queue = queue[:len(queue)-1]
 		switch g.status[c] {
 		case stWin:
-			for _, p := range g.parents[c] {
+			for e := g.firstParent[c]; e != noEdge; e = g.pedges[e].next {
+				p := g.pedges[e].node
 				if g.status[p] != stUnknown {
 					continue
 				}
@@ -754,7 +820,8 @@ func (g *Graph) propagate(i uint32) {
 				}
 			}
 		case stLoss:
-			for _, p := range g.parents[c] {
+			for e := g.firstParent[c]; e != noEdge; e = g.pedges[e].next {
+				p := g.pedges[e].node
 				if g.status[p] == stUnknown {
 					g.status[p] = stWin
 					queue = append(queue, p)
@@ -816,7 +883,8 @@ func (s *searcher) mid(i uint32, thPn, thDn uint32, depth int) (uint32, uint32) 
 	}
 	attacker := g.attackerAt(i)
 	g.flags[i] |= flOnPath
-	children := g.children[i]
+	var childBuf [chess.MaxMoves]uint32
+	children := g.childrenOf(i, &childBuf)
 	// what a child returned from its descent overrides its stored numbers
 	// for the rest of this loop: a child cut off by the depth cap (or an
 	// unchanged one) must still move the parent on, as in wdlpn
@@ -1010,7 +1078,7 @@ func (g *Graph) safeSet() {
 		case g.flags[i]&flExpanded == 0:
 			unsafe = true
 		default:
-			safeChildren[i] = uint16(len(g.children[i]))
+			safeChildren[i] = uint16(g.nchildren[i])
 		}
 		if unsafe {
 			g.flags[i] |= flUnsafe
@@ -1020,7 +1088,8 @@ func (g *Graph) safeSet() {
 	// breadth-first, so that unsafeLevel is the distance to the leak
 	for head := 0; head < len(queue); head++ {
 		c := queue[head]
-		for _, p := range g.parents[c] {
+		for e := g.firstParent[c]; e != noEdge; e = g.pedges[e].next {
+			p := g.pedges[e].node
 			if g.flags[p]&flUnsafe != 0 || g.status[p] != stUnknown {
 				continue
 			}
@@ -1070,7 +1139,8 @@ func (g *Graph) reachableSafe(from uint32) int {
 			defenderPlacements[b.Pieces[defenderSide]] = true
 		}
 		attacker := g.attackerAt(i)
-		for _, c := range g.children[i] {
+		for e := g.firstChild[i]; e != noEdge; e = g.cedges[e].next {
+			c := g.cedges[e].node
 			if !g.defenderHolds(c) {
 				continue
 			}
@@ -1123,7 +1193,8 @@ func (g *Graph) levels() {
 			next = append(next, winSeeds...)
 		}
 		for _, c := range queue {
-			for _, p := range g.parents[c] {
+			for e := g.firstParent[c]; e != noEdge; e = g.pedges[e].next {
+				p := g.pedges[e].node
 				if done[p] {
 					continue
 				}

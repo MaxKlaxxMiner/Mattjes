@@ -870,18 +870,87 @@ dem M4-Entwurf), beides mit Zahlen zu belegen. Ob ihr Zertifikat in 16
 Mi Stellungen passt, ist offen; Stockfishs `cp 0` ist eine Bewertung,
 kein Beweis.
 
+## Speicher je Knoten: Kanten-Arena, Keys aus dem Satz, Store verdoppelt (2026-10-22)
+
+Der Graph kostete rund 250 Byte je Stellung (oben gemessen am
+Prozess). Drei Posten waren es, und jeder ist jetzt weg oder kleiner:
+
+1. **Kanten-Arena statt Slices.** Kinder- und Elternlisten waren je ein
+   Slice pro Knoten: 48 Byte Köpfe plus Wachstumsreserve, bevor eine
+   einzige Kante gespeichert war. Jetzt liegen alle Kanten in zwei
+   Arenen aus einfach verketteten Listen (`edge{node, next}`, 8 Byte):
+   die Kinder eines Knotens in Einfügereihenfolge (`firstChild`,
+   `lastChild`), die Eltern neueste zuerst (`firstParent`), dazu
+   `nchildren`; 13 Byte je Knoten und 16 je Kante, keine Reserve je
+   Liste. Die Kinder eines Angreiferknotens entstehen am Stück und
+   liegen deshalb hintereinander; die Reihenfolge der Eltern spielt für
+   kein Ergebnis eine Rolle (`propagate`, `levels`, `safeSet` sind
+   reihenfolgeunabhängig), die der Kinder bleibt wie vorher. `mid`
+   kopiert die Kinder in ein lokales Array (`childrenOf`), weil es sie
+   mehrfach indiziert.
+2. **Keys aus dem Satz.** Die 16-Byte-Kopie des Zobrist-Keys je Knoten
+   diente nur dem Umhashen beim Wachsen des Stores; jetzt wird der Key
+   dafür aus dem 32-Byte-Satz dekodiert (`board(i).Key`). Das kostet
+   beim Wachsen eine Dekodierung je Knoten, insgesamt das Doppelte der
+   Endgröße, im Rauschen der Suche.
+3. **Store verdoppelt statt vervierfacht.** Nach einem Faktor-4-Sprung
+   war der Store viermal so groß wie der Graph (bei 4,05 Mio. Stellungen
+   16,8 Mi Slots, 66 Byte je Stellung). Mit Faktor 2 sind es höchstens
+   zweimal 21 Byte.
+
+Dazu: die Beweiszahlen `pn`/`dn` gibt es nur noch im Graphen des
+Abstiegs (8 Byte, der Zertifikat-Bauer braucht sie nicht), und der
+Graph führt Buch: `Graph.Bytes()` summiert die Kapazitäten aller
+Arrays und die Slots des Stores, `Result.Bytes`, die Testbank zeigt
+`graphs N MB (B bytes per position)` je Stellung und zum Schluss die
+Spitze des Prozesses (`egtb.PeakMemory`, zugesicherte Größe und
+Arbeitssatz).
+
+**Was ein Knoten jetzt kostet:** Satz 32, Listenköpfe 13, Status,
+Seite, Züge, Rest, Flags 5, Ebene 2 = 52 Byte; dazu im Abstieg 8 für
+die Zahlen, im Zertifikat-Bauer 6 für Leck-Ebene und Jagd-Memo; je
+Kante 16; der Store 16 Byte je Slot, am Deckel 21 je Stellung. Der
+Abstiegsgraph von KQ-KP hat 3,4 Kanten je Stellung, die Kanten sind
+dort der größte Posten.
+
+**Messung** (KQ-KP c-Bauer, Abstieg allein, 4.048.336 Stellungen,
+Besuche vor und nach dem Umbau identisch; Prozess-Spitze laut
+Betriebssystem, zugesichert / Arbeitssatz; Buchhaltung nach Kapazität):
+
+| | Go vorher | Go nachher | Rust vorher | Rust nachher |
+|---|---|---|---|---|
+| Spitze MB | 1.081 / 1.071 | 1.039 / 930 | 1.001 / 967 | 692 / 639 |
+| Byte je Stellung (zugesichert) | 267 | 257 | 248 | 171 |
+| Buchhaltung Byte je Stellung | – | 176 | – | 161 |
+
+Zwischenschritt gemessen: die Arena allein brachte in Go erst eine
+höhere Spitze (1.180 MB), weil der Faktor-4-Store und die
+Kopier-Transienten der wachsenden Arrays blieben; erst mit Store-Faktor
+2 und ohne Keys fiel die Buchhaltung von 226 auf 176. Go bleibt an der
+Spitze über der Buchhaltung (Reallokationen der Slices mit Faktor 1,25
+kopieren alt und neu nebeneinander, der Garbage Collector gibt verzögert
+frei); Rust liegt mit 171 Byte je Stellung an der Spitze nah an der
+Buchhaltung, und die zählt für den Hash-Deckel. Zertifikat-Graphen:
+KQ-KRR 131 (Go) / 167 (Rust, `Vec` verdoppelt, Go wächst um 1,25),
+vier Remis 126 / 189 Byte je Stellung. `wdlBytesPerPosition` im UCI
+bleibt vorerst 256 (Go liegt an der Spitze noch darüber); für Rust
+wäre 192 gedeckt. Alle Regressionswerte (Jagdknoten, Zertifikate,
+Besuche) sind in Go und Rust unverändert und identisch.
+
 **Nächste Hebel**, nach erwartetem Nutzen:
 
 1. Gemischte Remis als Zertifikat-Problem: die Welle begrenzen (Budget
    je Runde, Fixpunkt dazwischen, Erweiterung nur am Leck), Politik mit
    Drohung und Bauernlauf; Maßstab die zwei offenen Sieben-Steiner und
    die KQ-KP-Pattfallen (heute nur per Abstieg).
-2. Speicher je Knoten (Ziel 150 Byte, siehe oben).
-3. Beide Fragen in einem Graphen (die Gewinne der einen Frage sind die
+2. Beide Fragen in einem Graphen (die Gewinne der einen Frage sind die
    Verluste der anderen).
-4. Politik: freie Königsfelder statt Klebens gegen Springer; taktische
+3. Politik: freie Königsfelder statt Klebens gegen Springer; taktische
    Vorschau (Schach-Gabeln) für KR-KB-artige Verteidigungen.
-5. Stop-Flag im Fixpunkt pollen (Stop bis zu zwei Sekunden verspätet).
-6. `Threads` beachten (die zwei Fragen parallel statt nacheinander).
-7. Syzygy auch in der Tabellenstufe an der Wurzel (heute nur als
+4. Stop-Flag im Fixpunkt pollen (Stop bis zu zwei Sekunden verspätet).
+5. `Threads` beachten (die zwei Fragen parallel statt nacheinander).
+6. Syzygy auch in der Tabellenstufe an der Wurzel (heute nur als
    Such-Orakel, die Wurzel antwortet über die Suche in Millisekunden).
+7. Speicher weiter: `wdlBytesPerPosition` nach Messung an der Spitze
+   senken (Rust 192), Rust-`Vec`s mit Faktor 1,25 wachsen lassen,
+   Kanten mit `uint32`-Paaren in Blöcken ohne Reallokation.

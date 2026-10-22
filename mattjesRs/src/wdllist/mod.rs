@@ -65,6 +65,8 @@ pub struct Result {
     pub chases: usize,
     /// Nodes the chase visited.
     pub chase_nodes: u64,
+    /// Bytes of the graph's arrays and store, by capacity (the memory accounting).
+    pub bytes: usize,
     pub aborted: bool,
     /// Aborted because the descent made no progress (a bug, never a result).
     pub stuck: bool,
@@ -141,6 +143,16 @@ const ST_LOSS: u8 = 2; // the side to move loses
 const ST_DRAW_T: u8 = 3; // terminal draw (stalemate, dead material)
 const ST_SAFE: u8 = 4; // the attacker cannot win here (fixed point)
 
+/// An entry of an edge arena: the node at the other end and the next entry
+/// of the same list (NO_EDGE at the end).
+#[derive(Clone, Copy)]
+pub(super) struct Edge {
+    node: u32,
+    next: u32,
+}
+
+pub(super) const NO_EDGE: u32 = u32::MAX;
+
 const FL_EXPANDED: u8 = 1; // children added
 const FL_ON_PATH: u8 = 2; // on the current descent path
 const FL_UNSAFE: u8 = 4; // scratch flag of the fixed point
@@ -158,10 +170,20 @@ pub struct Graph<'a> {
     max_slots: usize,
     /// The position budget; an expansion starts only below it.
     max_positions: usize,
-    keys: Vec<crate::tt::Key>,
+    /// The positions (32 bytes each, the key is recomputed from them).
     recs: Vec<Record>,
-    children: Vec<Vec<u32>>,
-    parents: Vec<Vec<u32>>,
+    /// The edges live in two arenas of singly linked lists (Edge): the
+    /// children of a node in insertion order (first_child to last_child),
+    /// the parents newest first (first_parent); 12 bytes per node and 16
+    /// per edge, where a Vec per list cost 48 bytes of headers per node
+    /// plus the growth slack (docs/m7-wdl-search.md); nchildren counts
+    /// the children.
+    cedges: Vec<Edge>,
+    pedges: Vec<Edge>,
+    first_child: Vec<u32>,
+    last_child: Vec<u32>,
+    first_parent: Vec<u32>,
+    nchildren: Vec<u8>,
     status: Vec<u8>,
     white: Vec<bool>,
     level: Vec<u16>,
@@ -206,10 +228,13 @@ impl<'a> Graph<'a> {
             store: Store::with_slots(INITIAL_SLOTS),
             max_slots: INITIAL_SLOTS,
             max_positions: 0,
-            keys: Vec::new(),
             recs: Vec::new(),
-            children: Vec::new(),
-            parents: Vec::new(),
+            cedges: Vec::new(),
+            pedges: Vec::new(),
+            first_child: Vec::new(),
+            last_child: Vec::new(),
+            first_parent: Vec::new(),
+            nchildren: Vec::new(),
             status: Vec::new(),
             white: Vec::new(),
             level: Vec::new(),
@@ -300,13 +325,59 @@ impl<'a> Graph<'a> {
         if self.store.slots() >= self.max_slots {
             return (0, false, false);
         }
-        let mut grown = Store::with_slots((self.store.slots() * 4).min(self.max_slots));
-        for (i, k) in self.keys.iter().enumerate() {
-            grown.put(*k, i as u64);
+        // doubling (a fourfold jump left the store four times the graph
+        // right after it: 66 bytes per position measured), the keys
+        // rehashed from the records instead of a 16-byte copy per node
+        let mut grown = Store::with_slots((self.store.slots() * 2).min(self.max_slots));
+        for i in 0..self.recs.len() {
+            grown.put(self.board(i as u32).key, i as u64);
         }
         self.store = grown;
         let (idx, is_new, ok) = self.store.get_or_put(key, next);
         (idx as u32, is_new, ok)
+    }
+
+    /// Appends the edge i -> c: c to the children of i (insertion order), i
+    /// to the parents of c (newest first).
+    fn add_edge(&mut self, i: u32, c: u32) {
+        let e = self.cedges.len() as u32;
+        self.cedges.push(Edge { node: c, next: NO_EDGE });
+        let iu = i as usize;
+        if self.last_child[iu] == NO_EDGE {
+            self.first_child[iu] = e;
+        } else {
+            self.cedges[self.last_child[iu] as usize].next = e;
+        }
+        self.last_child[iu] = e;
+        self.nchildren[iu] += 1;
+        let p = self.pedges.len() as u32;
+        self.pedges.push(Edge { node: i, next: self.first_parent[c as usize] });
+        self.first_parent[c as usize] = p;
+        self.edges += 1;
+    }
+
+    /// Copies the children of node i into buf and returns them.
+    fn children_of<'b>(&self, i: u32, buf: &'b mut [u32; MAX_MOVES]) -> &'b [u32] {
+        let mut n = 0;
+        let mut e = self.first_child[i as usize];
+        while e != NO_EDGE {
+            buf[n] = self.cedges[e as usize].node;
+            n += 1;
+            e = self.cedges[e as usize].next;
+        }
+        &buf[..n]
+    }
+
+    /// The memory of the graph by the capacities of its arrays and the
+    /// store's slots (what the process holds for it, growth slack included).
+    pub fn bytes(&self) -> usize {
+        let mut n = self.recs.capacity() * std::mem::size_of::<Record>();
+        n += (self.cedges.capacity() + self.pedges.capacity()) * 8;
+        n += (self.first_child.capacity() + self.last_child.capacity() + self.first_parent.capacity()) * 4;
+        n += self.nchildren.capacity() + self.status.capacity() + self.white.capacity() + self.nmoves.capacity() + self.remaining.capacity() + self.flags.capacity();
+        n += self.level.capacity() * 2 + (self.pn.capacity() + self.dn.capacity()) * 4;
+        n += self.unsafe_level.as_ref().map_or(0, |l| l.capacity() * 2) + self.chase.capacity() + self.chase_depth.capacity() * 2 + self.chase_quiet.capacity();
+        n + self.store.bytes()
     }
 
     /// The node is a win for the attacker (attacker to move and winning, or
@@ -339,9 +410,10 @@ impl<'a> Graph<'a> {
     fn add(&mut self, b: &Board) -> u32 {
         let i = self.recs.len() as u32;
         self.recs.push(packed_fixed_record(b));
-        self.keys.push(b.key);
-        self.children.push(Vec::new());
-        self.parents.push(Vec::new());
+        self.first_child.push(NO_EDGE);
+        self.last_child.push(NO_EDGE);
+        self.first_parent.push(NO_EDGE);
+        self.nchildren.push(0);
         self.white.push(b.white_move);
         self.level.push(0);
         self.flags.push(0);
@@ -400,8 +472,11 @@ impl<'a> Graph<'a> {
         } else {
             pn = self.leaf_number(n);
         }
-        self.pn.push(pn);
-        self.dn.push(dn);
+        if self.defender_configs.is_none() {
+            // the descent's numbers; the certificate builder's graph has none
+            self.pn.push(pn);
+            self.dn.push(dn);
+        }
         i
     }
 
@@ -447,8 +522,10 @@ impl<'a> Graph<'a> {
         while let Some(c) = queue.pop() {
             match self.status[c as usize] {
                 ST_WIN => {
-                    for pi in 0..self.parents[c as usize].len() {
-                        let p = self.parents[c as usize][pi] as usize;
+                    let mut e = self.first_parent[c as usize];
+                    while e != NO_EDGE {
+                        let p = self.pedges[e as usize].node as usize;
+                        e = self.pedges[e as usize].next;
                         if self.status[p] != ST_UNKNOWN {
                             continue;
                         }
@@ -460,8 +537,10 @@ impl<'a> Graph<'a> {
                     }
                 }
                 ST_LOSS => {
-                    for pi in 0..self.parents[c as usize].len() {
-                        let p = self.parents[c as usize][pi] as usize;
+                    let mut e = self.first_parent[c as usize];
+                    while e != NO_EDGE {
+                        let p = self.pedges[e as usize].node as usize;
+                        e = self.pedges[e as usize].next;
                         if self.status[p] == ST_UNKNOWN {
                             self.status[p] = ST_WIN;
                             queue.push(p as u32);
@@ -512,7 +591,7 @@ impl<'a> Graph<'a> {
             } else if self.flags[i] & FL_EXPANDED == 0 {
                 true
             } else {
-                safe_children[i] = self.children[i].len() as u16;
+                safe_children[i] = self.nchildren[i] as u16;
                 false
             };
             if unsafe_ {
@@ -525,8 +604,10 @@ impl<'a> Graph<'a> {
         while head < queue.len() {
             let c = queue[head] as usize;
             head += 1;
-            for pi in 0..self.parents[c].len() {
-                let p = self.parents[c][pi] as usize;
+            let mut e = self.first_parent[c];
+            while e != NO_EDGE {
+                let p = self.pedges[e as usize].node as usize;
+                e = self.pedges[e as usize].next;
                 if self.flags[p] & FL_UNSAFE != 0 || self.status[p] != ST_UNKNOWN {
                     continue;
                 }
@@ -572,7 +653,10 @@ impl<'a> Graph<'a> {
                 defender_placements.insert(b.pieces[defender_side]);
             }
             let attacker = self.attacker_at(i);
-            for &c in &self.children[i as usize] {
+            let mut e = self.first_child[i as usize];
+            while e != NO_EDGE {
+                let c = self.cedges[e as usize].node;
+                e = self.cedges[e as usize].next;
                 if !self.defender_holds(c) {
                     continue;
                 }
@@ -620,8 +704,10 @@ impl<'a> Graph<'a> {
         while !queue.is_empty() || (lvl == 0 && !win_seeds.is_empty()) {
             let mut next: Vec<u32> = if lvl == 0 { std::mem::take(&mut win_seeds) } else { Vec::new() };
             for &c in &queue {
-                for &p in &self.parents[c as usize] {
-                    let p = p as usize;
+                let mut e = self.first_parent[c as usize];
+                while e != NO_EDGE {
+                    let p = self.pedges[e as usize].node as usize;
+                    e = self.pedges[e as usize].next;
                     if done[p] {
                         continue;
                     }
@@ -702,6 +788,7 @@ impl<'a> Graph<'a> {
         r.visits = self.visits;
         r.safe_checks = self.safe_checks;
         r.chase_nodes = self.chase_visits;
+        r.bytes = self.bytes();
         if r.outcome == Outcome::Proven {
             self.levels();
             r.win_plies = self.level[n as usize] as usize;
@@ -839,7 +926,7 @@ impl<'a> Searcher<'a> {
     /// root move (the root is expanded on the first such question; None
     /// when that expansion was cut off by the stop flag or the budget).
     fn locate(&mut self, q: &Board) -> Option<u32> {
-        if q.key == self.g.keys[0] {
+        if q.key == self.g.board(0).key {
             return Some(0);
         }
         if self.g.flags[0] & FL_EXPANDED == 0 {
@@ -1003,7 +1090,6 @@ impl<'a> Searcher<'a> {
         let n = b.gen_moves(&mut buf);
         g.flags[i as usize] |= FL_EXPANDED;
         g.expansions += 1;
-        g.children[i as usize] = Vec::with_capacity(n);
         for &m in &buf[..n] {
             let mut c = b;
             c.do_move(m);
@@ -1015,14 +1101,14 @@ impl<'a> Searcher<'a> {
             if is_new {
                 g.add(&c);
             }
-            g.children[i as usize].push(ci);
-            g.parents[ci as usize].push(i);
-            g.edges += 1;
+            g.add_edge(i, ci);
         }
         // wins through the new edges: a losing child wins the node, a
         // winning child is one legal move less for the node
-        for ci in 0..g.children[i as usize].len() {
-            let c = g.children[i as usize][ci] as usize;
+        let mut e = g.first_child[i as usize];
+        while e != NO_EDGE {
+            let c = g.cedges[e as usize].node as usize;
+            e = g.cedges[e as usize].next;
             if g.status[c] == ST_LOSS && g.status[i as usize] == ST_UNKNOWN {
                 g.status[i as usize] = ST_WIN;
             } else if g.status[c] == ST_WIN {
@@ -1066,8 +1152,10 @@ impl<'a> Searcher<'a> {
                     break;
                 }
             }
-            for ci in 0..self.g.children[i as usize].len() {
-                let ch = self.g.children[i as usize][ci];
+            let mut e = self.g.first_child[i as usize];
+            while e != NO_EDGE {
+                let ch = self.g.cedges[e as usize].node;
+                e = self.g.cedges[e as usize].next;
                 if self.g.flags[ch as usize] & FL_REGION == 0 && self.g.status[ch as usize] == ST_UNKNOWN {
                     self.g.flags[ch as usize] |= FL_REGION;
                     marked.push(ch);
@@ -1121,7 +1209,8 @@ impl<'a> Searcher<'a> {
         }
         let attacker = self.g.attacker_at(i);
         self.g.flags[i as usize] |= FL_ON_PATH;
-        let children = self.g.children[i as usize].clone();
+        let mut child_buf = [0u32; MAX_MOVES];
+        let children = self.g.children_of(i, &mut child_buf);
         // what a child returned from its descent overrides its stored
         // numbers for the rest of this loop
         let mut local = [(0u32, 0u32, false); MAX_MOVES];

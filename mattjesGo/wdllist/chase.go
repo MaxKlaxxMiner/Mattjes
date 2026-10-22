@@ -295,7 +295,8 @@ func (s *searcher) chaseAttacker(i uint32, depth int, quiet int) (chaseResult, i
 	var replies [chess.MaxMoves]reply
 	nr := 0
 	low := noLow
-	for _, c := range g.children[i] {
+	for e := g.firstChild[i]; e != noEdge; e = g.cedges[e].next {
+		c := g.cedges[e].node
 		score := 0
 		switch {
 		case g.AttackerWon(c) || g.chase[c] == chFail && int(g.chaseQuiet[c]) >= quiet:
@@ -576,9 +577,7 @@ func (s *searcher) link(i uint32, c *bitboard.Board) (uint32, bool) {
 	if g.hasChild(i, ci) {
 		return ci, true
 	}
-	g.children[i] = append(g.children[i], ci)
-	g.parents[ci] = append(g.parents[ci], i)
-	g.edges++
+	g.addEdge(i, ci)
 	if g.status[i] != stUnknown {
 		return ci, true // decided already (and propagated then): the counters are over
 	}

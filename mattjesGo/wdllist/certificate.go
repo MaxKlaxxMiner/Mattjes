@@ -206,7 +206,6 @@ func (s *searcher) expandPartial(i uint32, k int) bool {
 	if g.flags[i]&flExpanded == 0 {
 		g.flags[i] |= flExpanded
 		g.expansions++
-		g.children[i] = make([]uint32, 0, min(n, k))
 	}
 	moves := buf[:n]
 	scores := make([]int, n)
@@ -225,11 +224,11 @@ func (s *searcher) expandPartial(i uint32, k int) bool {
 		}
 		c := b
 		c.DoMove(moves[j])
-		before := len(g.children[i])
+		before := g.nchildren[i]
 		if _, ok := s.link(i, &c); !ok {
 			return false
 		}
-		if len(g.children[i]) > before {
+		if g.nchildren[i] > before {
 			added++
 		}
 	}
@@ -237,8 +236,8 @@ func (s *searcher) expandPartial(i uint32, k int) bool {
 }
 
 func (g *Graph) hasChild(i, c uint32) bool {
-	for _, x := range g.children[i] {
-		if x == c {
+	for e := g.firstChild[i]; e != noEdge; e = g.cedges[e].next {
+		if g.cedges[e].node == c {
 			return true
 		}
 	}
@@ -247,7 +246,7 @@ func (g *Graph) hasChild(i, c uint32) bool {
 
 // fullyTried: every legal move of the node is a child edge.
 func (g *Graph) fullyTried(i uint32) bool {
-	return g.flags[i]&flExpanded != 0 && len(g.children[i]) >= int(g.nmoves[i])
+	return g.flags[i]&flExpanded != 0 && g.nchildren[i] >= g.nmoves[i]
 }
 
 // newCertSearcher sets up the certificate builder of a question.
@@ -290,7 +289,8 @@ func (g *Graph) openUnexpanded(from uint32) []uint32 {
 			out = append(out, i)
 			continue
 		}
-		for _, c := range g.children[i] {
+		for e := g.firstChild[i]; e != noEdge; e = g.cedges[e].next {
+			c := g.cedges[e].node
 			if g.flags[c]&flRegion != 0 || g.status[c] != stUnknown {
 				continue
 			}
@@ -431,8 +431,8 @@ func (s *searcher) closure(frontier []uint32) {
 				next = push(next, uint32(idx))
 			}
 			// an old child reached again that is still open and unexpanded
-			for _, c := range g.children[i] {
-				if g.flags[c]&flExpanded == 0 {
+			for e := g.firstChild[i]; e != noEdge; e = g.cedges[e].next {
+				if c := g.cedges[e].node; g.flags[c]&flExpanded == 0 {
 					next = push(next, c)
 				}
 			}
@@ -472,7 +472,8 @@ func (g *Graph) unsafeDefenders(from uint32) []uint32 {
 			all = append(all, i)
 			minLevel = min(minLevel, g.unsafeLevel[i])
 		}
-		for _, c := range g.children[i] {
+		for e := g.firstChild[i]; e != noEdge; e = g.cedges[e].next {
+			c := g.cedges[e].node
 			if g.flags[c]&flRegion != 0 || g.status[c] != stUnknown {
 				continue
 			}

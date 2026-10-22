@@ -103,12 +103,19 @@ impl<'a> Graph<'a> {
     }
 
     pub(super) fn has_child(&self, i: u32, c: u32) -> bool {
-        self.children[i as usize].contains(&c)
+        let mut e = self.first_child[i as usize];
+        while e != NO_EDGE {
+            if self.cedges[e as usize].node == c {
+                return true;
+            }
+            e = self.cedges[e as usize].next;
+        }
+        false
     }
 
     /// Every legal move of the node is a child edge.
     fn fully_tried(&self, i: u32) -> bool {
-        self.flags[i as usize] & FL_EXPANDED != 0 && self.children[i as usize].len() >= self.nmoves[i as usize] as usize
+        self.flags[i as usize] & FL_EXPANDED != 0 && self.nchildren[i as usize] >= self.nmoves[i as usize]
     }
 
     /// Collects the defender nodes that still have untried moves, reachable
@@ -126,8 +133,10 @@ impl<'a> Graph<'a> {
                 all.push(i);
                 min_level = min_level.min(levels[i as usize]);
             }
-            for ci in 0..self.children[i as usize].len() {
-                let c = self.children[i as usize][ci];
+            let mut e = self.first_child[i as usize];
+            while e != NO_EDGE {
+                let c = self.cedges[e as usize].node;
+                e = self.cedges[e as usize].next;
                 if self.flags[c as usize] & FL_REGION != 0 || self.status[c as usize] != ST_UNKNOWN {
                     continue;
                 }
@@ -186,7 +195,6 @@ impl<'a> Searcher<'a> {
         if self.g.flags[i as usize] & FL_EXPANDED == 0 {
             self.g.flags[i as usize] |= FL_EXPANDED;
             self.g.expansions += 1;
-            self.g.children[i as usize] = Vec::with_capacity(n.min(k));
         }
         let moves = &buf[..n];
         let scores: Vec<i32> = moves.iter().map(|&m| self.g.policy_score(&b, m)).collect();
@@ -199,11 +207,11 @@ impl<'a> Searcher<'a> {
             }
             let mut c = b;
             c.do_move(moves[j]);
-            let before = self.g.children[i as usize].len();
+            let before = self.g.nchildren[i as usize];
             if self.link(i, &c).is_none() {
                 return false;
             }
-            if self.g.children[i as usize].len() > before {
+            if self.g.nchildren[i as usize] > before {
                 added += 1;
             }
         }
@@ -251,8 +259,10 @@ impl<'a> Searcher<'a> {
                     self.push_once(&mut next, idx as u32);
                 }
                 // an old child reached again that is still open and unexpanded
-                for ci in 0..self.g.children[i as usize].len() {
-                    let c = self.g.children[i as usize][ci];
+                let mut e = self.g.first_child[i as usize];
+                while e != NO_EDGE {
+                    let c = self.g.cedges[e as usize].node;
+                    e = self.g.cedges[e as usize].next;
                     if self.g.flags[c as usize] & FL_EXPANDED == 0 {
                         self.push_once(&mut next, c);
                     }
@@ -294,8 +304,10 @@ impl<'a> Graph<'a> {
                 out.push(i);
                 continue;
             }
-            for ci in 0..self.children[i as usize].len() {
-                let c = self.children[i as usize][ci];
+            let mut e = self.first_child[i as usize];
+            while e != NO_EDGE {
+                let c = self.cedges[e as usize].node;
+                e = self.cedges[e as usize].next;
                 if self.flags[c as usize] & FL_REGION != 0 || self.status[c as usize] != ST_UNKNOWN {
                     continue;
                 }

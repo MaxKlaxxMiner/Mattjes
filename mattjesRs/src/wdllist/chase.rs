@@ -244,10 +244,12 @@ impl<'a> Searcher<'a> {
                 return (ChaseResult::Hold, NO_LOW);
             }
         }
-        let mut replies: Vec<(u32, i32)> = Vec::with_capacity(self.g.children[i as usize].len());
+        let mut replies: Vec<(u32, i32)> = Vec::with_capacity(self.g.nchildren[i as usize] as usize);
         let mut low = NO_LOW;
-        for ci in 0..self.g.children[i as usize].len() {
-            let c = self.g.children[i as usize][ci];
+        let mut e = self.g.first_child[i as usize];
+        while e != NO_EDGE {
+            let c = self.g.cedges[e as usize].node;
+            e = self.g.cedges[e as usize].next;
             let cu = c as usize;
             if self.g.attacker_won(c) || self.g.chase[cu] == CH_FAIL && self.g.chase_quiet[cu] as usize >= quiet {
                 return (ChaseResult::Fail, NO_LOW);
@@ -483,9 +485,7 @@ impl<'a> Searcher<'a> {
         if g.has_child(i, ci) {
             return Some(ci);
         }
-        g.children[iu].push(ci);
-        g.parents[ci as usize].push(i);
-        g.edges += 1;
+        g.add_edge(i, ci);
         if g.status[iu] != ST_UNKNOWN {
             return Some(ci); // decided already (and propagated then): the counters are over
         }

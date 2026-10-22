@@ -7,6 +7,7 @@ import (
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mateab"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/syzygy"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/wdllist"
@@ -112,7 +113,7 @@ func wdllistSolve(names string, options string) {
 		got := chess.Draw
 		undecided := false
 		var pv []chess.Move
-		positions, expansions := 0, 0
+		positions, expansions, bytes := 0, 0, 0
 		for q, attacks := range []bool{true, false} {
 			question := "side to move wins"
 			if !attacks {
@@ -122,6 +123,7 @@ func wdllistSolve(names string, options string) {
 			r := wdllist.Solve(&b, attacks, opt)
 			positions += r.Positions
 			expansions += r.Expansions
+			bytes += r.Bytes
 			verdict := "undecided"
 			switch {
 			case r.Stuck:
@@ -163,7 +165,7 @@ func wdllistSolve(names string, options string) {
 			verdict = "FAIL"
 			ok = false
 		}
-		fmt.Printf("    result %s (%s): %s positions, %s expansions in %s\n", result, verdict, perftGroup(uint64(positions)), perftGroup(uint64(expansions)), fmtMs(elapsed))
+		fmt.Printf("    result %s (%s): %s positions, %s expansions in %s, graphs %d MB (%d bytes per position)\n", result, verdict, perftGroup(uint64(positions)), perftGroup(uint64(expansions)), fmtMs(elapsed), bytes>>20, bytes/max(positions, 1))
 		if len(pv) > 0 {
 			fmt.Printf("    line (%d plies): %s\n", len(pv), pvString(pv))
 		}
@@ -173,6 +175,11 @@ func wdllistSolve(names string, options string) {
 		fmt.Println("  [all ok]")
 	} else {
 		fmt.Println("  [FAILURES]")
+	}
+	if committed, workingSet, ok := egtb.PeakMemory(); ok {
+		// the bytes per graph position (docs/m7-wdl-search.md): one
+		// position with the descent alone, so the graph is the process
+		fmt.Printf("    peak memory: %d MB committed, %d MB working set\n", committed>>20, workingSet>>20)
 	}
 	fmt.Println()
 }
