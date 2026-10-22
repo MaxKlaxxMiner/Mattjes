@@ -784,6 +784,78 @@ Die Suche meldet nach jeder UCI-Suche `info string egtb: block cache <Treffer>
 hits, <Misses> misses, <berührt> of <Blöcke> blocks touched` (Go = Rust), die
 Testbank dasselbe als Zeile `block cache <Budget> MB: ...`.
 
+## Eigene WDL-Tabellen: Messung an der Basis (2026-10-22)
+
+Richtung des Autors: Die Tabellen in **WDL und DTM aufteilen**. Wo Original-Syzygy-WDL
+liegen, nimmt die Suche sie (das tut sie seit dem Leser schon); fehlen sie, sollen wir
+eigene WDL-Tabellen erzeugen können, und unsere DTM (quantisiert, nur noch für die
+Zugführung) werden dadurch kleiner. Kompatibilität mit dem Syzygy-Format ist nicht
+nötig, die Fünfzig-Züge-Regel auch nicht (DTM ersetzt sie, cursed win = Gewinn), aber
+die **Größe muss vergleichbar** sein. Erste Frage also: Wie klein wird eine aus der
+exakten Basis abgeleitete WDL-Tabelle, und woran liegt der Abstand zu Syzygy?
+
+Werkzeug `egtbWdlSize(workers, dumpDir)` in `tests_egtb_wdl.go` (Go, Messung): je
+Material der Basis die drei Symbole Verlust/Remis/Gewinn in Index-Reihenfolge,
+tote und illegale Indizes mit dem Vorgänger gefüllt wie in der DTM-Datei, dazu
+**Syzygys Don't-care-Regel**: Der Prober löst Schläge auf, bevor er die Tabelle liest
+(`probe_ab`: Ergebnis = Maximum aus bestem Schlag und Tabellenwert), also ist der
+gespeicherte Wert nur dort nötig, wo er den besten Schlag schlägt. Jede Stellung, deren
+bester Schlag ihren Wert schon erreicht, wird ebenfalls mit dem Vorgänger gefüllt. Die
+Symbolströme liegen danach in `tests/wdl/` für externe Packer. 16,5 s für alle 35.
+
+| Material | legal | Schlag-Don't-care | `lz` Bytes | `lz` 2 Bit | zstd −19 | xz −9e | Syzygy `.rtbw` |
+|---|---|---|---|---|---|---|---|
+| KQK | 46.137 | 6,0 % | 491 | 283 | 186 | 304 | 272 |
+| KBBK | 1.489.788 | 9,4 % | 221.067 | 134.227 | 46.800 | 36.232 | 58.000 |
+| KBNK | 3.067.466 | 9,5 % | 49.267 | 23.915 | 10.946 | 8.564 | 7.632 |
+| KQKQ | 2.238.432 | 42,9 % | 94.061 | 63.212 | 42.071 | 35.208 | 16.528 |
+| KQKR | 2.467.122 | 34,5 % | 42.176 | 24.912 | 17.643 | 13.972 | 20.496 |
+| KRKN | 2.915.128 | 23,2 % | 330.804 | 218.464 | 128.552 | 103.340 | 100.048 |
+| KRKB | 2.827.104 | 26,2 % | 156.422 | 102.831 | 54.278 | 45.628 | 32.912 |
+| KBKB | 2.958.396 | 22,6 % | 15.100 | 3.918 | 350 | 844 | 1.232 |
+| KBPK | 9.441.347 | 9,7 % | 453.508 | 235.213 | 95.293 | 71.828 | 81.424 |
+| KRKP | 9.031.524 | 19,9 % | 537.794 | 307.958 | 144.054 | 117.640 | 179.408 |
+| KNKP | 9.685.770 | 15,5 % | 790.661 | 414.780 | 166.581 | 131.724 | 148.048 |
+| KPKP | 7.436.088 | 12,9 % | 875.122 | 565.959 | 279.568 | 226.440 | 245.328 |
+| **alle 35** | | | 5.508.564 | 3.045.947 | 1.360.952 | 1.094.720 | **1.262.704** |
+
+Ohne die Schlag-Füllung packt `lz` die Bytes auf 7,5 MB; gzip −9 liefert 3,1 MB,
+bzip2 1,8 MB (alle auf dem Byte-Strom mit Schlag-Füllung).
+
+Lesart:
+
+- **Die Information reicht.** Mit Vorgänger-Füllung und Schlag-Don't-care ist der
+  Symbolstrom so redundant, dass xz ihn auf 87 % der Syzygy-Dateien bringt und zstd auf
+  108 %. tbgens klügere Don't-care-Wahl ist also kein Muss; die Füllung mit dem
+  Vorgänger genügt für die Zielgröße.
+- **Der Abstand ist allein der Packer.** Unser `lz` liegt bei Faktor 2,4 (2-Bit-Strom)
+  bis 4,4 (Bytes) über Syzygy. Ein byteorientierter LZ ohne Entropiestufe verschwendet
+  auf einem Strom aus drei Symbolen; das Packen zu vier Symbolen je Byte holt schon
+  fast die Hälfte, gzip (LZ plus Huffman) landet auf Bytes genau dort. Zur Zielgröße
+  fehlt mehr als eine Huffman-Stufe: zstd und xz gewinnen über lange Fenster, optimales
+  Parsen und Kontextmodelle.
+- **Die Schlag-Füllung trifft 6 bis 43 % der legalen Stellungen** (KQKQ 43 %, KQKR 35 %,
+  Bauern-Endspiele 10 bis 20 %, ein Stein gegen den blanken König 5 bis 10 %). Sie
+  kostet den Prober je Anfrage die Schlagzüge plus ein Nachschlagen je Schlag, wie bei
+  Syzygy.
+
+Folgerung für den Packer: **Syzygys eigenes Schema (rekursive Paarersetzung, Re-Pair,
+plus kanonischer Huffman über die Symbole, winzige Blöcke mit Index)** ist für genau
+diese Daten gebaut und erreicht die Zielgröße nachweislich; es arbeitet auf Symbolen
+statt Bytes, braucht kein Fenster, und ein Prober entpackt je Anfrage nur einen Block
+von wenigen Dutzend Byte, so dass die Tabelle gepackt im `mmap` bleibt (kein 2-GB-
+Blockcache wie bei den DTM-Dateien). Eine Entropiestufe in `lz` bliebe bei gzip-Niveau
+(Faktor 2,5) und wäre für WDL der falsche Weg; für die DTM-Dateien ist dieselbe
+Paarersetzung ebenfalls ein Kandidat (Syzygys DTZ-Dateien nutzen sie mit mehr
+Symbolen).
+
+Noch offen in dieser Reihenfolge: das Paket für Re-Pair plus Huffman (Go, dann Rust,
+byteidentisch) an diesen Symbolströmen messen; das eigene Dateiformat (eine Datei je
+Material unter `mattjes-egtb-cache/`, Index wie die DTM-Tabelle, Schlag-Don't-care
+auch im eigenen Prober); die Ableitung aus jeder fertigen DTM-Tabelle beim Schreiben;
+die DTM-Datei danach mit Remis als Don't-care; und im Orakel die Reihenfolge eigene
+WDL, Syzygy-WDL, DTM nur für die Distanz.
+
 ## Offen
 
 - **KPPKP ist unvollständig** (mindestens 7 Verluste in 254 Halbzügen lesen sich als
