@@ -9,7 +9,11 @@ package syzygy
 // fifty-move shades: 0 loss, 1 draw, 2 win for the side to move.
 
 import (
+	"bufio"
+	"encoding/binary"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 
@@ -81,14 +85,19 @@ func piecesOf(m egtb.Material) []chess.Piece {
 	return ps
 }
 
-// DontCare marks a position whose stored value does not matter.
-const DontCare = 0xff
+// DontCare marks a position whose stored value does not matter; a symbol
+// bounded+v marks one whose stored value may be anything up to v.
+const (
+	DontCare = 0xff
+	bounded  = 3
+)
 
 // Source is the WDL of a material taken from an exact egtb table: per
-// index the symbol (0 loss, 1 draw, 2 win for the side to move) or DontCare
-// for dead and illegal indices and for positions whose best capture already
-// achieves their value (the probe resolves captures before it reads the
-// table, so the stored value only matters when it beats the best capture).
+// index the symbol (0 loss, 1 draw, 2 win for the side to move), DontCare
+// for dead and illegal indices, or bounded+symbol for positions whose best
+// capture already achieves their value: the probe takes the maximum of the
+// best capture and the stored value, so the stored value may be anything up
+// to the real one (anything at all when a capture wins).
 type Source struct {
 	Table   *egtb.Table
 	Symbols []byte
@@ -154,7 +163,7 @@ func NewSource(set *egtb.Set, t *egtb.Table, workers int) *Source {
 				}
 				if hasCapture && best == own {
 					decided++
-					continue
+					own += bounded
 				}
 				src.Symbols[idx] = own
 			}
@@ -411,7 +420,8 @@ func Build(src *Source, opt pairs.Options, workers int, progress func(string)) *
 
 // buildSide lays the symbols of one side to move out in the index order of
 // a candidate (one stream per pawn file), don't-care positions filled with
-// their predecessor.
+// their predecessor (bounded ones with the predecessor when it fits, else
+// the bound).
 func buildSide(src *Source, be *baseEntry, side int, o Order, files int, workers int) (values [][]byte, sizes []uint64) {
 	enc := encPiece
 	if be.hasPawns {
@@ -455,7 +465,40 @@ func buildSide(src *Source, be *baseEntry, side int, o Order, files int, workers
 				if be.hasPawns {
 					f = leadingPawn(p[:], be, encFile)
 				}
-				values[f][encode(p[:], &eis[f], be, enc)] = s
+				q := p
+				values[f][encode(q[:], &eis[f], be, enc)] = s
+				// our index folds the diagonal transposition always, Syzygy's
+				// only by the first off-diagonal piece of the leading group:
+				// with the whole group on the diagonal the transposed twin is
+				// a position of its own in the stream
+				if !be.hasPawns {
+					// the squares as encode sees them before its diagonal step:
+					// mirrored into the a1-d4 quadrant by the first piece
+					q = p
+					if q[0]&4 != 0 {
+						for i := range q[:be.num] {
+							q[i] ^= 7
+						}
+					}
+					if q[0]&0x20 != 0 {
+						for i := range q[:be.num] {
+							q[i] ^= 0x38
+						}
+					}
+					onDiagonal := true
+					for i := 0; i < int(eis[0].norm[0]); i++ {
+						if offDiag[q[i]] != 0 {
+							onDiagonal = false
+							break
+						}
+					}
+					if onDiagonal {
+						for i := range q[:be.num] {
+							q[i] = int(flipDiag[q[i]])
+						}
+						values[f][encode(q[:], &eis[f], be, enc)] = s
+					}
+				}
 			}
 		}()
 	}
@@ -463,14 +506,89 @@ func buildSide(src *Source, be *baseEntry, side int, o Order, files int, workers
 	for f := range values {
 		prev := byte(1)
 		for i, v := range values[f] {
-			if v == DontCare {
+			switch {
+			case v == DontCare:
 				values[f][i] = prev
-			} else {
+			case v >= bounded: // the predecessor when it fits the bound, else the bound
+				if prev > v-bounded {
+					prev = v - bounded
+				}
+				values[f][i] = prev
+			default:
 				prev = v
 			}
 		}
 	}
 	return values, sizes
+}
+
+// --- the file ---
+
+// The own WDL file: a 32-byte header ("MWDL", version, pieces, sides, files,
+// the piece counts of both sides), one 32-byte descriptor per stream (piece
+// codes, chain positions, offset and length of its container) and the
+// containers of package pairs, each 8-aligned. Streams are ordered side by
+// side, pawn files innermost.
+const (
+	ownMagic      = "MWDL"
+	ownVersion    = 1
+	ownHeader     = 32
+	ownDescriptor = 32
+)
+
+// Write writes the table to path (the folder is created).
+func (b *Built) Write(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	n := len(b.Streams)
+	head := make([]byte, ownHeader+ownDescriptor*n)
+	copy(head, ownMagic)
+	head[4] = ownVersion
+	pieces := 0
+	for _, c := range b.First {
+		pieces += int(c)
+	}
+	for _, c := range b.Second {
+		pieces += int(c)
+	}
+	head[5], head[6], head[7] = byte(pieces), byte(b.Sides), byte(b.Files)
+	copy(head[8:], b.First[:])
+	copy(head[14:], b.Second[:])
+	offset := len(head)
+	for i, s := range b.Streams {
+		d := head[ownHeader+ownDescriptor*i:]
+		copy(d, s.Order.Pieces)
+		d[7], d[8] = byte(s.Order.Order), byte(s.Order.Order2)
+		binary.LittleEndian.PutUint64(d[16:], uint64(offset))
+		binary.LittleEndian.PutUint64(d[24:], uint64(len(s.Packed)))
+		offset += (len(s.Packed) + 7) &^ 7
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	w := bufio.NewWriterSize(f, 1<<20)
+	w.Write(head)
+	for _, s := range b.Streams {
+		w.Write(s.Packed)
+		for k := len(s.Packed); k&7 != 0; k++ {
+			w.WriteByte(0)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// WriteWDL derives, builds and writes the own WDL table of an exact egtb
+// table to path; returns what was built.
+func WriteWDL(set *egtb.Set, t *egtb.Table, path string, opt pairs.Options, workers int, progress func(string)) (*Built, error) {
+	src := NewSource(set, t, workers)
+	b := Build(src, opt, workers, progress)
+	return b, b.Write(path)
 }
 
 // squaresOf appends the Syzygy squares of every piece with the code c (in

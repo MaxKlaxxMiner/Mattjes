@@ -4,6 +4,7 @@ import (
 	"math/bits"
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
 )
 
@@ -41,6 +42,9 @@ func (t *Tables) ProbeWDL(b *bitboard.Board) (int, bool) {
 	t.Probes.Add(1)
 	white, black := counts(b)
 	if _, ok := t.find(materialKey(white, black)); !ok {
+		if t.base != nil {
+			return t.baseWDL(b)
+		}
 		return 0, false
 	}
 	var buf chess.MoveBuffer
@@ -146,6 +150,9 @@ func (t *Tables) probeTable(b *bitboard.Board) (int, bool) {
 	}
 	l, ok := t.find(materialKey(white, black))
 	if !ok {
+		if t.base != nil {
+			return t.baseWDL(b) // exact, captures included
+		}
 		return 0, false
 	}
 	be := l.be
@@ -190,8 +197,31 @@ func (t *Tables) probeTable(b *bitboard.Board) (int, bool) {
 		}
 		idx = encode(p[:], ei, be, encFile)
 	}
+	if ei.own != nil {
+		return int(ei.own.Value(int(idx)))*2 - 2, true // our tables store 0 loss, 1 draw, 2 win
+	}
 	w := ei.precomp.decompress(idx)
 	return int(w[0]) - 2, true
+}
+
+// SetBase gives the prober the exact base tables for the materials without
+// a WDL file: our own WDL tables (write.go) cover one material each, and a
+// probe resolves captures into smaller materials first.
+func (t *Tables) SetBase(set *egtb.Set) { t.base = set }
+
+// baseWDL answers from the base tables (no WDL file for the material).
+func (t *Tables) baseWDL(b *bitboard.Board) (int, bool) {
+	v, ok := t.base.Lookup(b)
+	if !ok {
+		return 0, false
+	}
+	switch {
+	case v.IsWin():
+		return Win, true
+	case v.IsLoss():
+		return Loss, true
+	}
+	return Draw, true
 }
 
 // fillSquares appends the squares of the pieces with the Syzygy code pc[i]

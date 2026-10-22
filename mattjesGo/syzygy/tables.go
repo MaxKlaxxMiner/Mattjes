@@ -11,6 +11,7 @@ package syzygy
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,6 +20,8 @@ import (
 	"sync/atomic"
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/pairs"
 )
 
 // wdlMagic opens every *.rtbw file.
@@ -45,6 +48,7 @@ type baseEntry struct {
 	data      []byte
 	closer    func()
 	ei        []encInfo // 2 (pieces: one per side to move) or 8 (pawns: 4 files, then the other side)
+	own       bool      // our own file (write.go) instead of a Syzygy file
 }
 
 // lookup points a material key to its table and tells whether the
@@ -61,6 +65,7 @@ type Tables struct {
 	entries map[uint64]lookup
 	list    []*baseEntry
 	mu      sync.Mutex // serialises the lazy initialisation of a table
+	base    *egtb.Set  // SetBase: the exact tables for materials without a file
 	Probes  atomic.Uint64
 	Hits    atomic.Uint64
 }
@@ -100,6 +105,11 @@ func parseName(name string) (first, second [6]uint8, ok bool) {
 	return first, second, first[0] == 1 && second[0] == 1
 }
 
+// New is an empty set of tables (AddOwn fills it without Syzygy files).
+func New() *Tables {
+	return &Tables{entries: map[uint64]lookup{}}
+}
+
 // Open scans a directory for *.rtbw files and registers them; the files
 // are mapped on first use. Files with an incomplete size are skipped.
 func Open(dir string) (*Tables, error) {
@@ -107,7 +117,8 @@ func Open(dir string) (*Tables, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := &Tables{dir: dir, entries: map[uint64]lookup{}}
+	t := New()
+	t.dir = dir
 	for _, de := range names {
 		fn := de.Name()
 		if !strings.HasSuffix(fn, ".rtbw") || de.IsDir() {
@@ -131,6 +142,111 @@ func Open(dir string) (*Tables, error) {
 	}
 	sort.Slice(t.list, func(a, b int) bool { return t.list[a].name < t.list[b].name })
 	return t, nil
+}
+
+// AddOwn scans a directory for our own WDL tables (*.wdl, write.go) and
+// registers those materials that no Syzygy file covers yet: the originals
+// win, ours are the fallback. Returns the number added.
+func (t *Tables) AddOwn(dir string) (int, error) {
+	names, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	added := 0
+	for _, de := range names {
+		fn := de.Name()
+		if !strings.HasSuffix(fn, ".wdl") || de.IsDir() {
+			continue
+		}
+		path := filepath.Join(dir, fn)
+		first, second, ok := readOwnHeader(path)
+		if !ok {
+			continue
+		}
+		if _, found := t.entries[materialKey(first, second)]; found {
+			continue
+		}
+		be := newEntry(Name(first, second), first, second)
+		if be == nil {
+			continue
+		}
+		be.path, be.own = path, true
+		t.register(be, first, second)
+		added++
+	}
+	sort.Slice(t.list, func(a, b int) bool { return t.list[a].name < t.list[b].name })
+	return added, nil
+}
+
+// readOwnHeader reads the piece counts from the header of one of our files.
+func readOwnHeader(path string) (first, second [6]uint8, ok bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return first, second, false
+	}
+	defer f.Close()
+	var head [ownHeader]byte
+	if _, err := io.ReadFull(f, head[:]); err != nil || string(head[:4]) != ownMagic || head[4] != ownVersion {
+		return first, second, false
+	}
+	copy(first[:], head[8:14])
+	copy(second[:], head[14:20])
+	return first, second, first[0] == 1 && second[0] == 1
+}
+
+// initOwn maps one of our files and opens its streams (the counterpart of
+// init for Syzygy files).
+func (be *baseEntry) initOwn() error {
+	data, closer, err := mapFile(be.path)
+	if err != nil {
+		return err
+	}
+	if len(data) < ownHeader || string(data[:4]) != ownMagic || data[4] != ownVersion {
+		closer()
+		return fmt.Errorf("syzygy: %s is not an own WDL table", be.path)
+	}
+	sides, files := int(data[6]), int(data[7])
+	num := 1
+	enc := encPiece
+	if be.hasPawns {
+		num = 4
+		enc = encFile
+	}
+	if files != num || sides != 2-boolInt(be.symmetric) || len(data) < ownHeader+ownDescriptor*sides*files {
+		closer()
+		return fmt.Errorf("syzygy: %s does not match its material", be.path)
+	}
+	be.data, be.closer = data, closer
+	be.ei = make([]encInfo, 2*num)
+	for side := 0; side < sides; side++ {
+		for f := 0; f < files; f++ {
+			d := data[ownHeader+ownDescriptor*(side*files+f):]
+			ei := &be.ei[side*num+f]
+			copy(ei.pieces[:], d[:7])
+			ei.setup(be, int(d[7]), int(d[8]), f, enc)
+			off, length := binary.LittleEndian.Uint64(d[16:]), binary.LittleEndian.Uint64(d[24:])
+			if off+length > uint64(len(data)) {
+				return fmt.Errorf("syzygy: %s: stream %d beyond the file", be.path, side*files+f)
+			}
+			ei.own, err = pairs.Open(data[off : off+length])
+			if err != nil {
+				return fmt.Errorf("syzygy: %s: %v", be.path, err)
+			}
+		}
+	}
+	if sides == 1 {
+		for f := 0; f < num; f++ {
+			be.ei[num+f] = be.ei[f]
+		}
+	}
+	return nil
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // newEntry describes the table of a material given as piece counts (the
@@ -224,7 +340,13 @@ func (t *Tables) prepare(be *baseEntry) bool {
 	if be.failed.Load() {
 		return false
 	}
-	if err := be.init(); err != nil {
+	var err error
+	if be.own {
+		err = be.initOwn()
+	} else {
+		err = be.init()
+	}
+	if err != nil {
 		be.failed.Store(true)
 		return false
 	}
@@ -327,8 +449,12 @@ func (t *Tables) Describe(name string) (lines []string, ok bool) {
 			num = 4
 		}
 		for i, ei := range be.ei {
-			if i >= num && be.ei[i-num].precomp == ei.precomp {
+			if i >= num && be.ei[i-num].precomp == ei.precomp && be.ei[i-num].own == ei.own {
 				continue // not split: one stream serves both sides to move
+			}
+			if ei.own != nil {
+				lines = append(lines, fmt.Sprintf("%s stream %d (own): %d positions, %d bytes; pieces %v norm %v factors %v", name, i, ei.own.Len(), ei.own.Bytes(), ei.pieces[:be.num], ei.norm[:be.num], ei.factor[:be.num]))
+				continue
 			}
 			d := ei.precomp
 			if d.idxBits == 0 {
@@ -359,7 +485,15 @@ func (t *Tables) Streams(name string) (values [][]byte, bytes []int) {
 			num = 4
 		}
 		for i, ei := range be.ei {
-			if i >= num && be.ei[i-num].precomp == ei.precomp {
+			if i >= num && be.ei[i-num].precomp == ei.precomp && be.ei[i-num].own == ei.own {
+				continue
+			}
+			if ei.own != nil {
+				v := make([]byte, ei.own.Len())
+				for j := range v {
+					v[j] = ei.own.Value(j) * 2
+				}
+				values, bytes = append(values, v), append(bytes, ei.own.Bytes())
 				continue
 			}
 			d := ei.precomp

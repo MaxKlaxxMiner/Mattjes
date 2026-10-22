@@ -858,7 +858,7 @@ func (e *Engine) loadDependencies(b *bitboard.Board) {
 	if !ok || 2+len(white)+len(black) <= 4 {
 		return
 	}
-	entries, err := os.ReadDir(e.set.CacheDir)
+	entries, err := os.ReadDir(e.set.DtmPath())
 	if err != nil {
 		return
 	}

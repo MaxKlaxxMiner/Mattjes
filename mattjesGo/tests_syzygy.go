@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math/rand"
+	"os"
 	"strings"
 	"time"
 
@@ -162,7 +163,84 @@ func syzygyVerify(dir string, names string, samples int) {
 		return
 	}
 	fmt.Printf("syzygy: %d WDL tables in %s, largest %d pieces, scanned in %s\n", tb.Count(), dir, tb.Largest(), time.Since(start).Round(time.Millisecond))
+	syzygyVerifyTables(tb, egtbLoadOrGenerate(12), names, samples)
+}
+
+// syzygyOwnWrite writes our own WDL tables of the named base materials ("" =
+// all) into the cache folder (egtb.WdlDir) and prints the sizes.
+func syzygyOwnWrite(names string, workers int, opt pairs.Options) {
+	set := egtbLoadOrGenerate(workers)
+	start := time.Now()
+	total := 0
+	for _, t := range set.Base() {
+		if names != "" && !strings.Contains(";"+names+";", ";"+t.Mat.Name()+";") {
+			continue
+		}
+		tStart := time.Now()
+		path := set.WdlFile(t.Mat)
+		b, err := syzygy.WriteWDL(set, t, path, opt, workers, nil)
+		if err != nil {
+			panic(err)
+		}
+		info, _ := os.Stat(path)
+		fmt.Printf("%-6s %4d candidates, %8d bytes in %d streams, file %8d bytes (%.1f s)\n", t.Mat.Name(), b.Candidates, b.Bytes(), len(b.Streams), info.Size(), time.Since(tStart).Seconds())
+		total += int(info.Size())
+	}
+	fmt.Printf("written %d bytes to %s in %.1f s\n\n", total, set.WdlPath(), time.Since(start).Seconds())
+}
+
+// syzygyOwnVerify probes our own WDL tables in the cache folder through the
+// Syzygy prober against the base tables (random positions per material,
+// "" = every material with a file).
+func syzygyOwnVerify(names string, samples int) {
 	set := egtbLoadOrGenerate(12)
+	tb := syzygy.New()
+	n, err := tb.AddOwn(set.WdlPath())
+	if err != nil {
+		fmt.Printf("own wdl: %v\n", err)
+		return
+	}
+	tb.SetBase(set) // captures into materials without a file
+	fmt.Printf("own wdl: %d tables in %s\n", n, set.WdlPath())
+	if names == "" {
+		var all []string
+		for _, t := range set.Base() {
+			if _, err := os.Stat(set.WdlFile(t.Mat)); err == nil {
+				all = append(all, t.Mat.Name())
+			}
+		}
+		names = strings.Join(all, ";")
+	}
+	syzygyVerifyTables(tb, set, names, samples)
+}
+
+// syzygyOwnProbe probes single positions (semicolon separated FENs) in our
+// own WDL tables and prints the base value next to it, for debugging.
+func syzygyOwnProbe(fens string) {
+	set := egtbLoadOrGenerate(12)
+	tb := syzygy.New()
+	if _, err := tb.AddOwn(set.WdlPath()); err != nil {
+		fmt.Printf("own wdl: %v\n", err)
+		return
+	}
+	tb.SetBase(set)
+	for _, fen := range strings.Split(fens, ";") {
+		b, err := bitboard.FromFEN(strings.TrimSpace(fen))
+		if err != nil {
+			fmt.Printf("%s: %v\n", fen, err)
+			continue
+		}
+		own, ok1 := set.Lookup(&b)
+		v, ok2 := tb.ProbeWDL(&b)
+		fmt.Printf("%s: base %v (%v), own wdl %d (%v)\n", fen, own, ok1, v, ok2)
+	}
+	fmt.Println()
+}
+
+// syzygyVerifyTables compares the WDL tables with the own tables of the
+// named materials on random positions.
+func syzygyVerifyTables(tb *syzygy.Tables, set *egtb.Set, names string, samples int) {
+	start := time.Now()
 	rng := rand.New(rand.NewSource(1))
 	totalMismatch := 0
 	for _, name := range strings.Split(names, ";") {

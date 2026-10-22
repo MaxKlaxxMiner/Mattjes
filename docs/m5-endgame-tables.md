@@ -903,17 +903,56 @@ kleinsten. Ergebnis auf fünf Tabellen, alle Kandidaten durchprobiert:
 | Summe | | 170.282 | 173.776 | **0,98** |
 
 Eine zufällige Anfrage kostet in Go rund 300 ns (Testbank `pairsMeasure`, jede
-Stellung gegen den Strom geprüft). Offen: der Lauf über die ganze Basis
-(`syzygyBuild("")`, Minuten wegen der Bauerntabellen mit 11 Mio. Indizes mal 24
-Kandidaten), für Fünf- und Sechs-Steiner eine Vorauswahl der Kandidaten statt
-Durchprobieren (360 Kandidaten bei fünf Einzelsteinen; Idee: die Wechselrate des
-Werts beim Verschieben des schnellsten Steins auf einer Stichprobe schätzen, nur die
-besten drei bauen), das Dateiformat (eine Datei je Material unter
-`mattjes-egtb-cache/wdl/`, je Strom Reihenfolge und Container), der Leser im
-Package `syzygy` neben den `.rtbw` (gleicher Prober, eigener Dekoder), die
-Ableitung aus jeder fertigen DTM-Tabelle beim Schreiben, die DTM-Datei danach mit
-Remis als Don't-care, im Orakel die Reihenfolge eigene WDL, Syzygy-WDL, DTM nur für
-die Distanz, und der Rust-Port.
+Stellung gegen den Strom geprüft).
+
+### Die Datei und der Leser (2026-10-22)
+
+Ablage (Entscheidung des Autors): `mattjes-egtb-cache/wdl/<Steine>-<Name>.wdl` für
+die eigenen WDL-Tabellen, `mattjes-egtb-cache/dtm/` für die quantisierten
+DTM-Tabellen ab fünf Steinen (`egtb.DtmDir`, `WdlDir`, `Set.TablePath` zeigt jetzt
+dorthin), nur `4-all.bin` bleibt im Wurzelordner. Die Datei: 32-Byte-Kopf (`MWDL`,
+Version, Steine, Seiten, Linien, Steinzahlen beider Seiten), je Strom ein 32-Byte-
+Deskriptor (Steincodes, Kettenpositionen, Offset und Länge) und die `pairs`-Container,
+8-Byte-ausgerichtet; `Built.Write`, `WriteWDL(set, table, path, ...)`. Der Leser
+sitzt im Package `syzygy` neben den `.rtbw`: `Tables.AddOwn(dir)` registriert jede
+Datei, deren Material noch keine Syzygy-Datei hat (die Originale gewinnen), `initOwn`
+mappt die Datei und öffnet die Ströme mit `pairs.Open`, `probeTable` liest je nach
+Strom den Syzygy-Dekoder oder `pairs.Table.Value` (0/1/2 → −2/0/2); Schlagauflösung,
+Spiegelungen und Bauernlinien sind derselbe Prober. `Tables.SetBase(set)` gibt dem
+Prober die exakten Basistabellen für Materialien ohne Datei: ein Fünf-Steiner-Probe
+löst Schläge in Vier-Steiner auf, und die müssen nicht als Dateien vorliegen.
+
+Zwei Fallen beim Prüfen (`syzygyOwnVerify`: Zufallsstellungen durch den Prober gegen
+die Basis):
+
+- **Don't-care ist eine Schranke, kein Freibrief.** Der Prober liefert das Maximum aus
+  bestem Schlag und Tabellenwert. Erreicht der beste Schlag den Wert der Stellung, darf
+  der gespeicherte Wert alles *bis zu* diesem Wert sein, nicht mehr: KQKQ hatte mit
+  freier Füllung 8 Fehler in 20.000, KPKP 321 (Dxb7+ Kxb7 ist Remis, der Vorgänger
+  "Gewinn" machte daraus einen Gewinn). `NewSource` markiert solche Stellungen als
+  `bounded+Wert`, die Füllung nimmt den Vorgänger, wenn er unter der Schranke liegt,
+  sonst die Schranke; nur ein gewinnender Schlag macht die Stellung ganz frei. Kostet
+  wenig: KRKN 101,5 → 102,2 KB, KPKP 243,7 → 252,0 KB.
+- **Die Diagonale.** Unser Tabellenindex faltet die Transposition immer (kleinerer von
+  zwei Indizes), Syzygys nur über den ersten Stein der Führungsgruppe, der nicht auf
+  der Diagonale liegt. Liegt die ganze Führungsgruppe (beide Könige bei `kkEnc`, sonst
+  das Tripel) nach Syzygys Spiegelung in den Quadranten a1–d4 auf der Diagonale, ist
+  der transponierte Zwilling im Strom eine eigene Stellung, die der Schreiber auch
+  eintragen muss (KBBK 93 Fehler in 20.000, KRKR 1: Türme g2/b7, Könige a8/g5 liegen
+  nach der Spiegelung alle auf der Diagonale). Die Prüfung muss auf den gespiegelten
+  Feldern laufen, nicht auf den rohen.
+
+Stand: 14 Materialien geschrieben und mit je 100.000 Zufallsstellungen geprüft, alle
+stimmen; eine Anfrage mit Schlagauflösung kostet rund 1 µs (Go). Offen: der Lauf über
+die ganze Basis (`syzygyOwnWrite("")` plus `syzygyOwnVerify("")`, Minuten wegen der
+Bauerntabellen mit 11 Mio. Indizes mal 24 Kandidaten), für Fünf- und Sechs-Steiner
+eine Vorauswahl der Kandidaten statt Durchprobieren (360 Kandidaten bei fünf
+Einzelsteinen; Idee: die Wechselrate des Werts beim Verschieben des schnellsten Steins
+auf einer Stichprobe schätzen, nur die besten drei bauen), die Einbindung (UCI legt die
+`syzygy.Tables` immer an: `SyzygyPath` falls gesetzt, dazu `AddOwn` auf den
+Cache-Ordner und `SetBase`; der Hintergrund-Job schreibt nach jeder fertigen
+DTM-Tabelle die WDL-Datei), die DTM-Datei danach mit Remis als Don't-care, und der
+Rust-Port.
 
 ## Offen
 

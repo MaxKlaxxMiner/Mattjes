@@ -173,9 +173,28 @@ func DefaultCacheDir() string {
 // DefaultPath is the base cache file next to the running binary.
 func DefaultPath() string { return filepath.Join(DefaultCacheDir(), BaseFileName) }
 
-// TablePath is the cache file of a material beyond the base, e.g. "5-KBNKQ.bin".
+// The cache folder holds the base file at its root; the tables beyond the
+// base live in two subfolders: DtmDir for the (quantised) distance tables
+// and WdlDir for our own WDL tables in Syzygy's structure (package syzygy).
+const (
+	DtmDir = "dtm"
+	WdlDir = "wdl"
+)
+
+// TablePath is the cache file of a material beyond the base, e.g. "dtm/5-KBNKQ.bin".
 func (s *Set) TablePath(t *Table) string {
-	return filepath.Join(s.CacheDir, fmt.Sprintf("%d-%s.bin", t.Mat.Pieces(), t.Mat.Name()))
+	return filepath.Join(s.CacheDir, DtmDir, fmt.Sprintf("%d-%s.bin", t.Mat.Pieces(), t.Mat.Name()))
+}
+
+// DtmPath is the folder of the distance tables beyond the base.
+func (s *Set) DtmPath() string { return filepath.Join(s.CacheDir, DtmDir) }
+
+// WdlPath is the folder of our own WDL tables.
+func (s *Set) WdlPath() string { return filepath.Join(s.CacheDir, WdlDir) }
+
+// WdlFile is the own WDL table of a material, e.g. "wdl/5-KBNKQ.wdl".
+func (s *Set) WdlFile(m Material) string {
+	return filepath.Join(s.WdlPath(), fmt.Sprintf("%d-%s.wdl", m.Pieces(), m.Name()))
 }
 
 // RawSuffix marks the exact twin of a cache file ("5-KBNKQ.bin.raw"): the

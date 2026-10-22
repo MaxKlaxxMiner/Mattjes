@@ -158,7 +158,12 @@ func experiments() {
 	// syzygyDescribe(syzygyDefaultDir, "KBNvK;KQvKR;KRvKN;KPvKP;KBBvK;KBvKP") // the layout of the Syzygy streams (symbols, blocks, piece order)
 	// --- own WDL tables in Syzygy's structure (syzygy/write.go): every candidate piece order per stream, best kept; "test <names> <blockBytes> <indexBits> <pairsPerPass> <minCount> <maxSymbols> <maxSymbolLen> [v]" ---
 	// 2026-10-22: KQK;KBNK;KBBK;KRKN;KPK = 170,282 bytes against 173,776 Syzygy (0.98) in 28 s; "" = the whole base (minutes)
-	syzygyBuild(testArg(0, ""), 12, pairs.Options{BlockBytes: testInt(1, 0), IndexBits: testInt(2, 0), PairsPerPass: testInt(3, 64), MinCount: testInt(4, 8), MaxSymbols: testInt(5, 4095), MaxSymbolLen: testInt(6, 256), Workers: 12}, testArg(7, "") == "v")
+	// syzygyBuild(testArg(0, ""), 12, pairs.Options{BlockBytes: testInt(1, 0), IndexBits: testInt(2, 0), PairsPerPass: testInt(3, 64), MinCount: testInt(4, 8), MaxSymbols: testInt(5, 4095), MaxSymbolLen: testInt(6, 256), Workers: 12}, testArg(7, "") == "v")
+	// the own WDL files of the base: written to mattjes-egtb-cache/wdl/ ("" = all 35, minutes), then probed through the Syzygy prober against the base
+	// 2026-10-22: 14 materials written and verified (100,000 random positions each, all agree); "test" without names writes and verifies all 35 (minutes)
+	syzygyOwnWrite(testArg(0, ""), 12, pairs.Options{Workers: 12})
+	syzygyOwnVerify(testArg(0, ""), testInt(1, 20000))
+	// syzygyOwnProbe(testArg(0, "K7/1r6/8/6k1/8/8/6R1/8 b - - 0 1;k7/1R6/8/6K1/8/8/6r1/8 w - - 0 1")) // single positions: base value next to the own file's answer
 	// pairsMeasure("tests/wdl", testArg(0, ""), pairs.Options{BlockBytes: testInt(1, 0), IndexBits: testInt(2, 0), PairsPerPass: testInt(3, 64), MinCount: testInt(4, 8), MaxSymbols: testInt(5, 4095), MaxSymbolLen: testInt(6, 256), Workers: 12}, true) // every position verified, random probes timed
 	// pairsSyzygy(syzygyDefaultDir, testArg(0, "KBNvK;KQvKR;KRvKN;KPvKP;KBBvK;KBvKP;KQvKQ;KRvKB"), pairs.Options{BlockBytes: testInt(1, 0), IndexBits: testInt(2, 0), PairsPerPass: testInt(3, 64), MinCount: testInt(4, 8), MaxSymbols: testInt(5, 4095), MaxSymbolLen: testInt(6, 256), Workers: 12})
 	// --- own WDL tables (docs/m5-endgame-tables.md, "Eigene WDL-Tabellen"): WDL derived from the base, captures as don't care, packed with pairs per digit order (n/r/k/K) against the Syzygy files; the first order also with lz and dumped to tests/wdl for zstd/xz ---

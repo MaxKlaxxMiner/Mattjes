@@ -9,6 +9,8 @@ package syzygy
 // further group of like pieces by a binomial placement count over the
 // squares the earlier groups left free.
 
+import "github.com/MaxKlaxxMiner/Mattjes/mattjesGo/pairs"
+
 const (
 	encPiece = iota
 	encFile
@@ -250,7 +252,8 @@ func init() {
 // (Syzygy piece codes 1..14, like kinds consecutive), the group sizes
 // (norm) and the mixed-radix factors.
 type encInfo struct {
-	precomp *pairsData
+	precomp *pairsData   // a Syzygy file's stream
+	own     *pairs.Table // or our own (write.go)
 	factor  [maxPieces]uint64
 	pieces  [maxPieces]uint8
 	norm    [maxPieces]uint8
