@@ -55,6 +55,9 @@ pub struct BaseEntry {
     pub(crate) has_pawns: bool,
     /// Our own file (write.rs) instead of a Syzygy file.
     own: bool,
+    /// An own DTM file: distance buckets of `step` moves (read from the header on first use).
+    dtm: bool,
+    step: std::sync::atomic::AtomicU32,
     loaded: OnceLock<Option<Loaded>>,
 }
 
@@ -78,7 +81,7 @@ impl BaseEntry {
                 shape.pawns.swap(0, 1);
             }
         }
-        Some(BaseEntry { name, path: PathBuf::new(), shape, symmetric, has_pawns, own: false, loaded: OnceLock::new() })
+        Some(BaseEntry { name, path: PathBuf::new(), shape, symmetric, has_pawns, own: false, dtm: false, step: std::sync::atomic::AtomicU32::new(1), loaded: OnceLock::new() })
     }
 }
 
@@ -95,6 +98,9 @@ pub struct Tables {
     dir: PathBuf,
     entries: HashMap<u64, Lookup>,
     list: Vec<BaseEntry>,
+    /// Our own DTM files (add_dtm), by material key, indexing dtm_list.
+    dtm: HashMap<u64, Lookup>,
+    dtm_list: Vec<BaseEntry>,
     pub probes: AtomicU64,
     pub hits: AtomicU64,
 }
@@ -177,7 +183,7 @@ impl Tables {
 
     /// An empty set of tables (add_own fills it without Syzygy files).
     pub fn new() -> Tables {
-        Tables { dir: PathBuf::new(), entries: HashMap::new(), list: Vec::new(), probes: AtomicU64::new(0), hits: AtomicU64::new(0) }
+        Tables { dir: PathBuf::new(), entries: HashMap::new(), list: Vec::new(), dtm: HashMap::new(), dtm_list: Vec::new(), probes: AtomicU64::new(0), hits: AtomicU64::new(0) }
     }
 
     /// Files a table under both colour assignments.
@@ -207,7 +213,7 @@ impl Tables {
         names.sort();
         let mut added = 0;
         for path in names {
-            let Some((first, second)) = read_own_header(&path) else { continue };
+            let Some((first, second)) = read_own_header(&path, write::OWN_MAGIC) else { continue };
             if self.entries.contains_key(&material_key(&first, &second)) {
                 continue;
             }
@@ -337,10 +343,80 @@ impl Tables {
         let be = &self.list[l.entry];
         let loaded = be.loaded.get_or_init(|| if be.own { be.init_own().ok() } else { be.init().ok() }).as_ref()?;
         let d = loaded.mapping.bytes();
-        let (flip, bside) = if !be.symmetric { (l.flip, b.white_move == l.flip) } else { (!b.white_move, false) };
+        let (ei, idx) = be.locate(loaded, l.flip, b);
+        if let Some((own, off, len)) = &ei.own {
+            return Some(own.value(&d[*off..*off + *len], idx as usize) as i32 * 2 - 2); // our tables store 0 loss, 1 draw, 2 win
+        }
+        let w = ei.precomp.as_ref()?.decompress(d, idx);
+        Some(w as i32 - 2)
+    }
+
+    /// Reads the distance bucket of a position from its own DTM table
+    /// (add_dtm): the bucket of step moves ("mate in at most bucket*step
+    /// moves" for a win, "mated in at most" for a loss; the WDL tables tell
+    /// which and know the draws, a draw's bucket is meaningless), no capture
+    /// resolution. None without a table for the material.
+    pub fn probe_dtm(&self, b: &Board) -> Option<(usize, u32)> {
+        let (w, bl) = counts(b);
+        let l = *self.dtm.get(&material_key(&w, &bl))?;
+        let be = &self.dtm_list[l.entry];
+        let loaded = be.loaded.get_or_init(|| be.init_own().ok()).as_ref()?;
+        let d = loaded.mapping.bytes();
+        let (ei, idx) = be.locate(loaded, l.flip, b);
+        let (own, off, len) = ei.own.as_ref()?;
+        Some((own.value(&d[*off..*off + *len], idx as usize) as usize, be.step.load(Ordering::Relaxed)))
+    }
+
+    /// The number of own DTM tables registered.
+    pub fn dtm_count(&self) -> usize {
+        self.dtm_list.len()
+    }
+
+    /// Scans a directory for our own DTM tables (*.dtm, write.rs) and
+    /// registers them (one per material, the first file wins). Returns the
+    /// number added.
+    pub fn add_dtm(&mut self, dir: &Path) -> std::io::Result<usize> {
+        let mut names: Vec<PathBuf> = Vec::new();
+        for de in std::fs::read_dir(dir)? {
+            let de = de?;
+            let fname = de.file_name().to_string_lossy().to_string();
+            if fname.ends_with(".dtm") && !de.metadata()?.is_dir() {
+                names.push(de.path());
+            }
+        }
+        names.sort();
+        let mut added = 0;
+        for path in names {
+            let Some((first, second)) = read_own_header(&path, write::DTM_MAGIC) else { continue };
+            let key = material_key(&first, &second);
+            if self.dtm.contains_key(&key) {
+                continue;
+            }
+            let Some(mut be) = BaseEntry::describe(name_of(&first, &second), &first, &second) else { continue };
+            be.path = path;
+            be.own = true;
+            be.dtm = true;
+            let key2 = material_key(&second, &first);
+            let idx = self.dtm_list.len();
+            self.dtm_list.push(be);
+            self.dtm.insert(key, Lookup { entry: idx, flip: false });
+            if key != key2 {
+                self.dtm.insert(key2, Lookup { entry: idx, flip: true });
+            }
+            added += 1;
+        }
+        Ok(added)
+    }
+}
+
+impl BaseEntry {
+    /// Finds the stream and the index of a position in a table (lflip: the
+    /// board's colours are the table's second side).
+    fn locate<'l>(&self, loaded: &'l Loaded, lflip: bool, b: &Board) -> (&'l EncInfo, u64) {
+        let (flip, bside) = if !self.symmetric { (lflip, b.white_move == lflip) } else { (!b.white_move, false) };
         let mut p = [0usize; MAX_PIECES];
-        let shape = &be.shape;
-        let (ei, idx) = if !be.has_pawns {
+        let shape = &self.shape;
+        if !self.has_pawns {
             let ei = &loaded.ei[bside as usize];
             let mut i = 0;
             while i < shape.num {
@@ -358,12 +434,7 @@ impl Tables {
             }
             let idx = encode::encode(&mut p, ei, shape, ENC_FILE);
             (ei, idx)
-        };
-        if let Some((own, off, len)) = &ei.own {
-            return Some(own.value(&d[*off..*off + *len], idx as usize) as i32 * 2 - 2); // our tables store 0 loss, 1 draw, 2 win
         }
-        let w = ei.precomp.as_ref()?.decompress(d, idx);
-        Some(w as i32 - 2)
     }
 }
 
@@ -380,11 +451,11 @@ fn base_wdl(base: &Set, b: &Board) -> Option<i32> {
 }
 
 /// Reads the piece counts from the header of one of our files.
-fn read_own_header(path: &Path) -> Option<([u8; 6], [u8; 6])> {
+fn read_own_header(path: &Path, magic: &[u8; 4]) -> Option<([u8; 6], [u8; 6])> {
     use std::io::Read;
     let mut head = [0u8; write::OWN_HEADER];
     std::fs::File::open(path).ok()?.read_exact(&mut head).ok()?;
-    if &head[..4] != write::OWN_MAGIC || head[4] != write::OWN_VERSION {
+    if &head[..4] != magic || head[4] != write::OWN_VERSION {
         return None;
     }
     let mut first = [0u8; 6];
@@ -511,8 +582,12 @@ impl BaseEntry {
         let bad = |msg: String| std::io::Error::new(std::io::ErrorKind::InvalidData, msg);
         let mapping = Mapping::open(&self.path)?;
         let d = mapping.bytes();
-        if d.len() < write::OWN_HEADER || &d[..4] != write::OWN_MAGIC || d[4] != write::OWN_VERSION {
-            return Err(bad(format!("syzygy: {} is not an own WDL table", self.name)));
+        let magic = if self.dtm { write::DTM_MAGIC } else { write::OWN_MAGIC };
+        if d.len() < write::OWN_HEADER || &d[..4] != magic || d[4] != write::OWN_VERSION {
+            return Err(bad(format!("syzygy: {} is not an own {} table", self.name, if self.dtm { "DTM" } else { "WDL" })));
+        }
+        if self.dtm {
+            self.step.store(d[20] as u32, Ordering::Relaxed);
         }
         let (sides, files) = (d[6] as usize, d[7] as usize);
         let (num, enc) = if self.has_pawns { (4, ENC_FILE) } else { (1, ENC_PIECE) };

@@ -159,9 +159,20 @@ func (t *Tables) probeTable(b *bitboard.Board) (int, bool) {
 	if !t.prepare(be) {
 		return 0, false
 	}
+	ei, idx := be.locate(l.flip, b)
+	if ei.own != nil {
+		return int(ei.own.Value(int(idx)))*2 - 2, true // our tables store 0 loss, 1 draw, 2 win
+	}
+	w := ei.precomp.decompress(idx)
+	return int(w[0]) - 2, true
+}
+
+// locate finds the stream and the index of a position in a table (lflip:
+// the board's colours are the table's second side).
+func (be *baseEntry) locate(lflip bool, b *bitboard.Board) (*encInfo, uint64) {
 	var flip, bside bool
 	if !be.symmetric {
-		flip = l.flip
+		flip = lflip
 		bside = b.WhiteMove == flip
 	} else {
 		flip = !b.WhiteMove
@@ -169,7 +180,6 @@ func (t *Tables) probeTable(b *bitboard.Board) (int, bool) {
 	}
 	var p [maxPieces]int
 	var ei *encInfo
-	var idx uint64
 	if !be.hasPawns {
 		if bside {
 			ei = &be.ei[1]
@@ -179,29 +189,42 @@ func (t *Tables) probeTable(b *bitboard.Board) (int, bool) {
 		for i := 0; i < int(be.num); {
 			i = fillSquares(b, ei.pieces[:], flip, 0, p[:], i)
 		}
-		idx = encode(p[:], ei, be, encPiece)
+		return ei, encode(p[:], ei, be, encPiece)
+	}
+	mirror := 0
+	if flip {
+		mirror = 0x38
+	}
+	i := fillSquares(b, be.ei[0].pieces[:], flip, mirror, p[:], 0)
+	f := leadingPawn(p[:], be, encFile)
+	if bside {
+		ei = &be.ei[f+4]
 	} else {
-		mirror := 0
-		if flip {
-			mirror = 0x38
-		}
-		i := fillSquares(b, be.ei[0].pieces[:], flip, mirror, p[:], 0)
-		f := leadingPawn(p[:], be, encFile)
-		if bside {
-			ei = &be.ei[f+4]
-		} else {
-			ei = &be.ei[f]
-		}
-		for i < int(be.num) {
-			i = fillSquares(b, ei.pieces[:], flip, mirror, p[:], i)
-		}
-		idx = encode(p[:], ei, be, encFile)
+		ei = &be.ei[f]
 	}
-	if ei.own != nil {
-		return int(ei.own.Value(int(idx)))*2 - 2, true // our tables store 0 loss, 1 draw, 2 win
+	for i < int(be.num) {
+		i = fillSquares(b, ei.pieces[:], flip, mirror, p[:], i)
 	}
-	w := ei.precomp.decompress(idx)
-	return int(w[0]) - 2, true
+	return ei, encode(p[:], ei, be, encFile)
+}
+
+// ProbeDTM reads the distance bucket of a position from its own DTM table
+// (AddDTM): the bucket of step moves ("mate in at most bucket*step moves"
+// for a win, "mated in at most" for a loss; the WDL tables tell which and
+// know the draws, a draw's bucket is meaningless), no capture resolution.
+// ok is false without a table for the material.
+func (t *Tables) ProbeDTM(b *bitboard.Board) (bucket, step int, ok bool) {
+	white, black := counts(b)
+	l, found := t.dtm[materialKey(white, black)]
+	if !found {
+		return 0, 0, false
+	}
+	be := l.be
+	if !t.prepare(be) {
+		return 0, 0, false
+	}
+	ei, idx := be.locate(l.flip, b)
+	return int(ei.own.Value(int(idx))), be.step, true
 }
 
 // SetBase gives the prober the exact base tables for the materials without

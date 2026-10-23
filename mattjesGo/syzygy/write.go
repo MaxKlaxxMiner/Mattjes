@@ -158,7 +158,7 @@ func NewSource(set *egtb.Set, t *egtb.Table, workers int) *Source {
 // moves; signed = wins and losses apart, else the bucket alone; drawFree =
 // draws as don't care) from a table with exact values in memory.
 func NewSourceDTM(set *egtb.Set, t *egtb.Table, step int, signed, drawFree bool, workers int) *Source {
-	buckets := 127/step + 1 // 0 .. 127/step
+	buckets := (127+step-1)/step + 1 // 0 .. ceil(127/step): a win in 127 moves rounds up to bucket 16 at step 8
 	alphabet := buckets
 	if signed {
 		alphabet = 2*buckets + 1
@@ -404,6 +404,13 @@ type Built struct {
 	Sides, Files  int
 	Streams       []Stream
 	Candidates    int
+	// DTM: the streams hold distance buckets of Step moves instead of WDL
+	// symbols (Signed: wins and losses apart; DrawFree: draws are don't care,
+	// the WDL table tells them)
+	DTM              bool
+	Step             int
+	Signed, DrawFree bool
+	Alphabet         int
 }
 
 // Bytes is the size of all packed streams.
@@ -469,7 +476,7 @@ func Build(src *Source, opt pairs.Options, bo BuildOptions, workers int, progres
 	if be == nil {
 		panic("syzygy: too many pieces for " + src.Table.Mat.Name())
 	}
-	b := &Built{Name: be.name, First: first, Second: second, Sides: 2, Files: 1}
+	b := &Built{Name: be.name, First: first, Second: second, Sides: 2, Files: 1, DTM: src.dtm, Step: src.step, Signed: src.signed, DrawFree: src.drawFree, Alphabet: src.Alphabet}
 	if be.symmetric {
 		b.Sides = 1
 	}
@@ -774,10 +781,23 @@ func buildSide(src *Source, be *baseEntry, side int, o Order, files int, workers
 // side, pawn files innermost.
 const (
 	ownMagic      = "MWDL"
+	dtmMagic      = "MDTM" // the same layout with byte 20 = step, 21 = flags, 22 = alphabet
 	ownVersion    = 1
 	ownHeader     = 32
 	ownDescriptor = 32
+	dtmSigned     = 1
+	dtmDrawFree   = 2
 )
+
+// WriteDTM derives, builds and writes the own DTM table of an exact egtb
+// table to path: the distance buckets of egtb.FileStep moves, wins and
+// losses as one bucket (the WDL table tells which), draws free. Read
+// through Tables.ProbeDTM after a WDL verdict.
+func WriteDTM(set *egtb.Set, t *egtb.Table, path string, opt pairs.Options, bo BuildOptions, workers int, progress func(string)) (*Built, error) {
+	src := NewSourceDTM(set, t, egtb.FileStep, false, true, workers)
+	b := Build(src, opt, bo, workers, progress)
+	return b, b.Write(path)
+}
 
 // Write writes the table to path (the folder is created).
 func (b *Built) Write(path string) error {
@@ -798,6 +818,17 @@ func (b *Built) Write(path string) error {
 	head[5], head[6], head[7] = byte(pieces), byte(b.Sides), byte(b.Files)
 	copy(head[8:], b.First[:])
 	copy(head[14:], b.Second[:])
+	if b.DTM {
+		copy(head, dtmMagic)
+		head[20] = byte(b.Step)
+		if b.Signed {
+			head[21] |= dtmSigned
+		}
+		if b.DrawFree {
+			head[21] |= dtmDrawFree
+		}
+		head[22] = byte(b.Alphabet)
+	}
 	offset := len(head)
 	for i, s := range b.Streams {
 		d := head[ownHeader+ownDescriptor*i:]

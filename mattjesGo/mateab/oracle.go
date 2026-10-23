@@ -65,14 +65,32 @@ func (o Tables) Probe(b *bitboard.Board) (Verdict, int, int) {
 		if v, ok := o.WDL.ProbeWDL(b); ok {
 			switch {
 			case v >= syzygy.CursedWin:
-				return Win, 1, Unbounded
+				lo, hi := o.dtmBounds(b, true)
+				return Win, lo, hi
 			case v <= syzygy.BlessedLoss:
-				return Loss, 1, Unbounded
+				lo, hi := o.dtmBounds(b, false)
+				return Loss, lo, hi
 			}
 			return Draw, 0, 0
 		}
 	}
 	return Material{}.Probe(b)
+}
+
+// dtmBounds narrows a WDL win or loss with the own DTM file of the material
+// (the bucket of step moves), 1..Unbounded without one.
+func (o Tables) dtmBounds(b *bitboard.Board, win bool) (lo, hi int) {
+	bucket, step, ok := o.WDL.ProbeDTM(b)
+	if !ok {
+		return 1, Unbounded
+	}
+	var v egtb.Value
+	if win {
+		v = egtb.Value(min(bucket*step, 127)) // the upper end of the bucket, as Quantize stores it
+	} else {
+		v = egtb.Value(min(128+bucket*step, 255))
+	}
+	return v.Bounds(step)
 }
 
 // lightSquares has a8 (bit 0) set: a8 is a light square.

@@ -1099,10 +1099,37 @@ am Zug, die andere ergibt sich beim Probe aus den Kindern). Beides kostet je
 DTM-Anfrage einen Zuggenerator und bis zu zwanzig Kind-Anfragen, so wie der
 WDL-Prober es heute schon tut.
 
-Offen in dieser Reihe: das DTM-Dateiformat und der Leser in dieser Struktur (ein
-Distanz-Probe über Syzygys Index statt des 2-GB-Blockcaches), die beiden Hebel oben
-nach Entscheidung, und eine schnellere Kandidaten-Stichprobe (sie dominiert die Zeit
-bei fünf Steinen).
+**Das DTM-Dateiformat und sein Probe (2026-10-22):** `mattjes-egtb-cache/dtm/<n>-<Name>.dtm`,
+derselbe Aufbau wie die WDL-Datei mit Magic `MDTM` und drei Kopfbytes mehr (20
+Schrittweite, 21 Flags: 1 mit Vorzeichen, 2 Remis frei, 22 Alphabet); geschrieben
+wird die Variante Eimer ohne Vorzeichen, Remis frei, Schrittweite `egtb.FileStep` = 8
+(17 Symbole, `WriteDTM`). Leser: `Tables.AddDTM(dir)` registriert die Dateien in
+einer eigenen Tabelle neben den WDL-Einträgen, `ProbeDTM(b)` liefert den rohen Eimer
+(Index wie beim WDL-Probe über `locate`, keine Schlagauflösung), und das Orakel
+`mateab.Tables` fragt ihn nur nach einem WDL-Gewinn oder -Verlust (`dtmBounds`: der
+Eimer wird zur quantisierten `Value` zurückgerechnet, Gewinn `min(b·step, 127)`,
+Verlust `min(128 + b·step, 255)`, dann `Bounds(step)`); ohne Datei bleibt es bei
+1..Unbounded. Damit ist die Reihenfolge im Orakel: eigene exakte oder gepackte
+`.bin`-Tabellen, dann WDL (Syzygy oder eigene), dann die DTM-Eimer. Die UCI
+registriert `dtm/` neben `wdl/` (`attachWdl`), der Hintergrund-Job schreibt nach der
+WDL- auch die DTM-Datei (`writeDtm`) und **die quantisierte `.bin` nicht mehr**;
+vorhandene `.bin` laden weiter. Prüfung `syzygyDtmCheck(material, dir, samples)`:
+WDL und DTM in einen Ordner schreiben, Orakel mit leerem eigenen Set (so antworten
+nur die Dateien, die Basis löst die Schläge), Zufallsstellungen gegen die exakten
+Werte: Verdikt gleich und exakte Distanz im Intervall. KBNK und KQKR je 100.000
+Stellungen ohne Abweichung, rund 700.000 Orakel-Anfragen/s (WDL mit Schlagauflösung
+plus DTM-Dekodierung, 1,4 µs); **KBNKQ** 200.000 Stellungen ohne Abweichung,
+191.479 davon mit DTM-Schranken, 490.000 Anfragen/s, die Dateien 1.188.612 (WDL,
+238 s) und 26.211.792 Byte (DTM, 566 s) nach 63 s Erzeugung. Rust gleich (`write_dtm`, `add_dtm`, `probe_dtm`,
+`dtm_bounds`, `write_dtm_file`, `syzygy_dtm_check`), die Dateien byteidentisch.
+Falle beim Prüfen: ein Material der Basis beantwortet das Orakel direkt aus dem Set,
+der Test braucht ein leeres Set, sonst prüft er die Dateien nicht. Und der
+Eimer-Bereich: ein Gewinn in 127 rundet auf Eimer 16, das Alphabet ist
+`ceil(127/step) + 1`, nicht `127/step + 1`.
+
+Offen in dieser Reihe: die beiden Hebel oben nach Entscheidung, eine schnellere
+Kandidaten-Stichprobe (sie dominiert die Zeit bei fünf Steinen), und die
+`.bin`-Pfade (`loadDependencies`, Blockcache) als Altlast.
 
 ## Offen
 

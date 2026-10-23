@@ -340,9 +340,29 @@ func (e *Engine) attachWdl() {
 	if n, err := tb.AddOwn(e.set.WdlPath()); err == nil && n > 0 {
 		e.send("info string wdl: %d own tables in %s", n, e.set.WdlPath())
 	}
+	if n, err := tb.AddDTM(e.set.DtmPath()); err == nil && n > 0 {
+		e.send("info string dtm: %d own tables in %s (step %d, the search resolves exact distances)", n, e.set.DtmPath(), egtb.FileStep)
+	}
 	tb.SetBase(e.set)
 	e.syzygy = tb
 	e.flush()
+}
+
+// writeDtm writes the own DTM table of an exact table to the cache folder
+// when the file is missing (the distance buckets; read after the WDL
+// verdict, so the WDL file comes first).
+func writeDtm(set *egtb.Set, t *egtb.Table, workers int, progress func(string)) {
+	path := filepath.Join(set.DtmPath(), fmt.Sprintf("%d-%s.dtm", t.Mat.Pieces(), t.Mat.Name()))
+	if !fileMissing(path) || t.Values == nil || !t.Exact() {
+		return
+	}
+	start := time.Now()
+	b, err := syzygy.WriteDTM(set, t, path, pairs.Options{Workers: workers}, syzygy.BuildOptions{}, workers, nil)
+	if err != nil {
+		progress("DTM: " + err.Error())
+		return
+	}
+	progress(fmt.Sprintf("DTM written to %s (%d bytes, %d candidate orders, %s)", path, b.Bytes(), b.Candidates, time.Since(start).Round(time.Second)))
 }
 
 // writeWdl writes the own WDL table of an exact table to the cache folder
@@ -683,7 +703,10 @@ func (e *Engine) startJobFrom(m egtb.Material, set *egtb.Set) bool {
 				}
 			}
 			if write {
-				writeWdl(set, gt, workers, progress) // from the exact values, before anything quantises them
+				// from the exact values, before anything quantises them: the WDL
+				// file, then the distance buckets (which replace the quantised .bin)
+				writeWdl(set, gt, workers, progress)
+				writeDtm(set, gt, workers, progress)
 			}
 			if gt == t || !write {
 				return
@@ -700,13 +723,9 @@ func (e *Engine) startJobFrom(m egtb.Material, set *egtb.Set) bool {
 			if gt.Values == nil {
 				continue
 			}
-			if path := set.TablePath(gt); write && fileMissing(path) {
-				if err := set.SaveTable(gt, path); err != nil {
-					progress(err.Error())
-				} else {
-					progress("written to " + path)
-				}
-			}
+			// the quantised .bin is no longer written (2026-10-22): the WDL and
+			// DTM files of the done callback replace it, existing .bin files
+			// still load
 			gt.Fill() // drops the generator's bitset
 		}
 		e.jobDone <- set
@@ -740,6 +759,9 @@ func (e *Engine) finishJob(set *egtb.Set) {
 	if e.syzygy != nil {
 		if n, err := e.syzygy.AddOwn(e.set.WdlPath()); err == nil && n > 0 {
 			e.send("info string wdl: %d own tables added", n)
+		}
+		if n, err := e.syzygy.AddDTM(e.set.DtmPath()); err == nil && n > 0 {
+			e.send("info string dtm: %d own tables added", n)
 		}
 	}
 	if committed, working, ok := egtb.PeakMemory(); ok {

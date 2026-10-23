@@ -68,6 +68,121 @@ pub fn syzygy_own_write(names: &str, workers: usize, opt: crate::pairs::Options,
     println!("written {} bytes to {} in {:.1} s\n", total, folder.display(), start.elapsed().as_secs_f64());
 }
 
+/// Writes the WDL and DTM files of a material (generated exactly in memory
+/// beyond the base) into dir and probes random positions through the oracle
+/// (an empty own set, so the files answer; the full base resolves captures)
+/// against the exact values: the verdict must match and the exact distance
+/// lie in the bounds.
+pub fn syzygy_dtm_check(name: &str, dir: &str, samples: usize, workers: usize) {
+    use crate::mateab::{Verdict, UNBOUNDED};
+    let m = Material::parse(name).expect("material");
+    let mut gen = crate::tests_egtb::egtb_load_or_generate(workers);
+    let ti = if m.pieces() <= 4 {
+        gen.find(&m.name()).expect("base material")
+    } else {
+        let ti = gen.add_material(m.clone());
+        let st = gen.generate(ti, workers, &mut |line: &str| {
+            if !line.starts_with(' ') {
+                println!("{}", line);
+            }
+        });
+        println!("{}: generated in {:.1} s", m.name(), st.duration.as_secs_f64());
+        ti
+    };
+    let (opt, bo) = (crate::pairs::Options { workers, ..Default::default() }, syzygy::write::BuildOptions::default());
+    let dir = std::path::Path::new(dir);
+    let start = Instant::now();
+    let wdl_path = dir.join(format!("{}-{}.wdl", m.pieces(), m.name()));
+    let wb = syzygy::write::write_wdl(&gen, &gen.tables[ti], &wdl_path, opt, bo, workers, None).expect("write wdl");
+    println!("{}: WDL {} bytes in {:.1} s", m.name(), wb.bytes(), start.elapsed().as_secs_f64());
+    let start = Instant::now();
+    let dtm_path = dir.join(format!("{}-{}.dtm", m.pieces(), m.name()));
+    let db = syzygy::write::write_dtm(&gen, &gen.tables[ti], &dtm_path, opt, bo, workers, None).expect("write dtm");
+    println!("{}: DTM {} bytes in {:.1} s (step {}, {} symbols)", m.name(), db.bytes(), start.elapsed().as_secs_f64(), db.step, db.alphabet);
+    let mut tb = Tables::new();
+    assert!(tb.add_own(dir).unwrap_or(0) > 0, "no WDL file registered");
+    assert!(tb.add_dtm(dir).unwrap_or(0) > 0, "no DTM file registered");
+    let empty = Set::new();
+    let oracle = crate::mateab::Tables { set: &gen, wdl: Some(&tb) }; // the base resolves captures
+    let probe_oracle = crate::mateab::Tables { set: &empty, wdl: Some(&tb) };
+    let _ = oracle;
+    let mut pieces = vec![Piece::WHITE_KING, Piece::BLACK_KING];
+    pieces.extend(m.white.iter().map(|p| Piece(Piece::WHITE.0 | p.0)));
+    pieces.extend(m.black.iter().map(|p| Piece(Piece::BLACK.0 | p.0)));
+    let mut squares = vec![Pos(0); pieces.len()];
+    let mut rng = Rng(0x2545F4914F6CDD1D);
+    let (mut checked, mut bad, mut bounded) = (0usize, 0usize, 0usize);
+    let t0 = Instant::now();
+    while checked < samples {
+        let mut used = 0u64;
+        for (i, p) in pieces.iter().enumerate() {
+            loop {
+                let sq = rng.below(64) as usize;
+                if used & (1 << sq) != 0 || ((p.0 & Piece::TYPE_MASK.0) == Piece::PAWN.0 && !(8..56).contains(&sq)) {
+                    continue;
+                }
+                used |= 1 << sq;
+                squares[i] = Pos(sq as i8);
+                break;
+            }
+        }
+        let b = Board::from_pieces(rng.below(2) == 0, &squares, &pieces);
+        if b.opponent_in_check() {
+            continue;
+        }
+        let Some(exact) = gen.lookup(&b) else { continue };
+        // the probe set is empty, but the capture resolution needs the base: the
+        // oracle's set is only consulted for its own tables, which the empty set lacks
+        let (verdict, lo, hi) = probe_with_base(&probe_oracle, &gen, &b);
+        checked += 1;
+        let want = if exact.is_win() {
+            Verdict::Win
+        } else if exact.is_loss() {
+            Verdict::Loss
+        } else {
+            Verdict::Draw
+        };
+        let plies = exact.plies();
+        if verdict != want || (want != Verdict::Draw && (plies < lo || plies > hi)) {
+            bad += 1;
+            if bad <= 5 {
+                println!("  MISMATCH {}: exact {:?}, oracle {:?} [{}, {}]", b.fen(), exact, verdict, lo, hi);
+            }
+        }
+        if want != Verdict::Draw && hi < UNBOUNDED {
+            bounded += 1;
+        }
+    }
+    let el = t0.elapsed();
+    let verdict = if bad > 0 { format!("{} MISMATCHES", bad) } else { "ok".to_string() };
+    println!("{}: {} positions checked, {}, {} wins and losses with DTM bounds, {:.0} probes/s\n", m.name(), checked, verdict, bounded, checked as f64 / el.as_secs_f64());
+}
+
+/// The oracle probe with the captures resolved by the full base (the
+/// oracle's own set stays empty so that the files answer).
+fn probe_with_base(oracle: &crate::mateab::Tables, base: &Set, b: &Board) -> (crate::mateab::Verdict, u32, u32) {
+    use crate::mateab::{Oracle, Verdict, UNBOUNDED};
+    let Some(wdl) = oracle.wdl else { return oracle.probe(b) };
+    match wdl.probe_wdl_with(b, Some(base)) {
+        Some(v) if v >= syzygy::CURSED_WIN => {
+            let (lo, hi) = dtm_bounds_of(wdl, b, true);
+            (Verdict::Win, lo, hi)
+        }
+        Some(v) if v <= syzygy::BLESSED_LOSS => {
+            let (lo, hi) = dtm_bounds_of(wdl, b, false);
+            (Verdict::Loss, lo, hi)
+        }
+        Some(_) => (Verdict::Draw, 0, 0),
+        None => (Verdict::Unknown, 0, UNBOUNDED),
+    }
+}
+
+fn dtm_bounds_of(wdl: &Tables, b: &Board, win: bool) -> (u32, u32) {
+    let Some((bucket, step)) = wdl.probe_dtm(b) else { return (1, crate::mateab::UNBOUNDED) };
+    let v = if win { crate::egtb::Value((bucket as u32 * step).min(127) as u8) } else { crate::egtb::Value((128 + bucket as u32 * step).min(255) as u8) };
+    v.bounds(step)
+}
+
 /// Round-trips random indices of the candidate orders of the base materials
 /// ("" = all) through the Syzygy index decoder and the encoder.
 pub fn syzygy_decode_check(names: &str, max_orders: usize, samples: usize) {

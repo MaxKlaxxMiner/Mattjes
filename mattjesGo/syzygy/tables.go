@@ -49,6 +49,10 @@ type baseEntry struct {
 	closer    func()
 	ei        []encInfo // 2 (pieces: one per side to move) or 8 (pawns: 4 files, then the other side)
 	own       bool      // our own file (write.go) instead of a Syzygy file
+	dtm       bool      // an own DTM file: distance buckets of step moves (signed: wins and losses apart; drawFree: draws are don't care)
+	step      int
+	signed    bool
+	drawFree  bool
 }
 
 // lookup points a material key to its table and tells whether the
@@ -63,6 +67,7 @@ type lookup struct {
 type Tables struct {
 	dir     string
 	entries map[uint64]lookup
+	dtm     map[uint64]lookup // our own DTM files (AddDTM), by material key
 	list    []*baseEntry
 	mu      sync.Mutex // serialises the lazy initialisation of a table
 	base    *egtb.Set  // SetBase: the exact tables for materials without a file
@@ -107,7 +112,7 @@ func parseName(name string) (first, second [6]uint8, ok bool) {
 
 // New is an empty set of tables (AddOwn fills it without Syzygy files).
 func New() *Tables {
-	return &Tables{entries: map[uint64]lookup{}}
+	return &Tables{entries: map[uint64]lookup{}, dtm: map[uint64]lookup{}}
 }
 
 // Open scans a directory for *.rtbw files and registers them; the files
@@ -159,7 +164,7 @@ func (t *Tables) AddOwn(dir string) (int, error) {
 			continue
 		}
 		path := filepath.Join(dir, fn)
-		first, second, ok := readOwnHeader(path)
+		first, second, ok := readOwnHeader(path, ownMagic)
 		if !ok {
 			continue
 		}
@@ -179,19 +184,68 @@ func (t *Tables) AddOwn(dir string) (int, error) {
 }
 
 // readOwnHeader reads the piece counts from the header of one of our files.
-func readOwnHeader(path string) (first, second [6]uint8, ok bool) {
+func readOwnHeader(path string, magic string) (first, second [6]uint8, ok bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return first, second, false
 	}
 	defer f.Close()
 	var head [ownHeader]byte
-	if _, err := io.ReadFull(f, head[:]); err != nil || string(head[:4]) != ownMagic || head[4] != ownVersion {
+	if _, err := io.ReadFull(f, head[:]); err != nil || string(head[:4]) != magic || head[4] != ownVersion {
 		return first, second, false
 	}
 	copy(first[:], head[8:14])
 	copy(second[:], head[14:20])
 	return first, second, first[0] == 1 && second[0] == 1
+}
+
+// AddDTM scans a directory for our own DTM tables (*.dtm, write.go) and
+// registers them (one per material, the first file wins). They answer
+// ProbeDTM: the distance bucket of a position the WDL tables already know
+// to be won or lost. Returns the number added.
+func (t *Tables) AddDTM(dir string) (int, error) {
+	names, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	added := 0
+	for _, de := range names {
+		fn := de.Name()
+		if !strings.HasSuffix(fn, ".dtm") || de.IsDir() {
+			continue
+		}
+		path := filepath.Join(dir, fn)
+		first, second, ok := readOwnHeader(path, dtmMagic)
+		if !ok {
+			continue
+		}
+		if _, found := t.dtm[materialKey(first, second)]; found {
+			continue
+		}
+		be := newEntry(Name(first, second), first, second)
+		if be == nil {
+			continue
+		}
+		be.path, be.own, be.dtm = path, true, true
+		key, key2 := materialKey(first, second), materialKey(second, first)
+		t.dtm[key] = lookup{be, false}
+		if key != key2 {
+			t.dtm[key2] = lookup{be, true}
+		}
+		added++
+	}
+	return added, nil
+}
+
+// DTMCount is the number of own DTM tables registered.
+func (t *Tables) DTMCount() int {
+	n := 0
+	for _, l := range t.dtm {
+		if !l.flip {
+			n++
+		}
+	}
+	return n
 }
 
 // initOwn maps one of our files and opens its streams (the counterpart of
@@ -201,9 +255,18 @@ func (be *baseEntry) initOwn() error {
 	if err != nil {
 		return err
 	}
-	if len(data) < ownHeader || string(data[:4]) != ownMagic || data[4] != ownVersion {
+	magic := ownMagic
+	if be.dtm {
+		magic = dtmMagic
+	}
+	if len(data) < ownHeader || string(data[:4]) != magic || data[4] != ownVersion {
 		closer()
-		return fmt.Errorf("syzygy: %s is not an own WDL table", be.path)
+		return fmt.Errorf("syzygy: %s is not an own %s table", be.path, magic[1:])
+	}
+	if be.dtm {
+		be.step = int(data[20])
+		be.signed = data[21]&dtmSigned != 0
+		be.drawFree = data[21]&dtmDrawFree != 0
 	}
 	sides, files := int(data[6]), int(data[7])
 	num := 1
@@ -309,6 +372,13 @@ func (t *Tables) Close() {
 	defer t.mu.Unlock()
 	for _, be := range t.list {
 		if be.closer != nil {
+			be.closer()
+			be.closer, be.data = nil, nil
+			be.ready.Store(false)
+		}
+	}
+	for _, l := range t.dtm {
+		if be := l.be; !l.flip && be.closer != nil {
 			be.closer()
 			be.closer, be.data = nil, nil
 			be.ready.Store(false)

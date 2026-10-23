@@ -76,10 +76,11 @@ fn pieces_of(m: &Material) -> Vec<Piece> {
     ps
 }
 
-/// Marks a position whose stored value does not matter; BOUNDED+v marks one
-/// whose stored value may be anything up to v.
+/// Marks a position whose stored value does not matter; a symbol with the
+/// BOUNDED_FLAG marks one whose stored value may be anything up to the
+/// symbol below the flag.
 pub const DONT_CARE: u8 = 0xff;
-const BOUNDED: u8 = 3;
+const BOUNDED_FLAG: u8 = 0x80;
 
 /// The WDL of a material taken from an exact egtb table: per index the
 /// symbol (0 loss, 1 draw, 2 win for the side to move), DONT_CARE for dead
@@ -91,8 +92,18 @@ pub struct Source<'a> {
     /// The tables the captures lead into (the sampling looks positions up here).
     pub set: &'a Set,
     pub symbols: Vec<u8>,
+    /// Symbols the stream uses.
+    pub alphabet: usize,
     pub legal: usize,
+    /// Decided by a capture (WDL) or free as draws (DTM).
     pub decided: usize,
+    /// DTM: the symbol is the quantised distance bucket of `step` moves
+    /// (`signed`: wins and losses apart, else the bucket alone; `draw_free`:
+    /// draws as don't care, the WDL table tells them).
+    pub dtm: bool,
+    pub step: u32,
+    pub signed: bool,
+    pub draw_free: bool,
 }
 
 fn symbol_of(v: Value) -> u8 {
@@ -102,6 +113,30 @@ fn symbol_of(v: Value) -> u8 {
         0
     } else {
         1
+    }
+}
+
+impl Source<'_> {
+    /// The stream symbol of a legal position with the table value v.
+    fn symbol_at(&self, b: &Board, buf: &mut crate::chess::MoveBuffer, v: Value) -> u8 {
+        if !self.dtm {
+            return capture_bound(self.set, b, buf, symbol_of(v));
+        }
+        let q = v.quantize(self.step);
+        let step = self.step as usize;
+        if q.0 == 0 {
+            return if self.draw_free { DONT_CARE } else { 0 };
+        }
+        if q.is_win() {
+            return (q.0 as usize).div_ceil(step) as u8; // 1 .. ceil(127/step)
+        }
+        let m = q.0 as usize - 128; // loss: bucket 0 = mated now
+        let bucket = m.div_ceil(step) as u8;
+        if self.signed {
+            127usize.div_ceil(step) as u8 + 1 + bucket
+        } else {
+            bucket
+        }
     }
 }
 
@@ -118,8 +153,22 @@ fn distinct_squares(sq: &[Pos]) -> bool {
 }
 
 impl<'a> Source<'a> {
-    /// Derives the symbols from a table with exact values in memory, in parallel.
+    /// Derives the WDL symbols from a table with exact values in memory, in parallel.
     pub fn new(set: &'a Set, t: &'a Table, workers: usize) -> Source<'a> {
+        Source { table: t, set, symbols: Vec::new(), alphabet: 3, legal: 0, decided: 0, dtm: false, step: 1, signed: false, draw_free: false }.derive(workers)
+    }
+
+    /// Derives the quantised distance symbols (buckets of step moves; signed
+    /// = wins and losses apart, else the bucket alone; draw_free = draws as
+    /// don't care) from a table with exact values in memory.
+    pub fn new_dtm(set: &'a Set, t: &'a Table, step: u32, signed: bool, draw_free: bool, workers: usize) -> Source<'a> {
+        let buckets = 127usize.div_ceil(step as usize) + 1; // 0 .. ceil(127/step)
+        let alphabet = if signed { 2 * buckets + 1 } else { buckets };
+        Source { table: t, set, symbols: Vec::new(), alphabet, legal: 0, decided: 0, dtm: true, step, signed, draw_free }.derive(workers)
+    }
+
+    fn derive(mut self, workers: usize) -> Source<'a> {
+        let (set, t) = (self.set, self.table);
         assert!(!t.values.is_empty() && t.is_exact(), "syzygy: Source needs an exact table in memory");
         let pieces = pieces_of(&t.mat);
         let n = t.size;
@@ -127,6 +176,7 @@ impl<'a> Source<'a> {
         let legal = AtomicUsize::new(0);
         let decided = AtomicUsize::new(0);
         let chunk = n.div_ceil(workers.max(1));
+        let src = &self;
         std::thread::scope(|s| {
             for w in 0..workers.max(1) {
                 let (lo, hi) = (w * chunk, n.min((w + 1) * chunk));
@@ -145,9 +195,9 @@ impl<'a> Source<'a> {
                             continue;
                         }
                         nl += 1;
-                        let own = capture_bound(set, &b, &mut buf, symbol_of(t.value(idx)));
-                        if own >= BOUNDED {
-                            nd += 1;
+                        let own = src.symbol_at(&b, &mut buf, t.value(idx));
+                        if own & BOUNDED_FLAG != 0 {
+                            nd += 1; // bounded, or DONT_CARE (a free draw)
                         }
                         slot.store(own, Ordering::Relaxed);
                     }
@@ -156,7 +206,11 @@ impl<'a> Source<'a> {
                 });
             }
         });
-        Source { table: t, set, symbols: symbols.into_iter().map(|a| a.into_inner()).collect(), legal: legal.into_inner(), decided: decided.into_inner() }
+        let _ = set;
+        self.symbols = symbols.into_iter().map(|a| a.into_inner()).collect();
+        self.legal = legal.into_inner();
+        self.decided = decided.into_inner();
+        self
     }
 }
 
@@ -176,7 +230,7 @@ fn capture_bound(set: &Set, b: &Board, buf: &mut crate::chess::MoveBuffer, own: 
         best = best.max(2 - symbol_of(v));
     }
     if has_capture && best == own {
-        own + BOUNDED
+        own | BOUNDED_FLAG
     } else {
         own
     }
@@ -189,9 +243,10 @@ fn fill_dont_care(values: &mut [u8]) {
     for v in values.iter_mut() {
         if *v == DONT_CARE {
             *v = prev;
-        } else if *v >= BOUNDED {
-            if prev > *v - BOUNDED {
-                prev = *v - BOUNDED;
+        } else if *v & BOUNDED_FLAG != 0 {
+            let bound = *v & !BOUNDED_FLAG;
+            if prev > bound {
+                prev = bound;
             }
             *v = prev;
         } else {
@@ -381,6 +436,14 @@ pub struct Built {
     pub files: usize,
     pub streams: Vec<Stream>,
     pub candidates: usize,
+    /// DTM: the streams hold distance buckets of `step` moves instead of
+    /// WDL symbols (signed: wins and losses apart; draw_free: draws are
+    /// don't care, the WDL table tells them).
+    pub dtm: bool,
+    pub step: u32,
+    pub signed: bool,
+    pub draw_free: bool,
+    pub alphabet: usize,
 }
 
 impl Built {
@@ -407,6 +470,12 @@ impl Built {
         head[7] = self.files as u8;
         head[8..14].copy_from_slice(&self.first);
         head[14..20].copy_from_slice(&self.second);
+        if self.dtm {
+            head[..4].copy_from_slice(DTM_MAGIC);
+            head[20] = self.step as u8;
+            head[21] = if self.signed { DTM_SIGNED } else { 0 } | if self.draw_free { DTM_DRAW_FREE } else { 0 };
+            head[22] = self.alphabet as u8;
+        }
         let mut offset = head.len();
         for (i, s) in self.streams.iter().enumerate() {
             let d = &mut head[OWN_HEADER + OWN_DESCRIPTOR * i..];
@@ -429,6 +498,21 @@ impl Built {
 }
 
 pub(super) const OWN_MAGIC: &[u8; 4] = b"MWDL";
+/// The same layout with byte 20 = step, 21 = flags, 22 = alphabet.
+pub(super) const DTM_MAGIC: &[u8; 4] = b"MDTM";
+pub(super) const DTM_SIGNED: u8 = 1;
+pub(super) const DTM_DRAW_FREE: u8 = 2;
+
+/// Derives, builds and writes the own DTM table of an exact egtb table: the
+/// distance buckets of egtb::FILE_STEP moves, wins and losses as one bucket
+/// (the WDL table tells which), draws free. Read through Tables::probe_dtm
+/// after a WDL verdict.
+pub fn write_dtm(set: &Set, t: &Table, path: &Path, opt: pairs::Options, bo: BuildOptions, workers: usize, progress: Option<&dyn Fn(&str)>) -> std::io::Result<Built> {
+    let src = Source::new_dtm(set, t, crate::egtb::FILE_STEP, false, true, workers);
+    let b = build(&src, opt, bo, workers, progress);
+    b.write(path)?;
+    Ok(b)
+}
 pub(super) const OWN_VERSION: u8 = 1;
 pub(super) const OWN_HEADER: usize = 32;
 pub(super) const OWN_DESCRIPTOR: usize = 32;
@@ -497,7 +581,7 @@ pub fn build(src: &Source, opt: pairs::Options, bo: BuildOptions, workers: usize
             let scores: Vec<Vec<usize>> = cands
                 .iter()
                 .map(|o| {
-                    let s = sample_side(src.set, &be, side, o, files, bo, opt, workers);
+                    let s = sample_side(src, &be, side, o, files, bo, opt, workers);
                     if let Some(p) = progress {
                         p(&format!("{} side {} order {:<12} sample {:?} bytes", be.name, side, o, s));
                     }
@@ -522,7 +606,7 @@ pub fn build(src: &Source, opt: pairs::Options, bo: BuildOptions, workers: usize
                 if sizes[f] > bo.dict_above as u64 && po.dict_sample == 0 {
                     po.dict_sample = bo.dict_sample;
                 }
-                let (packed, st) = pairs::pack_stats(&values[f], 3, po);
+                let (packed, st) = pairs::pack_stats(&values[f], src.alphabet, po);
                 let slot = &mut streams[side * files + f];
                 if slot.as_ref().is_none_or(|s| packed.len() < s.packed.len()) {
                     *slot = Some(Stream { order: o.clone(), size: sizes[f], packed, stats: st });
@@ -534,7 +618,7 @@ pub fn build(src: &Source, opt: pairs::Options, bo: BuildOptions, workers: usize
             }
         }
     }
-    Built { name: be.name.clone(), first, second, sides, files, streams: streams.into_iter().map(|s| s.unwrap()).collect(), candidates: cands.len() }
+    Built { name: be.name.clone(), first, second, sides, files, streams: streams.into_iter().map(|s| s.unwrap()).collect(), candidates: cands.len(), dtm: src.dtm, step: src.step, signed: src.signed, draw_free: src.draw_free, alphabet: src.alphabet }
 }
 
 /// Lays the symbols of one side to move out in the index order of a
@@ -614,7 +698,8 @@ fn build_side(src: &Source, be: &BaseEntry, side: usize, o: &Order, files: usize
 /// stream are enumerated with the decoder, looked up in the tables, filled
 /// like the real stream and packed; returns the packed bytes per file.
 #[allow(clippy::too_many_arguments)]
-fn sample_side(set: &Set, be: &BaseEntry, side: usize, o: &Order, files: usize, bo: BuildOptions, opt: pairs::Options, workers: usize) -> Vec<usize> {
+fn sample_side(src: &Source, be: &BaseEntry, side: usize, o: &Order, files: usize, bo: BuildOptions, opt: pairs::Options, workers: usize) -> Vec<usize> {
+    let set = src.set;
     let enc = if be.has_pawns { ENC_FILE } else { ENC_PIECE };
     let num = be.shape.num;
     let pieces: Vec<Piece> = o.pieces.iter().map(|&c| piece_of_code(c)).collect();
@@ -656,7 +741,7 @@ fn sample_side(set: &Set, be: &BaseEntry, side: usize, o: &Order, files: usize, 
                                 continue;
                             }
                             let Some(v) = set.lookup(&b) else { continue }; // adjacent kings
-                            slot.store(capture_bound(set, &b, &mut buf, symbol_of(v)), Ordering::Relaxed);
+                            slot.store(src.symbol_at(&b, &mut buf, v), Ordering::Relaxed);
                         }
                     }
                 });
@@ -664,7 +749,7 @@ fn sample_side(set: &Set, be: &BaseEntry, side: usize, o: &Order, files: usize, 
         });
         let mut values: Vec<u8> = sample.into_iter().map(|a| a.into_inner()).collect();
         fill_dont_care(&mut values);
-        let (_, st) = pairs::pack_stats(&values, 3, opt);
+        let (_, st) = pairs::pack_stats(&values, src.alphabet, opt);
         *score = st.bytes;
     }
     scores

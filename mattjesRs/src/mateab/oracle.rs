@@ -18,6 +18,18 @@ pub enum Verdict {
 /// all (a WDL table): lo is 1, hi is `UNBOUNDED`.
 pub const UNBOUNDED: u32 = 1 << 20;
 
+/// Narrows a WDL win or loss with the own DTM file of the material (the
+/// bucket of step moves), 1..UNBOUNDED without one.
+fn dtm_bounds(wdl: &crate::syzygy::Tables, b: &Board, win: bool) -> (u32, u32) {
+    let Some((bucket, step)) = wdl.probe_dtm(b) else { return (1, UNBOUNDED) };
+    let v = if win {
+        egtb::Value((bucket as u32 * step).min(127) as u8) // the upper end of the bucket, as quantize stores it
+    } else {
+        egtb::Value((128 + bucket as u32 * step).min(255) as u8)
+    };
+    v.bounds(step)
+}
+
 /// Answers terminal questions the search cannot answer by itself. For `Win` and
 /// `Loss` the true distance in plies lies in `[lo, hi]`: an exact endgame table
 /// gives lo == hi, a quantised one its bucket, a WDL table 1..UNBOUNDED. The
@@ -56,9 +68,11 @@ impl Oracle for Tables<'_> {
                 if let Some(wdl) = self.wdl {
                     if let Some(v) = wdl.probe_wdl_with(b, Some(self.set)) {
                         return if v >= crate::syzygy::CURSED_WIN {
-                            (Verdict::Win, 1, UNBOUNDED)
+                            let (lo, hi) = dtm_bounds(wdl, b, true);
+                            (Verdict::Win, lo, hi)
                         } else if v <= crate::syzygy::BLESSED_LOSS {
-                            (Verdict::Loss, 1, UNBOUNDED)
+                            let (lo, hi) = dtm_bounds(wdl, b, false);
+                            (Verdict::Loss, lo, hi)
                         } else {
                             (Verdict::Draw, 0, 0)
                         };

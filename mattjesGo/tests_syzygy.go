@@ -263,6 +263,109 @@ func syzygyOwnVerify(names string, samples int) {
 	syzygyVerifyTables(tb, set, names, samples)
 }
 
+// syzygyDtmCheck writes the WDL and DTM files of a material (generated
+// exactly in memory when it is beyond the base) into dir and probes random
+// positions through the oracle (base plus the two files) against the exact
+// values: the verdict must match and the exact distance lie in the bounds.
+func syzygyDtmCheck(name string, dir string, samples int, workers int) {
+	m, err := egtb.Parse(name)
+	if err != nil {
+		panic(err)
+	}
+	gen := egtbLoadOrGenerate(workers)
+	var t *egtb.Table
+	if m.Pieces() <= 4 {
+		t = gen.Find(m.Name())
+	} else {
+		t = gen.AddMaterial(m)
+		st := gen.Generate(t, workers, func(line string) {
+			if line[0] != ' ' {
+				fmt.Println(line)
+			}
+		})
+		fmt.Printf("%s: generated in %.1f s\n", m.Name(), st.Duration.Seconds())
+	}
+	opt, bo := pairs.Options{Workers: workers}, syzygy.BuildOptions{}
+	start := time.Now()
+	wdlPath := filepath.Join(dir, fmt.Sprintf("%d-%s.wdl", m.Pieces(), m.Name()))
+	wb, err := syzygy.WriteWDL(gen, t, wdlPath, opt, bo, workers, nil)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("%s: WDL %d bytes in %.1f s\n", m.Name(), wb.Bytes(), time.Since(start).Seconds())
+	start = time.Now()
+	dtmPath := filepath.Join(dir, fmt.Sprintf("%d-%s.dtm", m.Pieces(), m.Name()))
+	db, err := syzygy.WriteDTM(gen, t, dtmPath, opt, bo, workers, nil)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("%s: DTM %d bytes in %.1f s (step %d, %d symbols)\n", m.Name(), db.Bytes(), time.Since(start).Seconds(), db.Step, db.Alphabet)
+	// the oracle's own set is empty (registered tables without values answer
+	// nothing), so every probe goes through the WDL and DTM files; the
+	// prober resolves captures with the full base
+	tb := syzygy.New()
+	if n, err := tb.AddOwn(dir); err != nil || n == 0 {
+		panic(fmt.Sprintf("no WDL file registered (%v)", err))
+	}
+	if n, err := tb.AddDTM(dir); err != nil || n == 0 {
+		panic(fmt.Sprintf("no DTM file registered (%v)", err))
+	}
+	tb.SetBase(gen)
+	oracle := mateab.Tables{Set: egtb.NewSet(), WDL: tb}
+	pieces := []chess.Piece{chess.WhiteKing, chess.BlackKing}
+	pieces = append(pieces, materialPieces(m)...)
+	squares := make([]chess.Pos, len(pieces))
+	rng := rand.New(rand.NewSource(7))
+	checked, bad, bounded := 0, 0, 0
+	t0 := time.Now()
+	for checked < samples {
+		used := uint64(0)
+		for i, p := range pieces {
+			for {
+				sq := rng.Intn(64)
+				if used&(1<<sq) != 0 || (p.Type() == chess.Pawn && (sq < 8 || sq >= 56)) {
+					continue
+				}
+				used |= 1 << sq
+				squares[i] = chess.Pos(sq)
+				break
+			}
+		}
+		b := bitboard.FromPieces(rng.Intn(2) == 0, squares, pieces)
+		if b.OpponentInCheck() {
+			continue
+		}
+		exact, ok := gen.Lookup(&b)
+		if !ok {
+			continue
+		}
+		verdict, lo, hi := oracle.Probe(&b)
+		checked++
+		want := mateab.Draw
+		if exact.IsWin() {
+			want = mateab.Win
+		} else if exact.IsLoss() {
+			want = mateab.Loss
+		}
+		plies := exact.Plies()
+		if verdict != want || (want != mateab.Draw && (plies < lo || plies > hi)) {
+			bad++
+			if bad <= 5 {
+				fmt.Printf("  MISMATCH %s: exact %s, oracle %d [%d, %d]\n", b.FEN(), exact, verdict, lo, hi)
+			}
+		}
+		if want != mateab.Draw && hi < mateab.Unbounded {
+			bounded++
+		}
+	}
+	el := time.Since(t0)
+	verdict := "ok"
+	if bad > 0 {
+		verdict = fmt.Sprintf("%d MISMATCHES", bad)
+	}
+	fmt.Printf("%s: %d positions checked, %s, %d wins and losses with DTM bounds, %.0f probes/s\n\n", m.Name(), checked, verdict, bounded, float64(checked)/el.Seconds())
+}
+
 // syzygyDecodeCheck round-trips random indices of the candidate orders of
 // the base materials ("" = all) through the Syzygy index decoder and the
 // encoder (the decoder enumerates stream slices for the candidate

@@ -17,7 +17,7 @@
 mod oracle;
 mod ttvalue;
 
-pub use oracle::{Material, Oracle, Tables, Verdict};
+pub use oracle::{Material, Oracle, Tables, Verdict, UNBOUNDED};
 pub use ttvalue::VALUE_BITS;
 
 use ttvalue::{pack_value, same_move, unpack_value, TT_MATE, TT_NO_MATE};

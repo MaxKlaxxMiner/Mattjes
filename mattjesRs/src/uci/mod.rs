@@ -445,6 +445,11 @@ impl<W: Write + Send + 'static> Engine<W> {
                 self.send(&format!("info string wdl: {} own tables in {}", n, set.wdl_path().display()));
             }
         }
+        if let Ok(n) = tb.add_dtm(&set.dtm_path()) {
+            if n > 0 {
+                self.send(&format!("info string dtm: {} own tables in {} (step {}, the search resolves exact distances)", n, set.dtm_path().display(), egtb::FILE_STEP));
+            }
+        }
         self.syzygy = Some(Arc::new(tb));
     }
 
@@ -755,7 +760,10 @@ impl<W: Write + Send + 'static> Engine<W> {
                     }
                 }
                 if write {
-                    write_wdl_file(set, gi, workers, &say); // from the exact values, before anything quantises them
+                    // from the exact values, before anything quantises them: the
+                    // WDL file, then the distance buckets (which replace the quantised .bin)
+                    write_wdl_file(set, gi, workers, &say);
+                    write_dtm_file(set, gi, workers, &say);
                 }
                 if gi == ti || !write {
                     return;
@@ -772,15 +780,10 @@ impl<W: Write + Send + 'static> Engine<W> {
                 if !fork.tables[gi].is_generated() {
                     continue;
                 }
-                if write {
-                    let path = fork.table_path(&fork.tables[gi]);
-                    if !path.exists() {
-                        match fork.save_table(gi, &path) {
-                            Ok(()) => progress(&format!("written to {}", path.display())),
-                            Err(e) => progress(&e.to_string()),
-                        }
-                    }
-                }
+                // the quantised .bin is no longer written (2026-10-22): the WDL
+                // and DTM files of the done callback replace it, existing .bin
+                // files still load
+                let _ = write;
                 fork.tables[gi].fill(); // drops the generator's bitset
             }
             let _ = tx.send(Event::Done(fork));
@@ -1098,6 +1101,22 @@ fn write_wdl_file(set: &Set, gi: usize, workers: usize, say: &dyn Fn(&str)) {
     match crate::syzygy::write::write_wdl(set, t, &path, crate::pairs::Options { workers, ..Default::default() }, crate::syzygy::write::BuildOptions::default(), workers, None) {
         Ok(b) => say(&format!("WDL written to {} ({} bytes, {} candidate orders, {:?})", path.display(), b.bytes(), b.candidates, Duration::from_secs(start.elapsed().as_secs()))),
         Err(e) => say(&format!("WDL: {}", e)),
+    }
+}
+
+/// Writes the own DTM table of an exact table to the cache folder when the
+/// file is missing (the distance buckets; read after the WDL verdict, so the
+/// WDL file comes first).
+fn write_dtm_file(set: &Set, gi: usize, workers: usize, say: &dyn Fn(&str)) {
+    let t = &set.tables[gi];
+    let path = set.dtm_path().join(format!("{}-{}.dtm", t.mat.pieces(), t.mat.name()));
+    if path.exists() || !t.is_generated() || !t.is_exact() {
+        return;
+    }
+    let start = Instant::now();
+    match crate::syzygy::write::write_dtm(set, t, &path, crate::pairs::Options { workers, ..Default::default() }, crate::syzygy::write::BuildOptions::default(), workers, None) {
+        Ok(b) => say(&format!("DTM written to {} ({} bytes, {} candidate orders, {:?})", path.display(), b.bytes(), b.candidates, Duration::from_secs(start.elapsed().as_secs()))),
+        Err(e) => say(&format!("DTM: {}", e)),
     }
 }
 

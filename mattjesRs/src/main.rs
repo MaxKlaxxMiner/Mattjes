@@ -203,6 +203,11 @@ fn experiments() {
     let word = |a: String, all: &str| if a == all { String::new() } else { a };
     let names = word(test_arg(0, "all"), "all");
     let bo = syzygy::write::BuildOptions { sample_target: test_int(4, 0), finalists: test_int(5, 0), ..Default::default() };
+    if names == "dtm" {
+        // "test dtm <material> <dir> <samples>": the DTM file and its probe against the exact values
+        tests_syzygy::syzygy_dtm_check(&test_arg(1, "KBNK"), &test_arg(2, "tests/dtm-check-rs"), test_int(3, 100000), 12);
+        return;
+    }
     if names == "decode" {
         tests_syzygy::syzygy_decode_check("", test_int(1, 8), test_int(2, 20000)); // the index decoder against encode
         return;
