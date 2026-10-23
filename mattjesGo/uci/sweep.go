@@ -167,7 +167,10 @@ func cleanRaw(set *egtb.Set, rest []egtb.Material, syz *syzygy.Tables, progress 
 // exact file written only for a material a later one needs, then everything
 // released from memory and the exact files nobody needs any more removed.
 func (e *Engine) runSweep(set *egtb.Set, j *job, plan []egtb.Material, workers int, syz *syzygy.Tables) {
+	// every line of the running material carries its number in the plan,
+	// "(3 / 109) ...", like the base generation's "(3 / 35)"
 	var lastLevel time.Time
+	current := 0
 	progress := func(line string) {
 		if strings.HasPrefix(line, " ") {
 			if time.Since(lastLevel) < progressInterval {
@@ -175,7 +178,7 @@ func (e *Engine) runSweep(set *egtb.Set, j *job, plan []egtb.Material, workers i
 			}
 			lastLevel = time.Now()
 		}
-		e.send("info string egtb: %s", compact(strings.TrimPrefix(line, "egtb: ")))
+		e.send("info string egtb: (%d / %d) %s", current, len(plan), compact(strings.TrimPrefix(line, "egtb: ")))
 		e.flush()
 	}
 	start := time.Now()
@@ -183,6 +186,7 @@ func (e *Engine) runSweep(set *egtb.Set, j *job, plan []egtb.Material, workers i
 		if !j.ctrl.Wait() {
 			return // aborted between two materials
 		}
+		current = i + 1
 		rest := plan[i+1:]
 		t := set.AddMaterial(m)
 		need, measured := set.EstimateBytes(t)
@@ -191,10 +195,10 @@ func (e *Engine) runSweep(set *egtb.Set, j *job, plan []egtb.Material, workers i
 			how = "measured"
 		}
 		if total, _, ok := egtb.AvailableMemory(); ok && uint64(need) > total {
-			progress(fmt.Sprintf("sweep %d/%d: %s needs about %s (%s), the machine has %s: skipped", i+1, len(plan), m.Name(), egtb.FormatBytes(uint64(need)), how, egtb.FormatBytes(total)))
+			progress(fmt.Sprintf("%s needs about %s (%s), the machine has %s: skipped", m.Name(), egtb.FormatBytes(uint64(need)), how, egtb.FormatBytes(total)))
 			continue
 		}
-		progress(fmt.Sprintf("sweep %d/%d: %s (%d MB table, about %s RAM %s)", i+1, len(plan), m.Name(), t.Size>>20, egtb.FormatBytes(uint64(need)), how))
+		progress(fmt.Sprintf("generating %s (%d MB table, about %s RAM %s)", m.Name(), t.Size>>20, egtb.FormatBytes(uint64(need)), how))
 		// every computed table gets its log line and its files; a dependency
 		// the generator had to compute (its exact file was gone) keeps an
 		// exact file only when a later material of the plan needs it
@@ -237,7 +241,7 @@ func (e *Engine) runSweep(set *egtb.Set, j *job, plan []egtb.Material, workers i
 			}
 		}
 		cleanRaw(set, rest, syz, progress)
-		progress(fmt.Sprintf("sweep: %d of %d done after %s", i+1, len(plan), time.Since(start).Round(time.Second)))
+		progress(fmt.Sprintf("%s done, %s since the start", m.Name(), time.Since(start).Round(time.Second)))
 	}
 	e.jobDone <- set
 }

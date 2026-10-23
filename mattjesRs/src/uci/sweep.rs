@@ -145,9 +145,13 @@ impl<W: Write + Send + 'static> Engine<W> {
 /// exact file written only for a material a later one needs, then everything
 /// released from memory and the exact files nobody needs any more removed.
 fn run_sweep<W: Write + Send + 'static>(mut set: Set, ctrl: Arc<Control>, plan: Vec<Material>, workers: usize, syz: Option<Arc<Tables>>, out: Arc<Mutex<W>>, tx: mpsc::Sender<Event>) {
+    // every line of the running material carries its number in the plan,
+    // "(3 / 109) ...", like the base generation's "(3 / 35)"
+    let current = std::cell::Cell::new(0usize);
+    let n = plan.len();
     let say = |line: &str| {
         let mut o = out.lock().unwrap();
-        let _ = writeln!(o, "info string egtb: {}", compact(line.strip_prefix("egtb: ").unwrap_or(line)));
+        let _ = writeln!(o, "info string egtb: ({} / {}) {}", current.get(), n, compact(line.strip_prefix("egtb: ").unwrap_or(line)));
         let _ = o.flush();
     };
     // level lines come up to 254 times per table: at most one every few seconds
@@ -162,11 +166,11 @@ fn run_sweep<W: Write + Send + 'static>(mut set: Set, ctrl: Arc<Control>, plan: 
         say(line);
     };
     let start = Instant::now();
-    let n = plan.len();
     for (i, m) in plan.iter().enumerate() {
         if !ctrl.wait() {
             return; // aborted between two materials
         }
+        current.set(i + 1);
         let rest = &plan[i + 1..];
         let ti = set.add_material(m.clone());
         let size = set.tables[ti].size;
@@ -174,11 +178,11 @@ fn run_sweep<W: Write + Send + 'static>(mut set: Set, ctrl: Arc<Control>, plan: 
         let how = if measured { "measured" } else { "estimated" };
         if let Some((total, _)) = egtb::available_memory() {
             if need as u64 > total {
-                say(&format!("sweep {}/{}: {} needs about {} ({}), the machine has {}: skipped", i + 1, n, m.name(), egtb::format_bytes(need as u64), how, egtb::format_bytes(total)));
+                say(&format!("{} needs about {} ({}), the machine has {}: skipped", m.name(), egtb::format_bytes(need as u64), how, egtb::format_bytes(total)));
                 continue;
             }
         }
-        say(&format!("sweep {}/{}: {} ({} MB table, about {} RAM {})", i + 1, n, m.name(), size >> 20, egtb::format_bytes(need as u64), how));
+        say(&format!("generating {} ({} MB table, about {} RAM {})", m.name(), size >> 20, egtb::format_bytes(need as u64), how));
         // every computed table gets its log line and its files; a dependency
         // the generator had to compute (its exact file was gone) keeps an
         // exact file only when a later material of the plan needs it
@@ -224,7 +228,7 @@ fn run_sweep<W: Write + Send + 'static>(mut set: Set, ctrl: Arc<Control>, plan: 
             }
         }
         clean_raw(&set, rest, syz.as_deref(), &say);
-        say(&format!("sweep: {} of {} done after {:?}", i + 1, n, Duration::from_secs(start.elapsed().as_secs())));
+        say(&format!("{} done, {:?} since the start", m.name(), Duration::from_secs(start.elapsed().as_secs())));
     }
     let _ = tx.send(Event::Done(set));
 }

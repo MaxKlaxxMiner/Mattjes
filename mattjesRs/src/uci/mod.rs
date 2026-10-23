@@ -266,9 +266,9 @@ impl<W: Write + Send + 'static> Engine<W> {
                 self.send(&format!("option name MatePnMobility type combo default {} var on var off var lazy", DEFAULT_MOBILITY));
                 self.send(&format!("option name MatePnGoal type combo default {} var mate var win", DEFAULT_GOAL));
                 self.send("option name EgtbWriteCache type check default false");
+                self.send("option name EgtbForceGen type check default false");
                 self.send("option name EgtbGenerate5 type check default false");
                 self.send("option name EgtbGenerate6 type check default false");
-                self.send("option name EgtbForceGen type check default false");
                 self.send(&format!("option name EgtbPath type string default {}", self.cache_dir.display()));
                 self.send("option name SyzygyPath type string default <empty>");
                 self.send("uciok");

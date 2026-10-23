@@ -598,6 +598,10 @@ Tabellen-Stufe sieht die Materialien des Durchlaufs nicht (keine `.bin`), die
 Suchen bekommen sie über das WDL/DTM-Orakel; ein nach dem Durchlauf gestartetes
 `go infinite` sucht ganz normal.
 
+Jede Zeile des laufenden Materials trägt seine Nummer im Plan, `(3 / 109)
+KBBKN 242,221,056 indices, ...`, wie die Basis ihr `(3 / 35)`; die Option steht
+in der Liste zwischen `EgtbWriteCache` und `EgtbGenerate5`.
+
 Treiber `tests/uci-sweep.sh <binary> [Sekunden] [Optionen]`: `go infinite` mit
 der Option, nach n Sekunden `stop`, `quit` nach `bestmove`.
 
