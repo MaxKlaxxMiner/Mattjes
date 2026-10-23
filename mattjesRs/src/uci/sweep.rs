@@ -147,11 +147,11 @@ impl<W: Write + Send + 'static> Engine<W> {
 fn run_sweep<W: Write + Send + 'static>(mut set: Set, ctrl: Arc<Control>, plan: Vec<Material>, workers: usize, syz: Option<Arc<Tables>>, out: Arc<Mutex<W>>, tx: mpsc::Sender<Event>) {
     // every line of the running material carries its number in the plan,
     // "(3 / 109) ...", like the base generation's "(3 / 35)"
-    let current = std::cell::Cell::new(0usize);
+    let current = std::sync::atomic::AtomicUsize::new(0);
     let n = plan.len();
     let say = |line: &str| {
         let mut o = out.lock().unwrap();
-        let _ = writeln!(o, "info string egtb: ({} / {}) {}", current.get(), n, compact(line.strip_prefix("egtb: ").unwrap_or(line)));
+        let _ = writeln!(o, "info string egtb: ({} / {}) {}", current.load(std::sync::atomic::Ordering::Relaxed), n, compact(line.strip_prefix("egtb: ").unwrap_or(line)));
         let _ = o.flush();
     };
     // level lines come up to 254 times per table: at most one every few seconds
@@ -170,7 +170,7 @@ fn run_sweep<W: Write + Send + 'static>(mut set: Set, ctrl: Arc<Control>, plan: 
         if !ctrl.wait() {
             return; // aborted between two materials
         }
-        current.set(i + 1);
+        current.store(i + 1, std::sync::atomic::Ordering::Relaxed);
         let rest = &plan[i + 1..];
         let ti = set.add_material(m.clone());
         let size = set.tables[ti].size;

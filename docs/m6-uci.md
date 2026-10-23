@@ -600,7 +600,12 @@ Suchen bekommen sie über das WDL/DTM-Orakel; ein nach dem Durchlauf gestartetes
 
 Jede Zeile des laufenden Materials trägt seine Nummer im Plan, `(3 / 109)
 KBBKN 242,221,056 indices, ...`, wie die Basis ihr `(3 / 35)`; die Option steht
-in der Liste zwischen `EgtbWriteCache` und `EgtbGenerate5`.
+in der Liste zwischen `EgtbWriteCache` und `EgtbGenerate5`. Während ein WDL
+oder DTM gepackt wird, meldet ein Zeitgeber (`ticking`, Go und Rust) alle fünf
+Sekunden `WDL of KBBKB: 24 candidate samples, 3 finalist streams built, 15s`;
+die Zeilen des Bauers selbst (eine je Stichprobe und je gebautem Strom, bei
+KBNKQ hunderte, und ein Finalist kann eine halbe Minute still sein) werden nur
+gezählt. Das gilt auch für den Einzel-Job neben der Suche.
 
 Treiber `tests/uci-sweep.sh <binary> [Sekunden] [Optionen]`: `go infinite` mit
 der Option, nach n Sekunden `stop`, `quit` nach `bestmove`.

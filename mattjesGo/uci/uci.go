@@ -368,12 +368,54 @@ func writeDtm(set *egtb.Set, t *egtb.Table, workers int, progress func(string)) 
 		return
 	}
 	start := time.Now()
-	b, err := syzygy.WriteDTM(set, t, path, pairs.Options{Workers: workers}, syzygy.BuildOptions{}, workers, nil)
+	var b *syzygy.Built
+	var err error
+	ticking("DTM of "+t.Mat.Name(), progress, func(sink func(string)) {
+		b, err = syzygy.WriteDTM(set, t, path, pairs.Options{Workers: workers}, syzygy.BuildOptions{}, workers, sink)
+	})
 	if err != nil {
 		progress("DTM: " + err.Error())
 		return
 	}
 	progress(fmt.Sprintf("DTM written to %s (%d bytes, %d candidate orders, %s)", path, b.Bytes(), b.Candidates, time.Since(start).Round(time.Second)))
+}
+
+// ticking runs build with a progress sink and reports, as long as it runs,
+// one line every progressInterval: "<label>: 37 candidate samples, 2
+// finalist streams built, 25s" (the builder's own lines, one per sample and
+// per built stream, would be hundreds, and a finalist stream can take half a
+// minute without one).
+func ticking(label string, progress func(string), build func(sink func(string))) {
+	var mu sync.Mutex
+	samples, finalists := 0, 0
+	sink := func(line string) {
+		mu.Lock()
+		if strings.Contains(line, " sample ") {
+			samples++
+		} else {
+			finalists++
+		}
+		mu.Unlock()
+	}
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		tick := time.NewTicker(progressInterval)
+		defer tick.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-tick.C:
+				mu.Lock()
+				s, f := samples, finalists
+				mu.Unlock()
+				progress(fmt.Sprintf("%s: %d candidate samples, %d finalist streams built, %s", label, s, f, time.Since(start).Round(time.Second)))
+			}
+		}
+	}()
+	build(sink)
+	close(done)
 }
 
 // writeWdl writes the own WDL table of an exact table to the cache folder
@@ -391,7 +433,11 @@ func writeWdl(set *egtb.Set, t *egtb.Table, tb *syzygy.Tables, workers int, prog
 		return
 	}
 	start := time.Now()
-	b, err := syzygy.WriteWDL(set, t, path, pairs.Options{Workers: workers}, syzygy.BuildOptions{}, workers, nil)
+	var b *syzygy.Built
+	var err error
+	ticking("WDL of "+t.Mat.Name(), progress, func(sink func(string)) {
+		b, err = syzygy.WriteWDL(set, t, path, pairs.Options{Workers: workers}, syzygy.BuildOptions{}, workers, sink)
+	})
 	if err != nil {
 		progress("WDL: " + err.Error())
 		return

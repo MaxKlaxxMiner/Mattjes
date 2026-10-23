@@ -1112,7 +1112,7 @@ fn parent_value(cv: Value) -> Value {
 /// finalists packed (seconds for the base, minutes for five pieces). A
 /// material the Syzygy files cover gets no own file: the prober would never
 /// read it (the DTM file is written regardless, it is read after either).
-fn write_wdl_file(set: &Set, gi: usize, tb: Option<&crate::syzygy::Tables>, workers: usize, say: &dyn Fn(&str)) {
+fn write_wdl_file(set: &Set, gi: usize, tb: Option<&crate::syzygy::Tables>, workers: usize, say: &(dyn Fn(&str) + Sync)) {
     let t = &set.tables[gi];
     let path = set.wdl_file(&t.mat);
     if path.exists() || !t.is_generated() || !t.is_exact() {
@@ -1123,7 +1123,11 @@ fn write_wdl_file(set: &Set, gi: usize, tb: Option<&crate::syzygy::Tables>, work
         return;
     }
     let start = Instant::now();
-    match crate::syzygy::write::write_wdl(set, t, &path, crate::pairs::Options { workers, ..Default::default() }, crate::syzygy::write::BuildOptions::default(), workers, None) {
+    let mut result = None;
+    ticking(&format!("WDL of {}", t.mat.name()), say, &mut |sink| {
+        result = Some(crate::syzygy::write::write_wdl(set, t, &path, crate::pairs::Options { workers, ..Default::default() }, crate::syzygy::write::BuildOptions::default(), workers, Some(sink)));
+    });
+    match result.expect("the build ran") {
         Ok(b) => say(&format!("WDL written to {} ({} bytes, {} candidate orders, {:?})", path.display(), b.bytes(), b.candidates, Duration::from_secs(start.elapsed().as_secs()))),
         Err(e) => say(&format!("WDL: {}", e)),
     }
@@ -1132,17 +1136,60 @@ fn write_wdl_file(set: &Set, gi: usize, tb: Option<&crate::syzygy::Tables>, work
 /// Writes the own DTM table of an exact table to the cache folder when the
 /// file is missing (the distance buckets; read after the WDL verdict, so the
 /// WDL file comes first).
-fn write_dtm_file(set: &Set, gi: usize, workers: usize, say: &dyn Fn(&str)) {
+fn write_dtm_file(set: &Set, gi: usize, workers: usize, say: &(dyn Fn(&str) + Sync)) {
     let t = &set.tables[gi];
     let path = set.dtm_file(&t.mat);
     if path.exists() || !t.is_generated() || !t.is_exact() {
         return;
     }
     let start = Instant::now();
-    match crate::syzygy::write::write_dtm(set, t, &path, crate::pairs::Options { workers, ..Default::default() }, crate::syzygy::write::BuildOptions::default(), workers, None) {
+    let mut result = None;
+    ticking(&format!("DTM of {}", t.mat.name()), say, &mut |sink| {
+        result = Some(crate::syzygy::write::write_dtm(set, t, &path, crate::pairs::Options { workers, ..Default::default() }, crate::syzygy::write::BuildOptions::default(), workers, Some(sink)));
+    });
+    match result.expect("the build ran") {
         Ok(b) => say(&format!("DTM written to {} ({} bytes, {} candidate orders, {:?})", path.display(), b.bytes(), b.candidates, Duration::from_secs(start.elapsed().as_secs()))),
         Err(e) => say(&format!("DTM: {}", e)),
     }
+}
+
+/// Runs `build` with a progress sink and reports, as long as it runs, one
+/// line every PROGRESS_INTERVAL: "<label>: 37 candidate samples, 2 finalist
+/// streams built, 25s" (the builder's own lines, one per sample and per
+/// built stream, would be hundreds, and a finalist stream can take half a
+/// minute without one).
+type Build<'a> = &'a mut dyn FnMut(&dyn Fn(&str));
+
+fn ticking(label: &str, say: &(dyn Fn(&str) + Sync), build: Build<'_>) {
+    let counts = Mutex::new((0usize, 0usize));
+    let done = AtomicBool::new(false);
+    let start = Instant::now();
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let mut next = start + PROGRESS_INTERVAL;
+            loop {
+                while Instant::now() < next {
+                    if done.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                next += PROGRESS_INTERVAL;
+                let (samples, finalists) = *counts.lock().unwrap();
+                say(&format!("{}: {} candidate samples, {} finalist streams built, {:?}", label, samples, finalists, Duration::from_secs(start.elapsed().as_secs())));
+            }
+        });
+        let sink = |line: &str| {
+            let mut c = counts.lock().unwrap();
+            if line.contains(" sample ") {
+                c.0 += 1;
+            } else {
+                c.1 += 1;
+            }
+        };
+        build(&sink);
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
 }
 
 fn compact(line: &str) -> String {
