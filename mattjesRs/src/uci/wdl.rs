@@ -201,7 +201,7 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
     let mut round = 0;
     while !open.is_empty() && wins < multi_pv && !core.aborted {
         round += 1;
-        rep.note(&format!("wdl: round {}, {} new positions per graph and question, {} moves open, {} positions so far", round, budget, open.len(), positions));
+        rep.note(&format!("wdl: round {}, {} new positions per graph and question, {} moves open, {} positions so far", round, crate::egtb::group(budget), open.len(), crate::egtb::group(positions as usize)));
         let mut still_open = Vec::with_capacity(open.len());
         let round_start = counted;
         for &i in &open {

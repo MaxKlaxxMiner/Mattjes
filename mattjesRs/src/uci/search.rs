@@ -514,7 +514,7 @@ impl<W: Write + Send + 'static> Engine<W> {
         // the block cache of the packed tables (every material beyond the base)
         let (hits, misses, distinct, blocks) = self.set().cache_stats();
         if hits + misses > 0 {
-            self.send(&format!("info string egtb: block cache {} hits, {} misses, {} of {} blocks touched", hits, misses, distinct, blocks));
+            self.send(&format!("info string egtb: block cache {} hits, {} misses, {} of {} blocks touched", egtb::group(hits as usize), egtb::group(misses as usize), egtb::group(distinct as usize), egtb::group(blocks as usize)));
             self.set().reset_cache_stats();
         }
         if let Some(e) = self.set().cache_error() {

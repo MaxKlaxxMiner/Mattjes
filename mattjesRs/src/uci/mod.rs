@@ -1128,7 +1128,7 @@ fn write_wdl_file(set: &Set, gi: usize, tb: Option<&crate::syzygy::Tables>, work
         result = Some(crate::syzygy::write::write_wdl(set, t, &path, crate::pairs::Options { workers, ..Default::default() }, crate::syzygy::write::BuildOptions::default(), workers, Some(sink)));
     });
     match result.expect("the build ran") {
-        Ok(b) => say(&format!("WDL written to {} ({} bytes, {} candidate orders, {:?})", path.display(), b.bytes(), b.candidates, Duration::from_secs(start.elapsed().as_secs()))),
+        Ok(b) => say(&format!("WDL written to {} ({} bytes, {} candidate orders, {:?})", path.display(), egtb::group(b.bytes()), b.candidates, Duration::from_secs(start.elapsed().as_secs()))),
         Err(e) => say(&format!("WDL: {}", e)),
     }
 }
@@ -1150,7 +1150,7 @@ fn write_dtm_file(set: &Set, gi: usize, workers: usize, say: &(dyn Fn(&str) + Sy
         result = Some(crate::syzygy::write::write_dtm(set, t, &path, crate::pairs::Options { workers, ..Default::default() }, crate::syzygy::write::BuildOptions::default(), workers, Some(sink)));
     });
     match result.expect("the build ran") {
-        Ok(b) => say(&format!("DTM written to {} ({} bytes, {} candidate orders, {:?})", path.display(), b.bytes(), b.candidates, Duration::from_secs(start.elapsed().as_secs()))),
+        Ok(b) => say(&format!("DTM written to {} ({} bytes, {} candidate orders, {:?})", path.display(), egtb::group(b.bytes()), b.candidates, Duration::from_secs(start.elapsed().as_secs()))),
         Err(e) => say(&format!("DTM: {}", e)),
     }
 }

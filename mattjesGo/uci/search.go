@@ -624,7 +624,7 @@ func (e *Engine) finishSearch(r searchEnd) {
 	}
 	// the block cache of the packed tables (every material beyond the base)
 	if hits, misses, distinct, blocks := e.set.CacheStats(); hits+misses > 0 {
-		e.send("info string egtb: block cache %d hits, %d misses, %d of %d blocks touched", hits, misses, distinct, blocks)
+		e.send("info string egtb: block cache %s hits, %s misses, %s of %s blocks touched", egtb.Group(int(hits)), egtb.Group(int(misses)), egtb.Group(int(distinct)), egtb.Group(int(blocks)))
 		e.set.ResetCacheStats()
 	}
 	if err := e.set.CacheError(); err != nil {

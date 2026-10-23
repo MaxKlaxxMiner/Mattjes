@@ -379,7 +379,7 @@ func writeDtm(set *egtb.Set, t *egtb.Table, workers int, progress func(string)) 
 		progress("DTM: " + err.Error())
 		return
 	}
-	progress(fmt.Sprintf("DTM written to %s (%d bytes, %d candidate orders, %s)", path, b.Bytes(), b.Candidates, time.Since(start).Round(time.Second)))
+	progress(fmt.Sprintf("DTM written to %s (%s bytes, %d candidate orders, %s)", path, egtb.Group(b.Bytes()), b.Candidates, time.Since(start).Round(time.Second)))
 }
 
 // ticking runs build with a progress sink and reports, as long as it runs,
@@ -444,7 +444,7 @@ func writeWdl(set *egtb.Set, t *egtb.Table, tb *syzygy.Tables, workers int, prog
 		progress("WDL: " + err.Error())
 		return
 	}
-	progress(fmt.Sprintf("WDL written to %s (%d bytes, %d candidate orders, %s)", path, b.Bytes(), b.Candidates, time.Since(start).Round(time.Second)))
+	progress(fmt.Sprintf("WDL written to %s (%s bytes, %d candidate orders, %s)", path, egtb.Group(b.Bytes()), b.Candidates, time.Since(start).Round(time.Second)))
 }
 
 // saveTables writes every table that lives in RAM only (generated while

@@ -10,6 +10,7 @@ import (
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/bitboard"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/chess"
+	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/egtb"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/mateab"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/rollout"
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/wdllist"
@@ -221,7 +222,7 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 	}
 	budget := min(wdlFirstBudget, maxPositions)
 	for round := 1; len(open) > 0 && wins < multiPV && !end.aborted; round++ {
-		rep.note(fmt.Sprintf("wdl: round %d, %d new positions per graph and question, %d moves open, %d positions so far", round, budget, len(open), positions))
+		rep.note(fmt.Sprintf("wdl: round %d, %s new positions per graph and question, %d moves open, %s positions so far", round, egtb.Group(budget), len(open), egtb.Group(int(positions))))
 		stillOpen := open[:0]
 		roundStart := counted
 		for _, i := range open {
