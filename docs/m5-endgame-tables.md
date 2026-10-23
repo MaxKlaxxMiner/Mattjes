@@ -1135,6 +1135,58 @@ Offen in dieser Reihe: die beiden Hebel oben nach Entscheidung, eine schnellere
 Kandidaten-Stichprobe (sie dominiert die Zeit bei fünf Steinen), und die
 `.bin`-Pfade (`loadDependencies`, Blockcache) als Altlast.
 
+### Schneller schreiben: die Kandidaten-Stichprobe (2026-10-23)
+
+Anlass: im Durchlauf (`EgtbForceGen`) dauerte die DTM von KNNKQ 44 s, die von
+KBNKQ 9 Minuten, die Erzeugung der Tabelle selbst eine Minute. Messreihe mit
+der Rust-Testbank `syzygy_build` (`test build <names> <mode> <sampleTarget>
+<finalists> <dictSample> <v> <sampleSymbols>`, Port von Go `syzygyBuild`; die
+Bauer-Zeilen tragen Sekunden seit Baubeginn, so trennt sich die Stichprobe von
+den Finalisten), 12 Threads, Protokolle in `tests/opt-*.txt`. Ausgangslage
+KNNKQ (12 Kandidaten): DTM 44,8 s für 10.632.116 Byte, davon rund 17 s
+Stichprobe (0,75 s je Kandidat) und 25 s für sechs Finalisten (je 4,2 s); WDL
+28,7 s für 3.389.360 Byte (Stichprobe 0,4 s je Kandidat). KBNKQ (360
+Kandidaten): DTM 566 s, WDL 240 s, die Stichprobe dominiert.
+
+| Hebel | KNNKQ DTM | KNNKQ WDL | KBNKQ DTM | KBNKQ WDL |
+|---|---|---|---|---|
+| Ausgangslage (2 Mi, 4.095 Symbole, 3 Finalisten) | 44,8 s, 10.632.116 | 28,7 s, 3.389.360 | 566 s, 26.211.792 | 240 s, 1.188.612 |
+| ein Finalist | 28,8 s, gleich | 18,3 s, gleich | | |
+| Reihenfolgen der WDL übernehmen, keine Stichprobe | 9,4 s, **13.200.700** | | | |
+| Stichprobe 1 Mi, ein Finalist | 19,2 s, gleich | | 370 s, **27.742.730** | 90 s, **1.265.316** |
+| Stichprobe 512 Ki, ein Finalist | 16,7 s, 10.684.452 | | | |
+| 1 Mi, Stichproben-Alphabet 1024 / 512 / 256, 3 Finalisten | 33,8 / 30,6 / 33,3 s, gleich | | | |
+| **1 Mi, 512 Symbole, 3 Finalisten (Vorgabe)** | 30,6 s, gleich | | **133 s, 26.344.650** | **99 s, 1.189.140** |
+
+Befunde:
+
+- **Die beste WDL-Reihenfolge ist nicht die beste DTM-Reihenfolge:** mit den
+  Reihenfolgen der WDL packt die DTM ein Viertel größer (Seite 1: 6,8 statt
+  4,6 MB). Die Übergabe (`BuildOptions.Orders`, `Built.Orders`) bleibt als
+  Testbank-Modus `dtmw`, der Job nutzt sie nicht.
+- **Die Stichprobe der DTM hatte einen festen Preis je Kandidat** (0,6 s bei 2 Mi
+  wie bei 1 Mi): nicht das Aufzählen und Nachschlagen, sondern der Packer, der
+  die Stichprobe wie den echten Strom bis 4.095 Symbole ersetzte, 67 Durchgänge
+  mit je zwölf Threads über eine Million Symbole. Ein Ranking braucht das
+  Wörterbuch nicht: mit `SampleSymbols` = 512 kostet ein Kandidat 0,08 s, und
+  die Finalisten sind dieselben (KNNKQ exakt dieselben drei je Seite, dieselbe
+  Größe; KBNKQ +0,5 %). Bei der WDL steckt der Preis im Nachschlagen mit
+  Schlagauflösung (`captureBound`, Zuggenerator je Stellung), die Stichprobe
+  bleibt dort bei 0,1 s je Kandidat.
+- **Drei Finalisten sind nötig:** bei KBNKQ war auf drei von vier Seiten der
+  dritte Finalist der kleinste; ein Finalist kostet dort 6 % (DTM 27,7 statt
+  26,2 MB, WDL 1,27 statt 1,19 MB). Die Finalisten sind jetzt der Löwenanteil
+  (KBNKQ DTM sechs Bauten à 12 s von 133 s).
+
+Vorgabe (`withDefaults`, Go und Rust): `SampleTarget` 1 Mi, `SampleSymbols`
+512, `Finalists` 3. Gegen die Ausgangslage: KBNKQ DTM 133 statt 566 s (+0,5 %),
+WDL 99 statt 240 s (+0,04 %), KNNKQ DTM 30,6 statt 44,8 s (gleich). Dazu ein
+Anzeigefehler in Rust behoben: die Finalisten-Zeile druckte die bisher kleinste
+Größe statt der des Kandidaten, die drei Finalisten sahen deshalb byteidentisch
+aus. Weitere Hebel, wenn die Finalisten drücken: zwei statt drei, oder das
+Stichproben-Wörterbuch (`DictSample`) für die Finalisten (gemessen +7 bis 14 %
+Größe).
+
 ## Offen
 
 - **KPPKP ist unvollständig** (mindestens 7 Verluste in 254 Halbzügen lesen sich als

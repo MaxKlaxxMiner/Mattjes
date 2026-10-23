@@ -361,7 +361,9 @@ func (e *Engine) attachWdl() {
 
 // writeDtm writes the own DTM table of an exact table to the cache folder
 // when the file is missing (the distance buckets; read after the WDL
-// verdict, so the WDL file comes first).
+// verdict, so the WDL file comes first). The DTM samples its own candidate
+// orders: the WDL's best order packs the DTM a quarter larger
+// (docs/m5-endgame-tables.md, "Schneller schreiben").
 func writeDtm(set *egtb.Set, t *egtb.Table, workers int, progress func(string)) {
 	path := set.DtmFile(t.Mat)
 	if !fileMissing(path) || t.Values == nil || !t.Exact() {

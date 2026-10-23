@@ -74,7 +74,7 @@ func syzygyBuild(names string, workers int, opt pairs.Options, bo syzygy.BuildOp
 			src = syzygy.NewSourceDTM(set, t, egtb.FileStep, true, false, workers)
 		case "dtmd":
 			src = syzygy.NewSourceDTM(set, t, egtb.FileStep, true, true, workers)
-		case "dtmu":
+		case "dtmu", "dtmw":
 			src = syzygy.NewSourceDTM(set, t, egtb.FileStep, false, true, workers)
 		default:
 			src = syzygy.NewSource(set, t, workers)
@@ -89,7 +89,16 @@ func syzygyBuild(names string, workers int, opt pairs.Options, bo syzygy.BuildOp
 		if verbose {
 			progress = func(line string) { fmt.Println("    " + line) }
 		}
-		b := syzygy.Build(src, opt, bo, workers, progress)
+		tbo := bo
+		if mode == "dtmw" {
+			// the DTM with the orders the WDL chose (no sampling): the WDL is built first
+			wStart := time.Now()
+			wdl := syzygy.Build(syzygy.NewSource(set, t, workers), opt, bo, workers, progress)
+			fmt.Printf("%-6s WDL %8d bytes in %.1f s, orders %v\n", t.Mat.Name(), wdl.Bytes(), time.Since(wStart).Seconds(), wdl.Orders())
+			tbo.Orders = wdl.Orders()
+			tStart = time.Now()
+		}
+		b := syzygy.Build(src, opt, tbo, workers, progress)
 		fmt.Printf("%-6s %9d legal, %4.1f%% capture-decided, %4d candidates: ours %8d, syzygy %8d, ratio %.2f (%.1f s)\n", t.Mat.Name(), src.Legal, 100*float64(src.Decided)/float64(max(src.Legal, 1)), b.Candidates, b.Bytes(), size, float64(b.Bytes())/float64(max(size, 1)), time.Since(tStart).Seconds())
 		for i, s := range b.Streams {
 			fmt.Printf("       stream %d: order %-12s %9d positions, %8d bytes: %s\n", i, s.Order, s.Size, len(s.Packed), s.Stats)

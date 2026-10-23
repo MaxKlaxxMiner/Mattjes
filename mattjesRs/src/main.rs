@@ -208,6 +208,12 @@ fn experiments() {
         tests_syzygy::syzygy_dtm_check(&test_arg(1, "KBNK"), &test_arg(2, "tests/dtm-check-rs"), test_int(3, 100000), 12);
         return;
     }
+    if names == "build" {
+        // "test build <names> <mode> <sampleTarget> <finalists> <dictSample> <v> <sampleSymbols>": the streams in memory, size and time per material (mode wdl/dtm/dtmd/dtmu/dtmw)
+        let bo = syzygy::write::BuildOptions { sample_target: test_int(3, 0), finalists: test_int(4, 0), sample_symbols: test_int(7, 0), ..Default::default() };
+        tests_syzygy::syzygy_build(&test_arg(1, "KNNKQ"), 12, pairs::Options { workers: 12, dict_sample: test_int(5, 0), ..Default::default() }, bo, &test_arg(2, "dtmu"), test_arg(6, "") == "v");
+        return;
+    }
     if names == "decode" {
         tests_syzygy::syzygy_decode_check("", test_int(1, 8), test_int(2, 20000)); // the index decoder against encode
         return;

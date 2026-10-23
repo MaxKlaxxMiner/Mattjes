@@ -444,11 +444,49 @@ type BuildOptions struct {
 	DictAbove int
 	// DictSample: the sample of the dictionary above DictAbove (0 = 16 Mi).
 	DictSample int
+	// SampleSymbols caps the packer's alphabet while judging a sample (0 =
+	// pairs' 4095): a ranking does not need the full dictionary, and every
+	// 64 symbols are a pass over the sample.
+	SampleSymbols int
+	// Orders, when set (one list per side), replaces the candidates: no
+	// sampling, these orders are built and the best per file kept. The DTM
+	// file takes the orders its WDL file chose (Built.Orders), which saves
+	// the sampling, the larger half of its time on five pieces.
+	Orders [][]Order
+}
+
+// Orders lists per side the distinct orders of its streams (one for a
+// pawnless material, up to four with pawns): BuildOptions.Orders for a
+// second stream of the same material.
+func (b *Built) Orders() [][]Order {
+	orders := make([][]Order, b.Sides)
+	for side := 0; side < b.Sides; side++ {
+		for f := 0; f < b.Files; f++ {
+			o := b.Streams[side*b.Files+f].Order
+			seen := false
+			for _, have := range orders[side] {
+				if have.String() == o.String() {
+					seen = true
+				}
+			}
+			if !seen {
+				orders[side] = append(orders[side], o)
+			}
+		}
+	}
+	return orders
 }
 
 func (bo BuildOptions) withDefaults() BuildOptions {
+	// measured on KNNKQ and KBNKQ (docs/m5-endgame-tables.md, "Schneller
+	// schreiben"): 1 Mi positions and 512 symbols judge the candidates as
+	// well as 2 Mi and the full dictionary at a tenth of the time, three
+	// finalists are needed (the sample's best is often not the real best)
 	if bo.SampleTarget <= 0 {
-		bo.SampleTarget = 2 << 20
+		bo.SampleTarget = 1 << 20
+	}
+	if bo.SampleSymbols <= 0 {
+		bo.SampleSymbols = 512
 	}
 	if bo.Finalists <= 0 {
 		bo.Finalists = 3
@@ -495,7 +533,9 @@ func Build(src *Source, opt pairs.Options, bo BuildOptions, workers int, progres
 		if be.hasPawns {
 			enc = encFile
 		}
-		if size := ei.setup(be, cands[0].Order, cands[0].Order2, 0, enc); set != nil && size > 2*uint64(bo.SampleTarget) && len(cands) > bo.Finalists {
+		if len(bo.Orders) == b.Sides {
+			chosen = bo.Orders[side] // given: no sampling
+		} else if size := ei.setup(be, cands[0].Order, cands[0].Order2, 0, enc); set != nil && size > 2*uint64(bo.SampleTarget) && len(cands) > bo.Finalists {
 			// the sample: per candidate and file the packed size of the windows
 			scores := make([][]int, len(cands))
 			for c, o := range cands {
@@ -656,7 +696,11 @@ func sampleSide(src *Source, be *baseEntry, side int, o Order, files int, bo Bui
 		}
 		wg.Wait()
 		fillDontCare(sample)
-		_, st := pairs.PackStats(sample, src.Alphabet, opt)
+		po := opt
+		if bo.SampleSymbols > 0 {
+			po.MaxSymbols = bo.SampleSymbols
+		}
+		_, st := pairs.PackStats(sample, src.Alphabet, po)
 		scores[f] = st.Bytes
 	}
 	return scores

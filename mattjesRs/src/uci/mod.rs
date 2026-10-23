@@ -1136,6 +1136,8 @@ fn write_wdl_file(set: &Set, gi: usize, tb: Option<&crate::syzygy::Tables>, work
 /// Writes the own DTM table of an exact table to the cache folder when the
 /// file is missing (the distance buckets; read after the WDL verdict, so the
 /// WDL file comes first).
+/// The DTM samples its own candidate orders: the WDL's best order packs the
+/// DTM a quarter larger (docs/m5-endgame-tables.md, "Schneller schreiben").
 fn write_dtm_file(set: &Set, gi: usize, workers: usize, say: &(dyn Fn(&str) + Sync)) {
     let t = &set.tables[gi];
     let path = set.dtm_file(&t.mat);

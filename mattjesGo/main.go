@@ -161,10 +161,9 @@ func experiments() {
 	// 2026-10-22: KQK;KBNK;KBBK;KRKN;KPK = 170,282 bytes against 173,776 Syzygy (0.98) in 28 s; "" = the whole base (minutes)
 	// "test <names> <sampleTarget> <finalists> [v]": the candidate preselection on sampled windows (sampleTarget 0 = 2 Mi: every base stream is built completely; 65536 judges the 4-piece streams on 3 % and builds the finalists)
 	// the DTM file and its probe: "test <material> <dir> <samples>" writes WDL and DTM of the material (generated exactly beyond the base) into dir and probes random positions through the oracle against the exact values
-	_, _ = pairs.Options{}, syzygy.BuildOptions{}
-	syzygyDtmCheck(testArg(0, "KBNK"), testArg(1, "tests/dtm-check"), testInt(2, 100000), 12)
-	// mode (5th argument): wdl, dtm (quantised distances, draws stored), dtmd (draws free), dtmu (bucket only, draws free)
-	// syzygyBuild(testArg(0, ""), 12, pairs.Options{Workers: 12, DictSample: testInt(4, 0)}, syzygy.BuildOptions{SampleTarget: testInt(1, 0), Finalists: testInt(2, 0)}, testArg(5, "wdl"), testArg(3, "") == "v") // KQKBN 2026-10-22: 1,188,612 bytes (1.13) in 240 s after 63 s generation
+	// syzygyDtmCheck(testArg(0, "KBNK"), testArg(1, "tests/dtm-check"), testInt(2, 100000), 12)
+	// the streams in memory, size and time per material: "test <names> <mode> <sampleTarget> <finalists> <dictSample> <v> <sampleSymbols>"; mode wdl, dtm (quantised distances, draws stored), dtmd (draws free), dtmu (bucket only, draws free: the file), dtmw (the WDL's orders, measured and rejected)
+	syzygyBuild(testArg(0, "KNNKQ"), 12, pairs.Options{Workers: 12, DictSample: testInt(4, 0)}, syzygy.BuildOptions{SampleTarget: testInt(2, 0), Finalists: testInt(3, 0), SampleSymbols: testInt(6, 0)}, testArg(1, "dtmu"), testArg(5, "") == "v") // KQKBN 2026-10-22: 1,188,612 bytes (1.13) in 240 s after 63 s generation; 2026-10-23 with 1 Mi / 512 symbols / 3 finalists: DTM 26,344,650 in 133 s, WDL 1,189,140 in 99 s (Rust)
 	// the own WDL files of the base: written to mattjes-egtb-cache/wdl/ ("" = all 35, minutes), then probed through the Syzygy prober against the base
 	// 2026-10-22: 14 materials written and verified (100,000 random positions each, all agree); "test" without names writes and verifies all 35 (minutes)
 	// syzygyOwnWrite(testArg(0, ""), 12, pairs.Options{Workers: 12}, syzygy.BuildOptions{}, testArg(1, "")) // "test <names> <dir>": dir "" = mattjes-egtb-cache/wdl; 2026-10-22: all 35 in 264 s, 1,322,480 bytes

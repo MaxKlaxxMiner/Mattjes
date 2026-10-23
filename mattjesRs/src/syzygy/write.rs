@@ -447,6 +447,24 @@ pub struct Built {
 }
 
 impl Built {
+    /// Per side the distinct orders of its streams (one for a pawnless
+    /// material, up to four with pawns): `BuildOptions::orders` for a second
+    /// stream of the same material.
+    pub fn orders(&self) -> Vec<Vec<Order>> {
+        (0..self.sides)
+            .map(|side| {
+                let mut orders: Vec<Order> = Vec::new();
+                for f in 0..self.files {
+                    let o = &self.streams[side * self.files + f].order;
+                    if !orders.iter().any(|have| have.to_string() == o.to_string()) {
+                        orders.push(o.clone());
+                    }
+                }
+                orders
+            })
+            .collect()
+    }
+
     /// The size of all packed streams.
     pub fn bytes(&self) -> usize {
         self.streams.iter().map(|s| s.packed.len()).sum()
@@ -526,7 +544,7 @@ pub(super) const OWN_DESCRIPTOR: usize = 32;
 /// every candidate order; windows spread over the stream are enumerated with
 /// the decoder, looked up and packed, and only the best candidates of that
 /// sample are built completely. Zero values take the defaults.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct BuildOptions {
     /// Positions sampled per stream (0 = 2 Mi); a stream with fewer than
     /// twice that many positions is built completely for every candidate.
@@ -541,12 +559,28 @@ pub struct BuildOptions {
     pub dict_above: usize,
     /// The sample of the dictionary above dict_above (0 = 16 Mi).
     pub dict_sample: usize,
+    /// Caps the packer's alphabet while judging a sample (0 = pairs' 4095):
+    /// a ranking does not need the full dictionary, and every 64 symbols
+    /// are a pass over the sample.
+    pub sample_symbols: usize,
+    /// When set (one list per side), replaces the candidates: no sampling,
+    /// these orders are built and the best per file kept. The DTM file takes
+    /// the orders its WDL file chose (`Built::orders`), which saves the
+    /// sampling, the larger half of its time on five pieces.
+    pub orders: Vec<Vec<Order>>,
 }
 
 impl BuildOptions {
     fn with_defaults(mut self) -> BuildOptions {
+        // measured on KNNKQ and KBNKQ (docs/m5-endgame-tables.md, "Schneller
+        // schreiben"): 1 Mi positions and 512 symbols judge the candidates as
+        // well as 2 Mi and the full dictionary at a tenth of the time, three
+        // finalists are needed (the sample's best is often not the real best)
         if self.sample_target == 0 {
-            self.sample_target = 2 << 20;
+            self.sample_target = 1 << 20;
+        }
+        if self.sample_symbols == 0 {
+            self.sample_symbols = 512;
         }
         if self.finalists == 0 {
             self.finalists = 3;
@@ -581,12 +615,14 @@ pub fn build(src: &Source, opt: pairs::Options, bo: BuildOptions, workers: usize
         ei.pieces[..cands[0].pieces.len()].copy_from_slice(&cands[0].pieces);
         let size = encode::setup(&mut ei, &be.shape, cands[0].order, cands[0].order2, 0, enc);
         let mut chosen: Vec<&Order> = cands.iter().collect();
-        if size > 2 * bo.sample_target as u64 && cands.len() > bo.finalists {
+        if bo.orders.len() == sides {
+            chosen = bo.orders[side].iter().collect(); // given: no sampling
+        } else if size > 2 * bo.sample_target as u64 && cands.len() > bo.finalists {
             // the sample: per candidate and file the packed size of the windows
             let scores: Vec<Vec<usize>> = cands
                 .iter()
                 .map(|o| {
-                    let s = sample_side(src, &be, side, o, files, bo, opt, workers);
+                    let s = sample_side(src, &be, side, o, files, &bo, opt, workers);
                     if let Some(p) = progress {
                         p(&format!("{} side {} order {:<12} sample {:?} bytes", be.name, side, o, s));
                     }
@@ -612,13 +648,13 @@ pub fn build(src: &Source, opt: pairs::Options, bo: BuildOptions, workers: usize
                     po.dict_sample = bo.dict_sample;
                 }
                 let (packed, st) = pairs::pack_stats(&values[f], src.alphabet, po);
+                let bytes = packed.len();
                 let slot = &mut streams[side * files + f];
-                if slot.as_ref().is_none_or(|s| packed.len() < s.packed.len()) {
+                if slot.as_ref().is_none_or(|s| bytes < s.packed.len()) {
                     *slot = Some(Stream { order: o.clone(), size: sizes[f], packed, stats: st });
                 }
                 if let Some(p) = progress {
-                    let s = slot.as_ref().unwrap();
-                    p(&format!("{} side {} file {} order {:<12} {:>8} bytes ({} tokens, {} symbols)", be.name, side, f, o, s.packed.len(), st.tokens, st.symbols));
+                    p(&format!("{} side {} file {} order {:<12} {:>8} bytes ({} tokens, {} symbols)", be.name, side, f, o, bytes, st.tokens, st.symbols));
                 }
             }
         }
@@ -703,7 +739,7 @@ fn build_side(src: &Source, be: &BaseEntry, side: usize, o: &Order, files: usize
 /// stream are enumerated with the decoder, looked up in the tables, filled
 /// like the real stream and packed; returns the packed bytes per file.
 #[allow(clippy::too_many_arguments)]
-fn sample_side(src: &Source, be: &BaseEntry, side: usize, o: &Order, files: usize, bo: BuildOptions, opt: pairs::Options, workers: usize) -> Vec<usize> {
+fn sample_side(src: &Source, be: &BaseEntry, side: usize, o: &Order, files: usize, bo: &BuildOptions, opt: pairs::Options, workers: usize) -> Vec<usize> {
     let set = src.set;
     let enc = if be.has_pawns { ENC_FILE } else { ENC_PIECE };
     let num = be.shape.num;
@@ -754,7 +790,11 @@ fn sample_side(src: &Source, be: &BaseEntry, side: usize, o: &Order, files: usiz
         });
         let mut values: Vec<u8> = sample.into_iter().map(|a| a.into_inner()).collect();
         fill_dont_care(&mut values);
-        let (_, st) = pairs::pack_stats(&values, src.alphabet, opt);
+        let mut po = opt;
+        if bo.sample_symbols > 0 {
+            po.max_symbols = bo.sample_symbols;
+        }
+        let (_, st) = pairs::pack_stats(&values, src.alphabet, po);
         *score = st.bytes;
     }
     scores

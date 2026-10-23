@@ -60,12 +60,94 @@ pub fn syzygy_own_write(names: &str, workers: usize, opt: crate::pairs::Options,
         }
         let t_start = Instant::now();
         let path = folder.join(format!("{}-{}.wdl", t.mat.pieces(), t.mat.name()));
-        let b = syzygy::write::write_wdl(&set, t, &path, opt, bo, workers, None).expect("write wdl");
+        let b = syzygy::write::write_wdl(&set, t, &path, opt, bo.clone(), workers, None).expect("write wdl");
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         println!("{:<6} {:>4} candidates, {:>8} bytes in {} streams, file {:>8} bytes ({:.1} s)", t.mat.name(), b.candidates, b.bytes(), b.streams.len(), size, t_start.elapsed().as_secs_f64());
         total += size;
     }
     println!("written {} bytes to {} in {:.1} s\n", total, folder.display(), start.elapsed().as_secs_f64());
+}
+
+/// Builds the own WDL or DTM streams of the named materials in memory (beyond
+/// the base generated exactly first) and prints size, candidates and time per
+/// material, the Syzygy file as the yardstick; port of Go's `syzygyBuild`.
+/// mode: "wdl", or the quantised distances as "dtm" (signed, draws stored),
+/// "dtmd" (draws free), "dtmu" (bucket only, draws free: what `write_dtm`
+/// writes). verbose prints the builder's lines with the seconds since the
+/// build started, which separates the sampling from the finalists.
+pub fn syzygy_build(names: &str, workers: usize, opt: crate::pairs::Options, bo: syzygy::write::BuildOptions, mode: &str, verbose: bool) {
+    let mut set = crate::tests_egtb::egtb_load_or_generate(workers);
+    println!("=== own {} tables: blocks {} bytes, {} pairs per pass, min count {}, {} symbols, symbol length {}, dict sample {}, sample target {}, finalists {} ===", mode, opt.block_bytes, opt.pairs_per_pass, opt.min_count, opt.max_symbols, opt.max_symbol_len, opt.dict_sample, bo.sample_target, bo.finalists);
+    let start = Instant::now();
+    let mut canonical = Vec::new();
+    for name in names.split(';') {
+        if let Ok(m) = crate::egtb::Material::parse(name.trim()) {
+            canonical.push(m.name());
+        }
+    }
+    let mut indices: Vec<usize> = (0..set.base().len()).collect();
+    for name in &canonical {
+        let m = crate::egtb::Material::parse(name).expect("parsed above");
+        if m.pieces() > 4 {
+            let ti = set.add_material(m.clone());
+            let t_start = Instant::now();
+            set.generate(ti, workers, &mut |line: &str| {
+                if !line.starts_with(' ') {
+                    println!("{}", line);
+                }
+            });
+            println!("{}: generated in {:.1} s", m.name(), t_start.elapsed().as_secs_f64());
+            indices.push(ti);
+        }
+    }
+    let (mut sum_ours, mut sum_syzygy) = (0u64, 0u64);
+    for ti in indices {
+        let t = &set.tables[ti];
+        if !names.is_empty() && !canonical.iter().any(|n| *n == t.mat.name()) {
+            continue;
+        }
+        let t_start = Instant::now();
+        let src = match mode {
+            "dtm" => syzygy::write::Source::new_dtm(&set, t, crate::egtb::FILE_STEP, true, false, workers),
+            "dtmd" => syzygy::write::Source::new_dtm(&set, t, crate::egtb::FILE_STEP, true, true, workers),
+            "dtmu" | "dtmw" => syzygy::write::Source::new_dtm(&set, t, crate::egtb::FILE_STEP, false, true, workers),
+            _ => syzygy::write::Source::new(&set, t, workers),
+        };
+        let size = if mode == "wdl" { crate::tests_pairs::syzygy_file_size(&t.mat.name()) } else { 0 };
+        let mut tbo = bo.clone();
+        let mut t_start = t_start;
+        if mode == "dtmw" {
+            // the DTM with the orders the WDL chose (no sampling): the WDL is built first
+            let w_start = Instant::now();
+            let progress = |line: &str| println!("    {:6.1} s  {}", w_start.elapsed().as_secs_f64(), line);
+            let wdl = syzygy::write::build(&syzygy::write::Source::new(&set, t, workers), opt, bo.clone(), workers, if verbose { Some(&progress) } else { None });
+            let orders = wdl.orders();
+            println!("{:<6} WDL {:>8} bytes in {:.1} s, orders {}", t.mat.name(), wdl.bytes(), w_start.elapsed().as_secs_f64(), orders.iter().map(|side| side.iter().map(|o| o.to_string()).collect::<Vec<_>>().join(",")).collect::<Vec<_>>().join(" | "));
+            tbo.orders = orders;
+            t_start = Instant::now();
+        }
+        let b_start = Instant::now();
+        let progress = |line: &str| println!("    {:6.1} s  {}", b_start.elapsed().as_secs_f64(), line);
+        let b = syzygy::write::build(&src, opt, tbo, workers, if verbose { Some(&progress) } else { None });
+        println!(
+            "{:<6} {:>9} legal, {:>4.1}% capture-decided, {:>4} candidates: ours {:>8}, syzygy {:>8}, ratio {:.2} ({:.1} s, source {:.1} s)",
+            t.mat.name(),
+            src.legal,
+            100.0 * src.decided as f64 / src.legal.max(1) as f64,
+            b.candidates,
+            b.bytes(),
+            size,
+            b.bytes() as f64 / size.max(1) as f64,
+            t_start.elapsed().as_secs_f64(),
+            (b_start - t_start).as_secs_f64()
+        );
+        for (i, s) in b.streams.iter().enumerate() {
+            println!("       stream {}: order {:<12} {:>9} positions, {:>8} bytes: {}", i, s.order, s.size, s.packed.len(), s.stats);
+        }
+        sum_ours += b.bytes() as u64;
+        sum_syzygy += size;
+    }
+    println!("total: ours {}, syzygy {}, ratio {:.2} ({:.1} s)\n", sum_ours, sum_syzygy, sum_ours as f64 / sum_syzygy.max(1) as f64, start.elapsed().as_secs_f64());
 }
 
 /// Writes the WDL and DTM files of a material (generated exactly in memory
@@ -93,11 +175,11 @@ pub fn syzygy_dtm_check(name: &str, dir: &str, samples: usize, workers: usize) {
     let dir = std::path::Path::new(dir);
     let start = Instant::now();
     let wdl_path = dir.join(format!("{}-{}.wdl", m.pieces(), m.name()));
-    let wb = syzygy::write::write_wdl(&gen, &gen.tables[ti], &wdl_path, opt, bo, workers, None).expect("write wdl");
+    let wb = syzygy::write::write_wdl(&gen, &gen.tables[ti], &wdl_path, opt, bo.clone(), workers, None).expect("write wdl");
     println!("{}: WDL {} bytes in {:.1} s", m.name(), wb.bytes(), start.elapsed().as_secs_f64());
     let start = Instant::now();
     let dtm_path = dir.join(format!("{}-{}.dtm", m.pieces(), m.name()));
-    let db = syzygy::write::write_dtm(&gen, &gen.tables[ti], &dtm_path, opt, bo, workers, None).expect("write dtm");
+    let db = syzygy::write::write_dtm(&gen, &gen.tables[ti], &dtm_path, opt, bo.clone(), workers, None).expect("write dtm");
     println!("{}: DTM {} bytes in {:.1} s (step {}, {} symbols)", m.name(), db.bytes(), start.elapsed().as_secs_f64(), db.step, db.alphabet);
     let mut tb = Tables::new();
     assert!(tb.add_own(dir).unwrap_or(0) > 0, "no WDL file registered");
