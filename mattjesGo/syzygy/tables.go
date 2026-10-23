@@ -357,6 +357,15 @@ func (t *Tables) register(be *baseEntry, first, second [6]uint8) {
 // Count is the number of tables found.
 func (t *Tables) Count() int { return len(t.list) }
 
+// HasOriginal reports whether a Syzygy file (not an own one) covers the
+// material: the prober prefers it over an own WDL file, so a job need not
+// write one.
+func (t *Tables) HasOriginal(m egtb.Material) bool {
+	first, second := countsOf(m)
+	l, found := t.entries[materialKey(first, second)]
+	return found && !l.be.own
+}
+
 // Largest is the piece count of the largest table found.
 func (t *Tables) Largest() int {
 	n := 0

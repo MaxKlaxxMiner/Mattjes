@@ -726,6 +726,7 @@ impl<W: Write + Send + 'static> Engine<W> {
         let workers = self.background_workers();
         self.send(&format!("info string egtb: {} workers beside the search thread ({} cores)", workers, egtb::physical_cores()));
         let (out, tx, write) = (self.out.clone(), self.tx.clone(), self.write_cache);
+        let syz = self.syzygy.clone(); // the job thread only asks it which materials the Syzygy files cover
         std::thread::spawn(move || {
             // level lines come up to 254 times per table: at most one every few seconds
             let mut last_level: Option<Instant> = None;
@@ -762,7 +763,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                 if write {
                     // from the exact values, before anything quantises them: the
                     // WDL file, then the distance buckets (which replace the quantised .bin)
-                    write_wdl_file(set, gi, workers, &say);
+                    write_wdl_file(set, gi, syz.as_deref(), workers, &say);
                     write_dtm_file(set, gi, workers, &say);
                 }
                 if gi == ti || !write {
@@ -1090,11 +1091,17 @@ fn parent_value(cv: Value) -> Value {
 /// alignment of the generator is noise in a GUI's proportional font.
 /// Writes the own WDL table of an exact table to the cache folder when the
 /// file is missing: the candidate orders are judged on samples and the
-/// finalists packed (seconds for the base, minutes for five pieces).
-fn write_wdl_file(set: &Set, gi: usize, workers: usize, say: &dyn Fn(&str)) {
+/// finalists packed (seconds for the base, minutes for five pieces). A
+/// material the Syzygy files cover gets no own file: the prober would never
+/// read it (the DTM file is written regardless, it is read after either).
+fn write_wdl_file(set: &Set, gi: usize, tb: Option<&crate::syzygy::Tables>, workers: usize, say: &dyn Fn(&str)) {
     let t = &set.tables[gi];
     let path = set.wdl_file(&t.mat);
     if path.exists() || !t.is_generated() || !t.is_exact() {
+        return;
+    }
+    if tb.is_some_and(|tb| tb.has_original(&t.mat)) {
+        say(&format!("WDL of {} not written, Syzygy has it", t.mat.name()));
         return;
     }
     let start = Instant::now();

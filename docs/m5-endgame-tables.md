@@ -1037,7 +1037,11 @@ Rückfrage für Schläge in Materialien ohne Datei; Zeile `info string wdl: N ow
 tables in ...`. Der Hintergrund-Job schreibt mit `EgtbWriteCache` nach jeder fertig
 gerechneten Tabelle (Abhängigkeiten und Ziel, aus den exakten Werten, bevor
 `SaveTable` sie quantisiert) die WDL-Datei (`writeWdl`, nur wenn sie fehlt; Zeile
-`info string egtb: WDL written to ... (bytes, candidate orders, time)`), und
+`info string egtb: WDL written to ... (bytes, candidate orders, time)`; seit
+2026-10-23 nicht für Materialien, die eine Syzygy-Datei abdeckt (`Tables.HasOriginal`,
+Zeile `WDL of KBNKQ not written, Syzygy has it`): der Prober liest dann nur das
+Original, die eigene Datei hätte vier Minuten je Fünf-Steiner gekostet und wäre nie
+gelesen worden; die DTM-Datei wird immer geschrieben, sie wird nach beiden gelesen), und
 `finishJob` registriert die neuen Dateien (`AddOwn`). Rust gleich (`attach_wdl`,
 `write_wdl_file`, der Wurzel-Probe der Tabellenstufe bekommt die Basis über
 `probe_wdl_with`). Treiber `tests/uci-gen-wdl.sh <binary> "<fen>"` (Erzeugung mit

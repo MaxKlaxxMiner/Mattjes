@@ -246,6 +246,13 @@ impl Tables {
         self.entries.contains_key(&material_key(&w, &bl))
     }
 
+    /// Whether a Syzygy file (not an own one) covers the material: the
+    /// prober prefers it over an own WDL file, so a job need not write one.
+    pub fn has_original(&self, m: &crate::egtb::Material) -> bool {
+        let (first, second) = write::counts_of(m);
+        self.entries.get(&material_key(&first, &second)).is_some_and(|l| !self.list[l.entry].own)
+    }
+
     /// The WDL value of the position for the side to move (LOSS .. WIN),
     /// None when no table covers the material. The tables store "don't
     /// care" values where a capture decides, so captures (and en passant)

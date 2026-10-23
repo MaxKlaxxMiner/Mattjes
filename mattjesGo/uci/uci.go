@@ -367,10 +367,16 @@ func writeDtm(set *egtb.Set, t *egtb.Table, workers int, progress func(string)) 
 
 // writeWdl writes the own WDL table of an exact table to the cache folder
 // when the file is missing: the candidate orders are judged on samples and
-// the finalists packed (seconds for the base, minutes for five pieces).
-func writeWdl(set *egtb.Set, t *egtb.Table, workers int, progress func(string)) {
+// the finalists packed (seconds for the base, minutes for five pieces). A
+// material the Syzygy files cover gets no own file: the prober would never
+// read it (the DTM file is written regardless, it is read after either).
+func writeWdl(set *egtb.Set, t *egtb.Table, tb *syzygy.Tables, workers int, progress func(string)) {
 	path := set.WdlFile(t.Mat)
 	if !fileMissing(path) || t.Values == nil || !t.Exact() {
+		return
+	}
+	if tb != nil && tb.HasOriginal(t.Mat) {
+		progress(fmt.Sprintf("WDL of %s not written, Syzygy has it", t.Mat.Name()))
 		return
 	}
 	start := time.Now()
@@ -676,6 +682,7 @@ func (e *Engine) startJobFrom(m egtb.Material, set *egtb.Set) bool {
 	j := &job{mat: m, ctrl: egtb.NewControl()}
 	e.job = j
 	workers, write := e.backgroundWorkers(), e.writeCache
+	syz := e.syzygy // the job thread only asks it which materials the Syzygy files cover
 	e.send("info string egtb: %d workers beside the search thread (%d cores)", workers, egtb.PhysicalCores())
 	go func() {
 		// level lines come up to 254 times per table: at most one every few seconds
@@ -705,7 +712,7 @@ func (e *Engine) startJobFrom(m egtb.Material, set *egtb.Set) bool {
 			if write {
 				// from the exact values, before anything quantises them: the WDL
 				// file, then the distance buckets (which replace the quantised .bin)
-				writeWdl(set, gt, workers, progress)
+				writeWdl(set, gt, syz, workers, progress)
 				writeDtm(set, gt, workers, progress)
 			}
 			if gt == t || !write {
