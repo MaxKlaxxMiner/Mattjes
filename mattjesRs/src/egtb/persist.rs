@@ -189,13 +189,26 @@ fn write_file(path: &Path, tables: &[&Table], raw_checksum: u64, step: u32, bloc
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let mut w = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
+    // written beside the target and renamed when complete: a reader never
+    // sees a partial file (a sweep may be killed while writing)
+    let tmp = tmp_path(path);
+    let mut w = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(&tmp)?);
     use std::io::Write;
     w.write_all(MAGIC)?;
     w.write_all(&[step as u8, 0, 0, 0])?;
     w.write_all(&raw_checksum.to_le_bytes())?;
     lz::pack_indexed_to(&mut w, raw, block_size, workers)?;
-    w.flush()
+    w.flush()?;
+    drop(w);
+    std::fs::rename(&tmp, path)
+}
+
+/// The temporary twin a file is written to before it is renamed into place
+/// ("5-KBNKQ.dtm.tmp"): a reader never sees a partial file.
+pub fn tmp_path(path: &Path) -> PathBuf {
+    let mut p = path.as_os_str().to_owned();
+    p.push(".tmp");
+    PathBuf::from(p)
 }
 
 /// Opens a cache file and reads its header and block index; the caller either
@@ -291,6 +304,18 @@ impl Set {
     /// The own WDL table of a material, e.g. "wdl/5-KBNKQ.wdl".
     pub fn wdl_file(&self, m: &Material) -> PathBuf {
         self.wdl_path().join(format!("{}-{}.wdl", m.pieces(), m.name()))
+    }
+
+    /// The own DTM table of a material, e.g. "dtm/5-KBNKQ.dtm".
+    pub fn dtm_file(&self, m: &Material) -> PathBuf {
+        self.dtm_path().join(format!("{}-{}.dtm", m.pieces(), m.name()))
+    }
+
+    /// Drops the values of a table beyond the base from memory (and closes
+    /// its file, when it was loaded packed); the table stays registered and
+    /// can be loaded or generated again.
+    pub fn release(&mut self, ti: usize) {
+        self.tables[ti].clear();
     }
 
     /// The exact cache file of a material beyond the base ("5-KBNKQ.bin.raw",

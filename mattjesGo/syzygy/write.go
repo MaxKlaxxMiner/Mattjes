@@ -838,7 +838,10 @@ func (b *Built) Write(path string) error {
 		binary.LittleEndian.PutUint64(d[24:], uint64(len(s.Packed)))
 		offset += (len(s.Packed) + 7) &^ 7
 	}
-	f, err := os.Create(path)
+	// written beside the target and renamed when complete: a reader never
+	// sees a partial file (a sweep may be killed while writing)
+	tmp := egtb.TmpPath(path)
+	f, err := os.Create(tmp)
 	if err != nil {
 		return err
 	}
@@ -854,7 +857,10 @@ func (b *Built) Write(path string) error {
 		f.Close()
 		return err
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // WriteWDL derives, builds and writes the own WDL table of an exact egtb

@@ -486,14 +486,19 @@ impl Built {
             d[24..32].copy_from_slice(&(s.packed.len() as u64).to_le_bytes());
             offset += (s.packed.len() + 7) & !7;
         }
-        let mut w = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
+        // written beside the target and renamed when complete: a reader
+        // never sees a partial file (a sweep may be killed while writing)
+        let tmp = crate::egtb::tmp_path(path);
+        let mut w = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(&tmp)?);
         w.write_all(&head)?;
         for s in &self.streams {
             w.write_all(&s.packed)?;
             let pad = ((s.packed.len() + 7) & !7) - s.packed.len();
             w.write_all(&[0u8; 8][..pad])?;
         }
-        w.flush()
+        w.flush()?;
+        drop(w);
+        std::fs::rename(&tmp, path)
     }
 }
 

@@ -51,8 +51,10 @@ impl Control {
         self.state.lock().unwrap().aborted
     }
 
-    /// Blocks while paused; false means aborted.
-    pub(super) fn wait(&self) -> bool {
+    /// Blocks while paused; false means aborted. Public for a caller that
+    /// runs several generations in a row and must not start the next one
+    /// while paused.
+    pub fn wait(&self) -> bool {
         let mut s = self.state.lock().unwrap();
         while s.paused && !s.aborted {
             s = self.cond.wait(s).unwrap();

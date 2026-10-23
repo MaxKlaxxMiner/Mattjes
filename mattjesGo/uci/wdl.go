@@ -58,7 +58,7 @@ type wdlEntry struct {
 	pv        []chess.Move // the winning line (ours or the opponent's), the move first
 	positions int          // positions the shared graphs grew by while this move was asked
 	method    string
-	guess     rollout.Outcome // the rollout's guess for us (WdlRollouts), Unknown without
+	guess     rollout.Outcome // the rollout's guess for us, Unknown without
 }
 
 // guessRank orders the open moves by the rollout's guess: wins first (the
@@ -122,7 +122,7 @@ const wdlBudgetGrowth = 4
 // reported after every decision; the search ends when every move is
 // decided, when the top multiPV moves are proven wins (nothing can rank
 // above them), when the full budget left moves open, or on stop.
-func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, stop *atomic.Bool, maxPositions int, oracle mateab.Oracle, netInit bool, rollouts bool, threads int) searchEnd {
+func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, stop *atomic.Bool, maxPositions int, oracle mateab.Oracle, threads int) searchEnd {
 	var buf chess.MoveBuffer
 	n := root.GenMoves(&buf)
 	entries := make([]wdlEntry, n)
@@ -174,10 +174,9 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 		last = time.Now()
 		rep.text("wdl: " + line)
 	}
-	opt := wdllist.Options{Epsilon: 8, MaxPositions: maxPositions, Stop: stop, Progress: progress, ProgressEvery: 1 << 22, Oracle: oracle}
-	if netInit {
-		opt.NetInit = 1 // level 1 measured best over the wins (docs/nnue-patricia.md)
-	}
+	// NetInit 1: the descent's proof numbers from Patricia's net, level 1
+	// measured best over the wins (docs/nnue-patricia.md); fixed, no option
+	opt := wdllist.Options{Epsilon: 8, MaxPositions: maxPositions, Stop: stop, Progress: progress, ProgressEvery: 1 << 22, Oracle: oracle, NetInit: 1}
 	// two shared graph pairs for all root moves: 0 "we win after the
 	// move" (we attack), 1 "the opponent wins after it"
 	solvers := [2]*wdllist.Solver{wdllist.NewSolver(root, true, opt), wdllist.NewSolver(root, false, opt)}
@@ -196,7 +195,7 @@ func runWdl(root *bitboard.Board, multiPV int, rep *reporter, known []rootMove, 
 	if wdlMaterial(root, !root.WhiteMove) < wdlMaterial(root, root.WhiteMove) {
 		order = [2]int{1, 0}
 	}
-	if rollouts && len(open) > 0 {
+	if len(open) > 0 {
 		// a rollout per open move as the guess (package rollout, Patricia's
 		// net as both sides' policy down to the tables): guessed wins are
 		// asked first, and every move is asked its guessed question first

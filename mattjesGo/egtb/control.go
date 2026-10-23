@@ -61,6 +61,10 @@ func (c *Control) Aborted() bool {
 	return c.aborted
 }
 
+// Wait blocks while paused; false means aborted. For a caller that runs
+// several generations in a row and must not start the next one while paused.
+func (c *Control) Wait() bool { return c.wait() }
+
 // wait blocks while paused; false means aborted.
 func (c *Control) wait() bool {
 	if c == nil {

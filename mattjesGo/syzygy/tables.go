@@ -157,6 +157,8 @@ func (t *Tables) AddOwn(dir string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	t.mu.Lock() // against HasOriginal from a background job; the searches are stopped when files are added
+	defer t.mu.Unlock()
 	added := 0
 	for _, de := range names {
 		fn := de.Name()
@@ -208,6 +210,8 @@ func (t *Tables) AddDTM(dir string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	added := 0
 	for _, de := range names {
 		fn := de.Name()
@@ -362,6 +366,8 @@ func (t *Tables) Count() int { return len(t.list) }
 // write one.
 func (t *Tables) HasOriginal(m egtb.Material) bool {
 	first, second := countsOf(m)
+	t.mu.Lock() // a background job asks while the main loop may register files (AddOwn, AddDTM)
+	defer t.mu.Unlock()
 	l, found := t.entries[materialKey(first, second)]
 	return found && !l.be.own
 }

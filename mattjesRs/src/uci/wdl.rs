@@ -57,7 +57,7 @@ pub struct WdlEntry {
     /// Positions of the move's graphs (both questions, both racers).
     pub positions: usize,
     pub method: &'static str,
-    /// The rollout's guess for us (WdlRollouts), Unknown without.
+    /// The rollout's guess for us, Unknown without.
     pub guess: rollout::Outcome,
 }
 
@@ -115,7 +115,7 @@ pub const WDL_BUDGET_GROWTH: usize = 4;
 /// multi_pv moves are proven wins (nothing can rank above them), when the
 /// full budget left moves open, or on stop.
 #[allow(clippy::too_many_arguments)]
-pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &Arc<Reporter<W>>, known: &[RootMove], stop: &Arc<AtomicBool>, max_positions: usize, oracle: Tables<'_>, net_init: bool, rollouts: bool, threads: usize) -> Core {
+pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &Arc<Reporter<W>>, known: &[RootMove], stop: &Arc<AtomicBool>, max_positions: usize, oracle: Tables<'_>, threads: usize) -> Core {
     let mut buf = new_buffer();
     let n = root.gen_moves(&mut buf);
     let mut entries: Vec<WdlEntry> = Vec::with_capacity(n);
@@ -164,7 +164,7 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
         rep_progress.text(&format!("wdl: {}", line));
     });
     // level 1 of the net initialisation measured best over the wins (docs/nnue-patricia.md)
-    let opt = Options { epsilon: 8, max_positions, stop: Some(stop.clone()), progress: Some(progress), progress_every: 1 << 22, oracle: Some(oracle), net_init: if net_init { 1 } else { 0 }, ..Default::default() };
+    let opt = Options { epsilon: 8, max_positions, stop: Some(stop.clone()), progress: Some(progress), progress_every: 1 << 22, oracle: Some(oracle), net_init: 1, ..Default::default() }; // net_init 1: level 1 measured best over the wins (docs/nnue-patricia.md); fixed, no option
     // two shared graph pairs for all root moves: 0 "we win after the
     // move" (we attack), 1 "the opponent wins after it"
     let mut solvers = [wdllist::Solver::new(root, true, opt.clone()), wdllist::Solver::new(root, false, opt.clone())];
@@ -175,7 +175,7 @@ pub fn run_wdl<W: Write + Send + 'static>(root: &Board, multi_pv: usize, rep: &A
     // the weaker side's question first (wdl_material): 0 = we win, 1 = the
     // opponent wins
     let order: [usize; 2] = if wdl_material(root, !root.white_move) < wdl_material(root, root.white_move) { [1, 0] } else { [0, 1] };
-    if rollouts && !open.is_empty() {
+    if !open.is_empty() {
         // a rollout per open move as the guess (module rollout, Patricia's
         // net as both sides' policy down to the tables): guessed wins are
         // asked first, and every move is asked its guessed question first

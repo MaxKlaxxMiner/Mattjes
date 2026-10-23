@@ -197,6 +197,16 @@ func (s *Set) WdlFile(m Material) string {
 	return filepath.Join(s.WdlPath(), fmt.Sprintf("%d-%s.wdl", m.Pieces(), m.Name()))
 }
 
+// DtmFile is the own DTM table of a material, e.g. "dtm/5-KBNKQ.dtm".
+func (s *Set) DtmFile(m Material) string {
+	return filepath.Join(s.DtmPath(), fmt.Sprintf("%d-%s.dtm", m.Pieces(), m.Name()))
+}
+
+// Release drops the values of a table beyond the base from memory (and
+// closes its file, when it was loaded packed); the table stays registered
+// and can be loaded or generated again.
+func (s *Set) Release(t *Table) { clearTables([]*Table{t}) }
+
 // RawSuffix marks the exact twin of a cache file ("5-KBNKQ.bin.raw"): the
 // same container, but step 1. A generation writes it for every dependency it
 // had to compute, so that an interrupted job keeps them and a later
@@ -269,7 +279,10 @@ func writeFile(path string, tables []*Table, rawChecksum uint64, step, blockSize
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	f, err := os.Create(path)
+	// written beside the target and renamed when complete: a reader never
+	// sees a partial file (a sweep may be killed while writing)
+	tmp := TmpPath(path)
+	f, err := os.Create(tmp)
 	if err != nil {
 		return err
 	}
@@ -290,8 +303,15 @@ func writeFile(path string, tables []*Table, rawChecksum uint64, step, blockSize
 		f.Close()
 		return err
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
+
+// TmpPath is the temporary twin a file is written to before it is renamed
+// into place ("5-KBNKQ.dtm.tmp"): a reader never sees a partial file.
+func TmpPath(path string) string { return path + ".tmp" }
 
 func sumSize(tables []*Table) int {
 	n := 0

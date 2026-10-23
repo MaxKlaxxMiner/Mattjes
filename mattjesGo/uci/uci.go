@@ -61,6 +61,7 @@ type Engine struct {
 	name    string
 	// options
 	writeCache bool   // EgtbWriteCache: write generated tables to the cache directory
+	forceGen   bool   // EgtbForceGen: go infinite generates every material the options allow, one after the other (sweep.go)
 	generate5  bool   // EgtbGenerate5: build missing five-piece tables during go infinite
 	generate6  bool   // EgtbGenerate6: the same for six pieces
 	cacheDir   string // EgtbPath
@@ -70,8 +71,6 @@ type Engine struct {
 	hashMB     int    // Hash: the transposition table of the search
 	mobility   string // MatePnMobility: on (leaves start with their move count), off (1/1), lazy (move count when entered)
 	goal       string // MatePnGoal: mate (the shortest mate, depth by depth) or win (any won table position proves, the mate length is an upper bound)
-	netInit    bool   // WdlNetInit: the WDL descent's proof numbers initialised by Patricia's net (docs/nnue-patricia.md)
-	rollouts   bool   // WdlRollouts: a rollout per open root move as the guess that orders the WDL search (package rollout)
 	// the transposition tables, allocated on the first search, dropped when a
 	// generation starts (the generator needs the memory)
 	direct    *tt.Table   // matepn (direct-mapped: proofs must not be evicted by larger numbers)
@@ -100,15 +99,16 @@ type Engine struct {
 // job is a background generation of one material (with its dependencies) in
 // a forked set.
 type job struct {
-	mat  egtb.Material
-	ctrl *egtb.Control
+	mat   egtb.Material
+	ctrl  *egtb.Control
+	sweep bool // EgtbForceGen: every material the options allow, one after the other (sweep.go); mat is the first
 }
 
 // Run reads commands from in until quit or EOF. name is the engine name
 // reported to the GUI (the Go and Rust binaries differ).
 func Run(in io.Reader, out io.Writer, name string, workers int) {
 	e := &Engine{out: bufio.NewWriter(out), board: bitboard.New(), multiPV: 1, workers: workers, name: name, cacheDir: egtb.DefaultCacheDir(),
-		algo: defaultAlgo, hashMB: defaultHashMB, mobility: defaultMobility, goal: defaultGoal, netInit: true, rollouts: true, jobDone: make(chan *egtb.Set, 1), searchDone: make(chan searchEnd, 1), demandTick: make(chan struct{}, 1)}
+		algo: defaultAlgo, hashMB: defaultHashMB, mobility: defaultMobility, goal: defaultGoal, jobDone: make(chan *egtb.Set, 1), searchDone: make(chan searchEnd, 1), demandTick: make(chan struct{}, 1)}
 	e.send("%s", About)
 	e.flush()
 	lines := make(chan string)
@@ -173,9 +173,8 @@ func (e *Engine) command(words []string) bool {
 		e.send("option name MatePnGoal type combo default %s var mate var win", defaultGoal)
 		e.send("option name EgtbWriteCache type check default false")
 		e.send("option name EgtbGenerate5 type check default false")
-		e.send("option name WdlNetInit type check default true")
-		e.send("option name WdlRollouts type check default true")
 		e.send("option name EgtbGenerate6 type check default false")
+		e.send("option name EgtbForceGen type check default false")
 		e.send("option name EgtbPath type string default %s", e.cacheDir)
 		e.send("option name SyzygyPath type string default <empty>")
 		e.send("uciok")
@@ -200,11 +199,18 @@ func (e *Engine) command(words []string) bool {
 		e.infinite = p.infinite
 		e.lastGo = p
 		settled := e.search()
+		e.spare = nil
+		if e.forceGen && p.infinite && (e.generate5 || e.generate6) && e.startSweep() {
+			// EgtbForceGen: go infinite runs the sweep over every material the
+			// options allow instead of a search (every thread and the hash
+			// table's memory are its), stop pauses it, the next go infinite
+			// resumes it; with every file in place the go runs as usual
+			return true
+		}
 		// a missing table of the root material is generated in the background
 		// beside the search (every "go", not only infinite); when it is ready,
 		// finishJob answers again with it. A position the tables settle needs
 		// none (a paused job stays paused)
-		e.spare = nil
 		if !settled && !e.maybeGenerate() && (e.generate5 || e.generate6) && pieceCount(&e.board) > 4 {
 			// nothing to generate yet: the search's demand may name a table
 			// meanwhile (onDemandTick), and that job needs a copy of the set
@@ -221,9 +227,16 @@ func (e *Engine) command(words []string) bool {
 	case "stop":
 		if e.job != nil && !e.job.ctrl.Paused() {
 			e.job.ctrl.Pause()
-			e.send("info string egtb: generation of %s paused, the next go resumes it", e.job.mat.Name())
+			if e.job.sweep {
+				e.send("info string egtb: sweep paused, the next go infinite with EgtbForceGen resumes it")
+			} else {
+				e.send("info string egtb: generation of %s paused, the next go resumes it", e.job.mat.Name())
+			}
 		}
 		e.stopSearch()
+		if e.job != nil && e.job.sweep {
+			e.registerOwnFiles() // the files written so far serve the searches meanwhile (after the search stopped: it reads the tables)
+		}
 		if e.infinite {
 			e.send("bestmove %s", e.pendingBest)
 			e.infinite = false
@@ -274,12 +287,10 @@ func (e *Engine) setOption(words []string) {
 		}
 	case strings.EqualFold(name, "EgtbGenerate5"):
 		e.generate5 = flag
-	case strings.EqualFold(name, "WdlNetInit"):
-		e.netInit = flag
-	case strings.EqualFold(name, "WdlRollouts"):
-		e.rollouts = flag
 	case strings.EqualFold(name, "EgtbGenerate6"):
 		e.generate6 = flag
+	case strings.EqualFold(name, "EgtbForceGen"):
+		e.forceGen = flag
 	case strings.EqualFold(name, "EgtbPath"):
 		e.cacheDir = value
 		if e.set != nil {
@@ -352,7 +363,7 @@ func (e *Engine) attachWdl() {
 // when the file is missing (the distance buckets; read after the WDL
 // verdict, so the WDL file comes first).
 func writeDtm(set *egtb.Set, t *egtb.Table, workers int, progress func(string)) {
-	path := filepath.Join(set.DtmPath(), fmt.Sprintf("%d-%s.dtm", t.Mat.Pieces(), t.Mat.Name()))
+	path := set.DtmFile(t.Mat)
 	if !fileMissing(path) || t.Values == nil || !t.Exact() {
 		return
 	}
@@ -584,6 +595,9 @@ func (e *Engine) search() bool {
 // the search with backgroundWorkers threads and finishJob answers again when
 // it is ready. Returns whether a generation is running afterwards.
 func (e *Engine) maybeGenerate() bool {
+	if e.job != nil && e.job.sweep {
+		return true // a paused sweep stays as it is (its files serve the searches), nothing else starts
+	}
 	m, ok := e.generationTarget()
 	if !ok {
 		return false // nothing missing that the options allow: the search runs alone, quietly
@@ -614,7 +628,7 @@ func (e *Engine) generationTarget() (egtb.Material, bool) {
 			return false
 		}
 		t := e.set.Find(m.Name())
-		return t == nil || !t.Available()
+		return (t == nil || !t.Available()) && !e.hasProduct(m)
 	}
 	if m, ok := egtb.MaterialOf(&e.board); ok && e.board.Castling == 0 && missing(m) {
 		return m, true
@@ -637,7 +651,7 @@ func (e *Engine) onDemandTick() {
 		return
 	}
 	for _, mt := range e.set.MissingTables(0) {
-		if mt.Mat.Pieces() == 5 && e.generate5 || mt.Mat.Pieces() == 6 && e.generate6 {
+		if (mt.Mat.Pieces() == 5 && e.generate5 || mt.Mat.Pieces() == 6 && e.generate6) && !e.hasProduct(mt.Mat) {
 			e.send("info string egtb: the search asked %s times for %s, generating it", egtb.Group(int(mt.Probes)), mt.Mat.Name())
 			e.startJobFrom(mt.Mat, e.spare)
 			e.spare = nil
@@ -761,16 +775,12 @@ func (e *Engine) finishJob(set *egtb.Set) {
 	e.stopSearch()
 	e.restart = false
 	name := e.job.mat.Name()
+	if e.job.sweep {
+		name = "sweep"
+	}
 	e.job = nil
 	e.set.Adopt(set)
-	if e.syzygy != nil {
-		if n, err := e.syzygy.AddOwn(e.set.WdlPath()); err == nil && n > 0 {
-			e.send("info string wdl: %d own tables added", n)
-		}
-		if n, err := e.syzygy.AddDTM(e.set.DtmPath()); err == nil && n > 0 {
-			e.send("info string dtm: %d own tables added", n)
-		}
-	}
+	e.registerOwnFiles()
 	if committed, working, ok := egtb.PeakMemory(); ok {
 		e.send("info string egtb: %s ready, peak memory %s committed / %s working set", name, egtb.FormatBytes(committed), egtb.FormatBytes(working))
 	} else {

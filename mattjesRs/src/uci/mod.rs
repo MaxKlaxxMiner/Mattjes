@@ -25,6 +25,7 @@
 //! (debug: print the FEN).
 
 mod search;
+mod sweep;
 mod wdl;
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -71,6 +72,7 @@ pub struct Engine<W: Write + Send + 'static> {
     name: String,
     // options
     write_cache: bool, // EgtbWriteCache: write generated tables to the cache directory
+    force_gen: bool,   // EgtbForceGen: go infinite generates every material the options allow, one after the other (sweep.rs)
     generate5: bool,   // EgtbGenerate5: build missing five-piece tables during go infinite
     generate6: bool,   // EgtbGenerate6: the same for six pieces
     cache_dir: PathBuf, // EgtbPath
@@ -80,8 +82,6 @@ pub struct Engine<W: Write + Send + 'static> {
     hash_mb: usize,    // Hash: the transposition table of the search
     mobility: String,  // MatePnMobility: on (leaves start with their move count), off (1/1), lazy (move count when entered)
     goal: String,      // MatePnGoal: mate (the shortest mate, depth by depth) or win (any won table position proves, the mate length is an upper bound)
-    net_init: bool,    // WdlNetInit: the WDL descent's proof numbers initialised by Patricia's net (docs/nnue-patricia.md)
-    rollouts: bool,    // WdlRollouts: a rollout per open root move as the guess that orders the WDL search (module rollout)
     /// The search's transposition table, allocated on the first search,
     /// dropped when a generation starts (the generator needs the memory).
     tables: Option<SearchTable>,
@@ -123,6 +123,7 @@ pub struct Engine<W: Write + Send + 'static> {
 struct Job {
     mat: Material,
     ctrl: Arc<Control>,
+    sweep: bool, // EgtbForceGen: every material the options allow, one after the other (sweep.rs); mat is the first
 }
 
 /// Reads commands from `input` until quit or EOF. `name` is the engine name
@@ -138,10 +139,9 @@ pub fn run<R: Read + Send + 'static, W: Write + Send + 'static>(input: R, out: W
         workers,
         name: name.to_string(),
         write_cache: false,
+        force_gen: false,
         generate5: false,
         generate6: false,
-        net_init: true,
-        rollouts: true,
         cache_dir: egtb::default_cache_dir(),
         syzygy: None,
         syzygy_path: String::new(),
@@ -267,9 +267,8 @@ impl<W: Write + Send + 'static> Engine<W> {
                 self.send(&format!("option name MatePnGoal type combo default {} var mate var win", DEFAULT_GOAL));
                 self.send("option name EgtbWriteCache type check default false");
                 self.send("option name EgtbGenerate5 type check default false");
-                self.send("option name WdlNetInit type check default true");
-                self.send("option name WdlRollouts type check default true");
                 self.send("option name EgtbGenerate6 type check default false");
+                self.send("option name EgtbForceGen type check default false");
                 self.send(&format!("option name EgtbPath type string default {}", self.cache_dir.display()));
                 self.send("option name SyzygyPath type string default <empty>");
                 self.send("uciok");
@@ -295,11 +294,19 @@ impl<W: Write + Send + 'static> Engine<W> {
                 self.infinite = p.infinite;
                 self.last_go = p;
                 let settled = self.search();
+                self.spare = None;
+                if self.force_gen && p.infinite && (self.generate5 || self.generate6) && self.start_sweep() {
+                    // EgtbForceGen: go infinite runs the sweep over every
+                    // material the options allow instead of a search (every
+                    // thread and the hash table's memory are its), stop pauses
+                    // it, the next go infinite resumes it; with every file in
+                    // place the go runs as usual
+                    return true;
+                }
                 // a missing table of the root material is generated in the
                 // background beside the search (every "go", not only infinite);
                 // when it is ready, finish_job answers again with it. A position
                 // the tables settle needs none (a paused job stays paused)
-                self.spare = None;
                 if !settled && !self.maybe_generate() && (self.generate5 || self.generate6) && piece_count(&self.board) > 4 {
                     // nothing to generate yet: the search's demand may name a
                     // table meanwhile (on_demand_tick), and that job needs a
@@ -316,14 +323,23 @@ impl<W: Write + Send + 'static> Engine<W> {
                 }
             }
             "stop" => {
+                let mut sweep = false;
                 if let Some(j) = &self.job {
+                    sweep = j.sweep;
                     if !j.ctrl.paused() {
                         j.ctrl.pause();
-                        let name = j.mat.name();
-                        self.send(&format!("info string egtb: generation of {} paused, the next go resumes it", name));
+                        if j.sweep {
+                            self.send("info string egtb: sweep paused, the next go infinite with EgtbForceGen resumes it");
+                        } else {
+                            let name = j.mat.name();
+                            self.send(&format!("info string egtb: generation of {} paused, the next go resumes it", name));
+                        }
                     }
                 }
                 self.stop_search();
+                if sweep && self.set.is_some() {
+                    self.attach_wdl(); // the files written so far serve the searches meanwhile (after the search stopped: it reads the tables)
+                }
                 if self.infinite {
                     let best = self.pending_best.clone();
                     self.send(&format!("bestmove {}", best));
@@ -380,12 +396,10 @@ impl<W: Write + Send + 'static> Engine<W> {
             }
         } else if name.eq_ignore_ascii_case("EgtbGenerate5") {
             self.generate5 = flag;
-        } else if name.eq_ignore_ascii_case("WdlNetInit") {
-            self.net_init = flag;
-        } else if name.eq_ignore_ascii_case("WdlRollouts") {
-            self.rollouts = flag;
         } else if name.eq_ignore_ascii_case("EgtbGenerate6") {
             self.generate6 = flag;
+        } else if name.eq_ignore_ascii_case("EgtbForceGen") {
+            self.force_gen = flag;
         } else if name.eq_ignore_ascii_case("EgtbPath") {
             self.cache_dir = PathBuf::from(&value);
             if let Some(set) = self.set.as_mut() {
@@ -603,6 +617,9 @@ impl<W: Write + Send + 'static> Engine<W> {
     /// search with `background_workers` threads and `finish_job` answers again
     /// when it is ready. Returns whether a generation is running afterwards.
     fn maybe_generate(&mut self) -> bool {
+        if self.job.as_ref().is_some_and(|j| j.sweep) {
+            return true; // a paused sweep stays as it is (its files serve the searches), nothing else starts
+        }
         let Some(m) = self.generation_target() else {
             return false; // nothing missing that the options allow: the search runs alone, quietly
         };
@@ -632,10 +649,11 @@ impl<W: Write + Send + 'static> Engine<W> {
             if m.pieces() <= 4 || !(m.pieces() == 5 && self.generate5 || m.pieces() == 6 && self.generate6) {
                 return false;
             }
-            match self.set().find(&m.name()) {
+            let no_table = match self.set().find(&m.name()) {
                 Some(i) => !self.set().tables[i].is_available(),
                 None => true,
-            }
+            };
+            no_table && !self.has_product(m)
         };
         if let Some(m) = Material::of_board(&self.board) {
             if self.board.castling == 0 && missing(&m) {
@@ -662,7 +680,7 @@ impl<W: Write + Send + 'static> Engine<W> {
         let Some(demand) = self.demand.clone() else { return };
         let list = egtb::missing_tables_of(&demand.lock().unwrap(), 0);
         for (m, probes) in list {
-            if m.pieces() == 5 && self.generate5 || m.pieces() == 6 && self.generate6 {
+            if (m.pieces() == 5 && self.generate5 || m.pieces() == 6 && self.generate6) && !self.has_product(&m) {
                 self.send(&format!("info string egtb: the search asked {} times for {}, generating it", egtb::group(probes as usize), m.name()));
                 let fork = self.spare.take().expect("checked above");
                 self.start_job_from(m, fork);
@@ -722,7 +740,7 @@ impl<W: Write + Send + 'static> Engine<W> {
             }
         }
         let ctrl = Arc::new(Control::new());
-        self.job = Some(Job { mat: m.clone(), ctrl: ctrl.clone() });
+        self.job = Some(Job { mat: m.clone(), ctrl: ctrl.clone(), sweep: false });
         let workers = self.background_workers();
         self.send(&format!("info string egtb: {} workers beside the search thread ({} cores)", workers, egtb::physical_cores()));
         let (out, tx, write) = (self.out.clone(), self.tx.clone(), self.write_cache);
@@ -807,7 +825,7 @@ impl<W: Write + Send + 'static> Engine<W> {
         self.restart = self.searching;
         self.stop_search();
         self.restart = false;
-        let name = j.mat.name();
+        let name = if j.sweep { String::from("sweep") } else { j.mat.name() };
         self.set.as_mut().expect("tables are loaded before a job runs").adopt(set);
         self.attach_wdl(); // the files the job wrote
         match egtb::peak_memory() {
@@ -1116,7 +1134,7 @@ fn write_wdl_file(set: &Set, gi: usize, tb: Option<&crate::syzygy::Tables>, work
 /// WDL file comes first).
 fn write_dtm_file(set: &Set, gi: usize, workers: usize, say: &dyn Fn(&str)) {
     let t = &set.tables[gi];
-    let path = set.dtm_path().join(format!("{}-{}.dtm", t.mat.pieces(), t.mat.name()));
+    let path = set.dtm_file(&t.mat);
     if path.exists() || !t.is_generated() || !t.is_exact() {
         return;
     }

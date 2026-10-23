@@ -167,7 +167,8 @@ mit Vorgabe 0 als Haken drin, der Term kostet nichts, wenn er aus ist.
 Dort, wo "wer steht besser" die Frage ist, hilft das Netz: neue Knoten
 des Abstiegs bekamen bisher pn = 1 und dn = Mobilität (Angreiferknoten)
 bzw. umgekehrt. `Options.NetInit` (Testbank `i` = Stufe 1, `I` = Stufe
-2; UCI-Option `WdlNetInit`, Vorgabe an, Stufe 1) skaliert sie nach der
+2; im UCI-Treiber fest Stufe 1, die Option `WdlNetInit` ist am 2026-10-23
+wieder entfallen, der Autor will die Optionen schlank halten) skaliert sie nach der
 Netzbewertung aus Angreifersicht: Stufe 1 je 150 cp eine Verdopplung,
 höchstens drei; Stufe 2 je 100 cp, höchstens fünf. Sieht das Netz den
 Angreifer vorn, bleibt die Beweiszahl klein und die Widerlegungszahl
@@ -265,9 +266,10 @@ von 11 auf 19 von 19, "zwei Remis" auf 10 von 10, "vier Remis" auf 15
 von 17, der einsame Springer schwarz auf 10 von 10; ohne Tabellen
 findet Tiefe 2 erste Matts mit der blanken Dame (KQ-K 7 von 20, KQ-KN 21
 von 24). Go = Rust auf die Zahl (Go 9,4 s für den Vier-Steiner-Lauf).
-Tiefe 2 ist die Vorgabe im UCI-Treiber (`WdlRollouts`).
+Tiefe 2 ist die Vorgabe im UCI-Treiber.
 
-**Im UCI-Treiber** (`WdlRollouts`, Vorgabe an): vor den Runden spielt
+**Im UCI-Treiber** (fest an; die Option `WdlRollouts` aus der A/B-Messung
+ist am 2026-10-23 entfallen, der Testbank-Weg bleibt): vor den Runden spielt
 `runWdl` jeden offenen Wurzelzug einmal aus (mit dem Orakel der Suche)
 und meldet `info string wdl: rollouts guess W win, D draw, L loss, U
 unknown of N open moves in T`. Geratene Gewinne kommen zuerst an die
@@ -276,7 +278,8 @@ geratene Frage zuerst: ein geratener Gewinn "wir gewinnen", ein
 geratener Verlust "der Gegner gewinnt", der Rest die Materialregel.
 A/B mit `tests/uci-wdl.sh <binary> tests/uci-ab.txt 20000 3 2048
 "SyzygyPath value ...;WdlRollouts value false"` (das Skript nimmt jetzt
-weitere Optionen mit `;` getrennt und druckt die Schätzzeile), Rust mit
+weitere Optionen mit `;` getrennt und druckt die Schätzzeile; die Option
+gab es nur für diese Messung), Rust mit
 Syzygy, MultiPV 3:
 
 | Stellung | Schätzung | Stellungen mit / ohne Rollouts |

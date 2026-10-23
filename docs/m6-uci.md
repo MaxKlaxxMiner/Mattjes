@@ -541,6 +541,66 @@ Stop kommt bis zu zwei Sekunden nach dem Zeitende, wenn gerade ein
 Fixpunkt über einen großen Graphen läuft; Dauerschach-Remis jenseits der
 Tabellen fehlen.
 
+## Option EgtbForceGen: der Durchlauf (2026-10-23)
+
+Wunsch des Autors: ein `go infinite` soll alle Tabellen erzeugen, die die
+Optionen erlauben, nicht nur die, nach denen eine Suche fragt; die Raw-Dateien
+sollen nur so lange auf der Platte liegen, wie spätere Materialien sie brauchen,
+und nichts soll unnötig im RAM bleiben.
+
+**Verhalten** (`uci/sweep.go`, Rust `src/uci/sweep.rs`): mit `EgtbForceGen`
+läuft `go infinite` als **Durchlauf** statt als Suche: die Hash-Tabelle wird
+freigegeben, alle `Threads` gehören dem Generator (nicht Kerne minus eins wie
+beim Job neben der Suche), `stop` pausiert ihn (der Generator hält an der
+nächsten Chunk-Grenze; ein laufendes Packen einer WDL- oder DTM-Datei läuft
+noch zu Ende, Sekunden bis Minuten) und schickt `bestmove`, das nächste
+`go infinite` mit der Option setzt fort. Ein normales `go` lässt einen
+pausierten Durchlauf liegen und sucht wie gewohnt (`maybeGenerate` startet
+daneben nichts). Sind alle Dateien da, meldet der Durchlauf das in einer Zeile
+und das `go` läuft ganz normal, die Option wirkt dann nicht.
+
+**Plan** (`sweepPlan`): `egtb.Enumerate(5)` mit `EgtbGenerate5`, danach
+`Enumerate(6)` mit `EgtbGenerate6` (Sechs-Steiner schlagen in Fünf-Steiner),
+jeweils in Abhängigkeits-Reihenfolge (weniger Bauern zuerst). Ein Material ist
+fertig (`hasProduct`), wenn seine DTM-Datei da ist und die WDL-Datei oder eine
+Syzygy-Datei für das Material (dann schreibt `writeWdl` keine eigene); dasselbe
+Kriterium nehmen jetzt auch `generationTarget` und `onDemandTick`, sonst hätte
+ein Job nach dem Durchlauf das Wurzelmaterial noch einmal erzeugt, weil die
+Tabellenstufe nur RAM-Tabellen und `.bin`-Dateien kennt.
+
+**Je Material** (`runSweep`): liegt die Raw-Datei schon da, wird sie geladen
+(ein früherer Job), sonst erzeugt der Generator die Tabelle und holt oder rechnet
+die Abhängigkeiten (`GenerateNotify`); der Fertig-Callback schreibt WDL und DTM
+(und die Log-Zeile). Die **Raw-Datei** eines Materials wird nur geschrieben,
+wenn ein späteres Material des Plans es direkt nachschlägt (`neededLater` über
+`Material.Dependencies`), für eine nebenbei nachgerechnete Abhängigkeit genauso.
+Danach werden alle Tabellen jenseits der Basis aus dem RAM entlassen
+(`Set.Release`), und `cleanRaw` löscht jede Raw-Datei, deren Material fertig ist
+und die kein verbleibendes Material mehr braucht (Zeile `removed ..., no
+remaining material needs it`), dazu liegen gebliebene `.tmp`-Dateien. Während
+der Fünf-Steiner mit `EgtbGenerate6` bleiben darum alle Fünf-Steiner-Raws
+liegen (jeder Sechs-Steiner schlägt in sie), ohne die Option verschwinden sie,
+sobald die Bauern-Materialien durch sind, die per Umwandlung in sie führen.
+
+**Dateien atomar:** `writeFile` (Raw und `.bin`) und `Built.Write` (WDL, DTM)
+schreiben nach `<Datei>.tmp` und benennen am Ende um (`egtb.TmpPath`); ein
+`quit` oder ein Absturz mitten im Schreiben hinterlässt keine halbe Datei, die
+`hasProduct` oder `AddDTM` für fertig hielten. Im ersten Rauchtest kam genau das
+vor: `quit` traf das Schreiben der KBBKB-Raw, übrig blieb eine leere
+`5-KBBKB.bin.raw.tmp`, keine kaputte `.raw`.
+
+**Kosten:** die Erzeugung eines Fünf-Steiners dauert Sekunden bis eine Minute,
+das Packen dominiert (KBBKB: 5 s Erzeugung, 23 s WDL, 14 s DTM auf 12 Threads;
+KBNKQ 4 min WDL und 9 min DTM, die Kandidaten-Stichprobe). Alle 110
+Fünf-Steiner liegen damit bei grob einem Tag, mit Syzygy im Pfad entfällt die
+WDL. Die schnellere Kandidaten-Vorauswahl bleibt der nächste Hebel. Die
+Tabellen-Stufe sieht die Materialien des Durchlaufs nicht (keine `.bin`), die
+Suchen bekommen sie über das WDL/DTM-Orakel; ein nach dem Durchlauf gestartetes
+`go infinite` sucht ganz normal.
+
+Treiber `tests/uci-sweep.sh <binary> [Sekunden] [Optionen]`: `go infinite` mit
+der Option, nach n Sekunden `stop`, `quit` nach `bestmove`.
+
 ## Offen
 
 - Mit `MatePnGoal win` endet die Suche beim ersten Gewinnbeweis; die Verkürzung
