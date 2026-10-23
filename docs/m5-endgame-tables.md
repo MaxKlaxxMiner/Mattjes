@@ -1187,6 +1187,21 @@ aus. Weitere Hebel, wenn die Finalisten drücken: zwei statt drei, oder das
 Stichproben-Wörterbuch (`DictSample`) für die Finalisten (gemessen +7 bis 14 %
 Größe).
 
+### Alle 110 Fünf-Steiner als DTM-Dateien (2026-10-23)
+
+Der Durchlauf (`EgtbForceGen`, Rust, Heimrechner Core Ultra 9 285H mit 14 Workern,
+Syzygy im Pfad, also ohne eigene WDL) hat alle 110 Fünf-Steiner erzeugt: Summe der
+DTM-Dateien **1.549.833.648 Byte (1,55 GB)** gegen 10,16 GB der alten quantisierten
+`.bin`-Dateien vom 2026-10-07 (Faktor 6,6; mit den Syzygy-WDL von 110 Materialien
+dazu, die ohnehin da sind). Erzeugungszeiten je Material 1 bis 90 s (KRPKQ), das
+Packen dominiert weiter. Prüfsummen und Anforderungen aller 110 stehen jetzt im
+Code (`TableChecksums`/`TABLE_CHECKSUMS`, `Requirements`/`REQUIREMENTS`, aus der
+`measure.log`); KBBBK, KBNKQ und KRRKN stimmen mit den früheren Go- und Rust-Läufen
+überein. Lesart der RAM-Spalte: `peak_commit_mb` ist die Prozess-Spitze seit dem
+Start, im Durchlauf also monoton (1,3 GB über die bauernlosen Materialien, 3,4 GB
+mit einem Bauern, 7,4 GB mit zwei), je Material eine obere Schranke; das erste
+Material jedes Plateaus hat sie gemessen. Für `EstimateBytes` ist das sicher.
+
 ## Offen
 
 - **KPPKP ist unvollständig** (mindestens 7 Verluste in 254 Halbzügen lesen sich als
