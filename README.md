@@ -30,7 +30,6 @@ The project is deliberately developed in **Go and Rust in parallel**:
 |--------------|----------|-------------------------------------------------------------|
 | `mattjesGo/` | Go       | Primary implementation, algorithms are prototyped here      |
 | `mattjesRs/` | Rust     | Port of the same algorithms, cross-checked against the Go version for correctness (perft) and speed |
-| `old/`       | C#       | The original 2019-2021 prototype, kept for reference only (test positions, ideas). Not maintained, not buildable. |
 | `docs/`      |          | Measurements and conclusions per milestone, including experiments whose code was removed again |
 
 Every move generator, hash scheme or search approach lives in its own package so

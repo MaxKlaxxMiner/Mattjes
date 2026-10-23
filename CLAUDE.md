@@ -18,6 +18,7 @@ Neustart nach ca. 5 Jahren Pause (Oktober 2026). Der Autor (20+ Jahre Entwickler
 - **Keine stillen Langläufer.** Claude startet keine Berechnung, die Minuten dauern kann, ohne dass der Autor Fortschritt sieht (Bash-Ausgabe erscheint erst am Ende, Hintergrundjobs sieht er gar nicht). Regel: Binaries bauen, Experiment in `experiments()` setzen, Lint, dann startet der Autor `./runMattjesGo.exe test` oder `./runMattjesRs.exe test` selbst in der Konsole und schickt die Ausgabe. Experimente drucken Fortschritt (pro Tiefe, pro Ebene, alle 2^26 Knoten). Eigene Läufe nur mit hartem `timeout` von wenigen Sekunden und nur für Eingaben, die bekannt schnell sind.
 - **Zwei Messmaschinen** (`docs/machines.md`): Arbeit (i5, 12 Threads) und Zuhause (Core Ultra 9 285H, 14 nutzbare Threads, 127 GB RAM). Dazu ein **Ubuntu-Server** (EPYC 32 Kerne / 64 Threads, 640 GB RAM) für große Tabellen: alle 365 Sechs-Steiner passen (bauernlos 23 GB, mit einem Bauern 68 GB Prozess), Sieben-Steiner als ganze Tabelle nicht (992 Mrd. Indizes bauernlos), nur in Scheiben; Rust-Binary dort bauen, Go kreuzkompilieren. Zahlen verschiedener Maschinen sind nicht vergleichbar, jede Messtabelle nennt ihre Maschine. Zuhause Parallel-Tests immer mit 14 Workern aufrufen, nie mit 0 = NumCPU (die zwei Low-Power-E-Cores bekommen nie Last). Die Tabellen in `m1` bis `m3` stammen vom Arbeitsrechner, `machines.md` hat den Vergleichslauf von zuhause.
 - **Mikro-Änderungen per A/B-Wechsellauf messen.** Beide Varianten als getrennte Binaries bauen (ins Scratchpad kopieren), dann abwechselnd A B A B A B laufen lassen und nur die Differenz innerhalb eines Laufs werten. Absolute Mn/s schwanken zwischen Sitzungen um einige Prozent (thermisch), Tabellen aus verschiedenen Sitzungen sind nicht direkt vergleichbar. Code-Layout-Effekte können auch "weniger Code" langsamer machen, daher nie ohne Messung annehmen.
+- **Lizenz: GPLv3, Wechsel zu MIT vorgemerkt** (2026-10-23, Entscheidung des Autors erst, wenn das Projekt weiter ist). Der Autor mag MIT am liebsten; bis dahin gilt: Fremdcode nur aus MIT-Quellen übernehmen (Fathom, Patricia, mit Lizenzhinweis), aus Stockfish und anderen GPL-Engines nur Ideen, keine Codeschnipsel, und jede Übernahme im Doc nennen, damit die Umstellung später ohne Suche möglich ist. Umstellungspunkte: `LICENSE`, `Cargo.toml`, das Banner in `uci.go`/`mod.rs`, `README.md`, eine Notiz zu den Fremdquellen.
 - **Alle Dev-Tools laufen unter MSYS2/ucrt64**, ohne Abhängigkeit zum nativen Windows. Go 1.26 (cgo via ucrt64-gcc möglich), Rust 1.95 aus pacman (`mingw-w64-ucrt-x86_64-rust`, Target `x86_64-pc-windows-gnu`, kein rustup, kein MSVC). JetBrains-IDEs (GoLand, RustRover) sind optional und bringen ggf. eigene Toolchains mit. C# wird nicht verwendet.
 
 ## Milestones
@@ -84,15 +85,9 @@ Spiegelt mattjesGo eins zu eins: `src/chess/`, `src/bitboard/` (inklusive `mate.
 
 ## Referenzcode
 
-### `old/` – C#-Vorgänger (nur Referenz, nicht baubar, wird nicht weiterentwickelt)
+### C#-Vorgänger (entfernt am 2026-10-23)
 
-Die Mattsuche darin war teils noch buggy. Nützlich sind Teststellungen und Ideen:
-
-- `old/Program.cs`, `Main`: auskommentierte FEN-Teststellungen für Matt in N (Q+Q=3, Q+R=5, R+R=7, Q vs N=12, R=15, B+B=17, B+N=31, Q vs B+N=39, Bauern-Test=6) sowie Rochade-Tests.
-- `old/Program.cs`: Suchvarianten Alpha/Beta "short" (ein Zug pro Knoten), "dynamic" (iterative Vertiefung), MoveCache-Varianten mit Hashtable auf CRC64-Keys.
-- `old/Tests/Tests.MateReverse.cs`: **Retrograde-Idee**, alle Mattstellungen für eine Figurenkombination aufzählen (Königspaare iterieren, Figuren platzieren, `IsMate` prüfen, per CRC64 deduplizieren). Für Milestone 4/5 wieder aufgreifen.
-- `old/IBoard.cs` und `BoardReference` → `BoardIndexed` → `BoardKingOptimized`/`2`/`3`: mehrstufig gebenchmarkte Board-Implementierungen.
-- `old/Bitboards/`: unfertiger Stockfish-Port, nicht funktionsfähig.
+Der Ordner `old/` (Prototyp 2019 bis 2021, nicht baubar) ist gelöscht; seine Teststellungen leben in `chess/matedata.go` und `test-positions.md`, die Retrograde-Idee in `egtb/`. Er enthielt in `old/Bitboards/` einen unfertigen Stockfish-Port (GPL), der einer MIT-Lizenz im Weg gestanden hätte.
 
 ### `E:\prog\spiele\chess\huschiBoard\yac\yacboard` – Go-Movegenerator des Autors (externes Repo)
 
@@ -103,7 +98,7 @@ Vom Autor komplett selbst entworfen (erst C#, dann Go), bewusst **ohne Bitboards
 - `SetFEN/GetFEN`, `Move.Uci()`, `Move.San(board)`, `perftTest.go` mit Referenzwerten von chessprogramming.org.
 - Bekannter Nachteil: `Checksum()` ist eine CRC64/FNV-artige Vollberechnung, **nicht inkrementell**. Das ist das Thema von Milestone 2.
 
-Piece-Encoding (yacboard und `old/` identisch, in Mattjes beibehalten): `White=0x40, Black=0x80`, `King=0x01, Queen=0x02, Rook=0x04, Bishop=0x08, Knight=0x10, Pawn=0x20`. Pos ist `x + y*8`, Rang 8 oben (`a8 = 0`).
+Piece-Encoding (aus yacboard, in Mattjes beibehalten): `White=0x40, Black=0x80`, `King=0x01, Queen=0x02, Rook=0x04, Bishop=0x08, Knight=0x10, Pawn=0x20`. Pos ist `x + y*8`, Rang 8 oben (`a8 = 0`).
 
 ## Dateien schreiben
 
