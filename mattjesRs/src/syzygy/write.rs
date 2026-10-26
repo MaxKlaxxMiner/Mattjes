@@ -128,9 +128,9 @@ impl Source<'_> {
             return if self.draw_free { DONT_CARE } else { 0 };
         }
         if q.is_win() {
-            return (q.0 as usize).div_ceil(step) as u8; // 1 .. ceil(127/step)
+            return (q.moves() as usize).div_ceil(step) as u8; // 1 .. ceil(127/step)
         }
-        let m = q.0 as usize - 128; // loss: bucket 0 = mated now
+        let m = q.moves() as usize; // loss: bucket 0 = mated now
         let bucket = m.div_ceil(step) as u8;
         if self.signed {
             127usize.div_ceil(step) as u8 + 1 + bucket

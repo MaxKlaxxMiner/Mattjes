@@ -1,7 +1,7 @@
 //! Tables, values and the lookup, see `mattjesGo/egtb/table.go`.
 
 use std::fmt;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU8, Ordering};
 use std::sync::Mutex;
 
 use super::generate::Bitset;
@@ -10,34 +10,87 @@ use super::{board_signature, Material, SIGNATURE_SPACE};
 use crate::bitboard::Board;
 use crate::chess::{Piece, Pos};
 
-/// The table entry of a position from the point of view of the side to move:
-/// 0 draw, 1..127 mates in 2v-1 plies, 128..255 gets mated in 2(v-128) plies
-/// (128 = is mated right now). A win always takes an odd number of plies and a
-/// loss an even one, so storing the move count instead of the ply count doubles
-/// the range for free: wins up to 253 plies, losses up to 254, which covers
-/// every five-piece ending (KPPKP needs a loss in 254). Dead and illegal
-/// indices have no value of their own: the generator keeps them in a bitset,
-/// stores 0 and fills them with their predecessor before compression; they are
-/// never looked up.
+/// The table entry of a position from the point of view of the side to move,
+/// as a move count: 0 draw, 1..0x7fff mates in 2v-1 plies, 0x8000.. gets
+/// mated in 2(v-0x8000) plies (0x8000 = is mated right now). A win always
+/// takes an odd number of plies and a loss an even one, so storing the move
+/// count instead of the ply count doubles the range for free. A table stores
+/// its values in one byte (`Value::to_byte`: wins up to 253 plies, losses up
+/// to 254, which covers every five-piece ending, KPPKP needs a loss in 254)
+/// or, when the generator reaches a longer distance, in two bytes (the table
+/// is widened in place, `Table::widen`; wins up to 65,533 plies). Dead and
+/// illegal indices have no value of their own: the generator keeps them in a
+/// bitset, stores 0 and fills them with their predecessor before compression;
+/// they are never looked up.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[repr(transparent)]
-pub struct Value(pub u8);
+pub struct Value(pub u16);
 
-const LOSS_BASE: u8 = 128;
-/// The longest distance a table can express (wins 253, losses 254).
+const LOSS_BASE: u16 = 0x8000;
+/// The byte form: 0 draw, 1..127 wins, 128..255 losses (format v3).
+const BYTE_LOSS_BASE: u8 = 128;
+/// The longest distance a one-byte table can express (wins 253, losses 254).
 pub const MAX_PLIES: u32 = 254;
+/// The longest distance a two-byte table can express (wins 65,533, losses 65,534).
+pub const MAX_PLIES_WIDE: u32 = 65534;
 
 impl Value {
     pub const DRAW: Value = Value(0);
 
     /// A win in `plies` (odd).
     pub fn win_in(plies: u32) -> Value {
-        Value(plies.div_ceil(2) as u8)
+        Value(plies.div_ceil(2) as u16)
     }
 
     /// A loss in `plies` (even).
     pub fn loss_in(plies: u32) -> Value {
-        Value(LOSS_BASE + (plies / 2) as u8)
+        Value(LOSS_BASE + (plies / 2) as u16)
+    }
+
+    /// The value of a one-byte entry.
+    #[inline(always)]
+    pub fn from_byte(b: u8) -> Value {
+        let b = b as u16;
+        Value(b + (b & 0x80) * 0xff) // 128.. moves up to 0x8000..
+    }
+
+    /// The one-byte entry of a value that fits (`fits_byte`).
+    #[inline(always)]
+    pub fn to_byte(self) -> u8 {
+        if self.0 >= LOSS_BASE {
+            BYTE_LOSS_BASE + (self.0 - LOSS_BASE) as u8
+        } else {
+            self.0 as u8
+        }
+    }
+
+    /// The file form of a wide table's entry as two planes: the low byte is
+    /// the one-byte form for every value that fits one (loss bit 0x80 plus
+    /// the move count modulo 128), the high byte the move count divided by
+    /// 128. Positions beyond 127 moves are rare, so the high plane is almost
+    /// all zeros and packs to nearly nothing, and the low plane packs like a
+    /// one-byte table.
+    #[inline(always)]
+    pub fn to_planes(self) -> (u8, u8) {
+        let m = self.moves();
+        let loss = if self.is_loss() { BYTE_LOSS_BASE } else { 0 };
+        (loss | (m & 0x7f) as u8, (m >> 7) as u8)
+    }
+
+    /// The inverse of `to_planes`.
+    #[inline(always)]
+    pub fn from_planes(lo: u8, hi: u8) -> Value {
+        let m = (lo & 0x7f) as u32 | (hi as u32) << 7;
+        if lo & BYTE_LOSS_BASE != 0 {
+            Value::of_moves(false, m)
+        } else {
+            Value(m as u16) // a win, or 0 for a draw
+        }
+    }
+
+    /// Whether the value fits a one-byte table (at most 127 moves).
+    pub fn fits_byte(self) -> bool {
+        self.moves() < BYTE_LOSS_BASE as u32
     }
 
     pub fn is_win(self) -> bool {
@@ -46,6 +99,25 @@ impl Value {
 
     pub fn is_loss(self) -> bool {
         self.0 >= LOSS_BASE
+    }
+
+    /// The distance in moves: v for a win in 2v-1 plies, m for a loss in 2m
+    /// plies, 0 for a draw.
+    pub fn moves(self) -> u32 {
+        if self.is_loss() {
+            (self.0 - LOSS_BASE) as u32
+        } else {
+            self.0 as u32
+        }
+    }
+
+    /// A win (or loss) in `moves` moves, the inverse of `moves`.
+    pub fn of_moves(win: bool, moves: u32) -> Value {
+        if win {
+            Value(moves as u16)
+        } else {
+            Value(LOSS_BASE + moves as u16)
+        }
     }
 
     /// The distance to mate for a win or a loss, 0 otherwise.
@@ -77,17 +149,19 @@ impl Value {
     }
 
     /// Rounds the value up to the next multiple of `step` moves ("mate in at
-    /// most 8" instead of the exact count), the upper end of its bucket.
-    /// Draws and mates in 0 stay; wins and losses stay apart.
+    /// most 8" instead of the exact count), the upper end of its bucket, at
+    /// most 127 moves (the quantised files are one-byte tables). Draws and
+    /// mates in 0 stay; wins and losses stay apart.
     pub fn quantize(self, step: u32) -> Value {
+        self.quantize_to(step, BYTE_LOSS_BASE as u32 - 1)
+    }
+
+    /// `quantize` with the largest move count `top`.
+    pub fn quantize_to(self, step: u32, top: u32) -> Value {
         if step <= 1 || self == Value::DRAW || self.0 == LOSS_BASE {
             return self;
         }
-        let top = (LOSS_BASE - 1) as u32;
-        if self.is_win() {
-            return Value(((self.0 as u32).div_ceil(step) * step).min(top) as u8);
-        }
-        Value(LOSS_BASE + (((self.0 - LOSS_BASE) as u32).div_ceil(step) * step).min(top) as u8)
+        Value::of_moves(self.is_win(), (self.moves().div_ceil(step) * step).min(top))
     }
 }
 
@@ -118,8 +192,13 @@ pub struct Table {
     pawns: bool,
     pub size: usize,
     /// Empty until generated or loaded as a whole (the base); a table beyond
-    /// the base loads packed, see `packed`.
+    /// the base loads packed, see `packed`. One byte per entry
+    /// (`Value::to_byte`) unless the table is wide.
     pub values: Vec<AtomicU8>,
+    /// The entries of a wide table (distances beyond MAX_PLIES), `values`
+    /// is empty then; empty for every other table. The generator widens a
+    /// table in place when it reaches level MAX_PLIES+1 (`widen`).
+    pub wide: Vec<AtomicU16>,
     /// Serves a table that stays compressed in its cache file (every material
     /// beyond the base once loaded): a block cache behind `value()`. `values`
     /// is empty then; the generator never uses such a table. A mutex, because
@@ -161,6 +240,7 @@ impl Table {
             pawns,
             size,
             values: Vec::new(),
+            wide: Vec::new(),
             packed: None,
             raw_checksum: std::sync::atomic::AtomicU64::new(0),
             invalid: Mutex::new(None),
@@ -169,16 +249,56 @@ impl Table {
         }
     }
 
+    /// Allocates the entries of a table (all draws), one byte or two each.
+    pub(super) fn allocate(&mut self, wide: bool) {
+        self.values = Vec::new();
+        self.wide = Vec::new();
+        if wide {
+            self.wide = (0..self.size).map(|_| AtomicU16::new(0)).collect();
+        } else {
+            self.values = (0..self.size).map(|_| AtomicU8::new(0)).collect();
+        }
+    }
+
+    /// Whether the entries take two bytes (distances beyond MAX_PLIES).
+    pub fn is_wide(&self) -> bool {
+        !self.wide.is_empty()
+    }
+
+    /// The largest distance in plies the entries can hold.
+    pub fn max_plies(&self) -> u32 {
+        if self.is_wide() {
+            MAX_PLIES_WIDE
+        } else {
+            MAX_PLIES
+        }
+    }
+
+    /// Turns a one-byte table into a two-byte table with the same values
+    /// (the generator calls it between two levels, when the next level
+    /// exceeds MAX_PLIES): for a moment both arrays exist, three bytes per
+    /// entry.
+    pub(super) fn widen(&mut self) {
+        if self.is_wide() || self.values.is_empty() {
+            return;
+        }
+        self.wide = self.values.iter().map(|v| AtomicU16::new(Value::from_byte(v.load(Ordering::Relaxed)).0)).collect();
+        self.values = Vec::new();
+    }
+
     /// Coarsens the values in memory to buckets of `step` moves (see
     /// `Value::bounds`): what the cache files beyond the base hold
     /// (docs/m5-endgame-tables.md). Exact values cannot be recovered, so the
     /// table can no longer serve the generator as a dependency.
     pub fn quantize(&self, step: u32) {
-        if step <= 1 || self.values.is_empty() {
+        if step <= 1 || !self.is_generated() {
             return;
         }
         for v in &self.values {
-            v.store(Value(v.load(Ordering::Relaxed)).quantize(step).0, Ordering::Relaxed);
+            v.store(Value::from_byte(v.load(Ordering::Relaxed)).quantize(step).to_byte(), Ordering::Relaxed);
+        }
+        for v in &self.wide {
+            v.store(Value(v.load(Ordering::Relaxed)).quantize_to(step, (LOSS_BASE - 1) as u32).0, Ordering::Relaxed);
         }
         self.set_step(step);
     }
@@ -230,12 +350,20 @@ impl Table {
         }
         self.raw_checksum();
         if let Some(invalid) = self.invalid.lock().unwrap().take() {
-            let mut prev = Value::DRAW;
+            let mut prev = 0;
             for (i, v) in self.values.iter().enumerate() {
                 if invalid.get(i) {
-                    v.store(prev.0, Ordering::Relaxed);
+                    v.store(prev, Ordering::Relaxed);
                 } else {
-                    prev = Value(v.load(Ordering::Relaxed));
+                    prev = v.load(Ordering::Relaxed);
+                }
+            }
+            let mut prev = 0;
+            for (i, v) in self.wide.iter().enumerate() {
+                if invalid.get(i) {
+                    v.store(prev, Ordering::Relaxed);
+                } else {
+                    prev = v.load(Ordering::Relaxed);
                 }
             }
         }
@@ -245,6 +373,7 @@ impl Table {
     /// Resets the table to "not generated".
     pub(super) fn clear(&mut self) {
         self.values = Vec::new();
+        self.wide = Vec::new();
         self.packed = None;
         self.raw_checksum.store(0, Ordering::Relaxed);
         *self.invalid.lock().unwrap() = None;
@@ -263,13 +392,13 @@ impl Table {
 
     /// Whether the values are in memory as an array (generated, or the loaded base).
     pub fn is_generated(&self) -> bool {
-        !self.values.is_empty()
+        !self.values.is_empty() || !self.wide.is_empty()
     }
 
     /// Whether the table answers lookups: generated or loaded as a whole, or
     /// loaded packed.
     pub fn is_available(&self) -> bool {
-        !self.values.is_empty() || self.packed.is_some()
+        self.is_generated() || self.packed.is_some()
     }
 
     /// Whether the table stays compressed in its file.
@@ -289,14 +418,24 @@ impl Table {
     #[inline(always)]
     pub fn value(&self, idx: usize) -> Value {
         if !self.values.is_empty() {
-            return Value(self.values[idx].load(Ordering::Relaxed));
+            return Value::from_byte(self.values[idx].load(Ordering::Relaxed));
+        }
+        if !self.wide.is_empty() {
+            return Value(self.wide[idx].load(Ordering::Relaxed));
         }
         self.packed.as_ref().expect("a table answers lookups only when available").lock().unwrap().value(idx)
     }
 
+    /// Stores one entry; a one-byte table only takes values that fit
+    /// (`Value::fits_byte`), the generator widens the table before.
     #[inline(always)]
     pub fn set_value(&self, idx: usize, v: Value) {
-        self.values[idx].store(v.0, Ordering::Relaxed)
+        if !self.values.is_empty() {
+            debug_assert!(v.fits_byte(), "egtb: {} does not fit a byte", v);
+            self.values[idx].store(v.to_byte(), Ordering::Relaxed)
+        } else {
+            self.wide[idx].store(v.0, Ordering::Relaxed)
+        }
     }
 
     /// The position index; -1 if the kings are adjacent or equal. A square
@@ -407,13 +546,28 @@ impl Table {
     pub fn bytes(&self) -> &[u8] {
         // SAFETY: AtomicU8 has the same size and alignment as u8, and the slice
         // is only read while the table is not being generated.
+        // A wide table gives its two-byte entries in memory order (little
+        // endian on every target we build for): what the checksum covers.
+        if self.is_wide() {
+            return unsafe { std::slice::from_raw_parts(self.wide.as_ptr() as *const u8, 2 * self.wide.len()) };
+        }
         unsafe { std::slice::from_raw_parts(self.values.as_ptr() as *const u8, self.values.len()) }
     }
 
-    /// The values as mutable bytes (for loading).
+    /// The values as mutable bytes (for loading), in the layout of `bytes`.
     pub fn bytes_mut(&mut self) -> &mut [u8] {
         // SAFETY: as in bytes(); &mut self excludes every other access.
+        if self.is_wide() {
+            return unsafe { std::slice::from_raw_parts_mut(self.wide.as_mut_ptr() as *mut u8, 2 * self.wide.len()) };
+        }
         unsafe { std::slice::from_raw_parts_mut(self.values.as_mut_ptr() as *mut u8, self.values.len()) }
+    }
+
+    /// The entries of a wide table as plain numbers (`Value.0`); empty for a
+    /// one-byte table. Only while no worker writes, as `bytes`.
+    pub fn wide_values(&self) -> &[u16] {
+        // SAFETY: AtomicU16 is repr(transparent) over u16
+        unsafe { std::slice::from_raw_parts(self.wide.as_ptr() as *const u16, self.wide.len()) }
     }
 }
 
@@ -439,6 +593,10 @@ pub struct Set {
     /// lookups take a shared reference; an Arc, because the main loop reads
     /// it (`demand_handle`) while the search thread owns the set.
     missing: std::sync::Arc<Mutex<std::collections::HashMap<super::Signature, u64>>>,
+    /// The first level the generator stores in two bytes per entry: it
+    /// widens a table before this level (MAX_PLIES+1, the first that does
+    /// not fit a byte; tests lower it to exercise the widening).
+    pub widen_level: u32,
 }
 
 impl Set {
@@ -448,11 +606,16 @@ impl Set {
     pub fn fork(&self) -> Set {
         let mut n = Set::new();
         n.cache_dir = self.cache_dir.clone();
+        n.widen_level = self.widen_level;
         for t in &self.tables {
             let i = n.add_material(t.mat.clone());
             if t.is_generated() {
                 let nt = &mut n.tables[i];
-                nt.values = t.bytes().iter().map(|&b| AtomicU8::new(b)).collect();
+                if t.is_wide() {
+                    nt.wide = t.wide_values().iter().map(|&v| AtomicU16::new(v)).collect();
+                } else {
+                    nt.values = t.bytes().iter().map(|&b| AtomicU8::new(b)).collect();
+                }
                 nt.raw_checksum.store(t.raw_checksum.load(Ordering::Relaxed), Ordering::Relaxed);
                 nt.set_filled(t.is_filled());
                 nt.set_step(t.step());
@@ -472,6 +635,7 @@ impl Set {
             let t = &mut self.tables[i];
             if !t.is_generated() {
                 t.values = std::mem::take(&mut ft.values);
+                t.wide = std::mem::take(&mut ft.wide);
                 t.raw_checksum.store(ft.raw_checksum.load(Ordering::Relaxed), Ordering::Relaxed);
                 t.set_filled(ft.is_filled());
                 t.set_step(ft.step());
@@ -483,7 +647,7 @@ impl Set {
 
     /// Allocates the base tables without values; `generate_all` or `load` fills them.
     pub fn new() -> Set {
-        let mut s = Set { tables: Vec::new(), base_count: 0, by_sig: vec![-1; SIGNATURE_SPACE], cache_dir: super::persist::default_cache_dir(), missing: std::sync::Arc::new(Mutex::new(std::collections::HashMap::new())) };
+        let mut s = Set { tables: Vec::new(), base_count: 0, by_sig: vec![-1; SIGNATURE_SPACE], cache_dir: super::persist::default_cache_dir(), missing: std::sync::Arc::new(Mutex::new(std::collections::HashMap::new())), widen_level: MAX_PLIES + 1 };
         for m in Material::all() {
             s.add_material(m);
         }

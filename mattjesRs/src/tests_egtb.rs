@@ -390,3 +390,84 @@ pub fn egtb_list(pieces: usize) {
         println!("{}", m.name());
     }
 }
+
+/// Checks the two-byte tables (`Table::widen`, 2026-10-26): the material is
+/// generated twice with all its dependencies, once with one byte per entry
+/// and once widened before `level` (so every table longer than level-1
+/// plies, the dependencies included, is generated wide); all values must
+/// agree. Then both go through their exact files in `dir` (narrow/ and
+/// wide/), the wide file is loaded whole and packed, and must give the
+/// values of the one-byte table again.
+pub fn egtb_widen(name: &str, level: u32, workers: usize, dir: &str) {
+    let m = match egtb::Material::parse(name) {
+        Ok(m) => m,
+        Err(e) => {
+            println!("{}", e);
+            return;
+        }
+    };
+    let mut quiet = |_: &str| {};
+    let gen = |widen: u32, quiet: &mut dyn FnMut(&str)| -> (Set, usize) {
+        let mut s = Set::new();
+        s.widen_level = widen;
+        let start = Instant::now();
+        s.generate_all(workers, quiet);
+        let ti = s.add_material(m.clone());
+        let st = s.generate(ti, workers, quiet);
+        let wide = s.tables.iter().filter(|t| t.is_wide()).count();
+        println!("{} widened from level {}: {} levels, longest mate {} plies, {} wide tables, checksum {:016x}, {:.1} s", m.name(), widen, st.levels, st.max_win, wide, s.tables[ti].raw_checksum(), start.elapsed().as_secs_f64());
+        (s, ti)
+    };
+    let (mut a, ai) = gen(egtb::MAX_PLIES + 1, &mut quiet);
+    let (mut b, bi) = gen(level, &mut quiet);
+    let compare = |what: &str, x: &egtb::Table, y: &egtb::Table| -> usize {
+        let mut bad = 0;
+        for idx in 0..x.size {
+            if x.value(idx) != y.value(idx) {
+                if bad < 5 {
+                    println!("  {} {}: index {} {} vs {}", what, x.mat.name(), idx, x.value(idx), y.value(idx));
+                }
+                bad += 1;
+            }
+        }
+        bad
+    };
+    let mut bad = 0;
+    for (x, y) in a.tables.iter().zip(&b.tables) {
+        bad += compare("generated", x, y);
+    }
+    println!("generated: {} differences over {} tables", bad, a.tables.len());
+    if !b.tables[bi].is_wide() {
+        println!("{} did not get wide (longest mate below level {})", m.name(), level);
+        return;
+    }
+    a.cache_dir = std::path::PathBuf::from(dir).join("narrow");
+    b.cache_dir = std::path::PathBuf::from(dir).join("wide");
+    let (pa, pb) = (a.raw_path(&a.tables[ai]), b.raw_path(&b.tables[bi]));
+    for (s, ti, p) in [(&a, ai, &pa), (&b, bi, &pb)] {
+        let start = Instant::now();
+        if let Err(e) = s.save_raw_table_with(ti, p, workers) {
+            println!("{}", e);
+            return;
+        }
+        let size = std::fs::metadata(p).map(|md| md.len()).unwrap_or(0);
+        println!("written {} ({} bytes, {:.1} s)", p.display(), group(size), start.elapsed().as_secs_f64());
+    }
+    // both are filled now (dead entries hold their predecessor), alike
+    let mut c = Set::new();
+    let ci = c.add_material(m.clone());
+    let start = Instant::now();
+    if let Err(e) = c.load_raw_table_checked(ci, &pb, false) {
+        println!("{}", e);
+        return;
+    }
+    println!("loaded whole in {:.1} s, wide {}, checksum {:016x}", start.elapsed().as_secs_f64(), c.tables[ci].is_wide(), c.tables[ci].raw_checksum());
+    println!("loaded whole: {} differences", compare("loaded", &a.tables[ai], &c.tables[ci]));
+    let mut d = Set::new();
+    let di = d.add_material(m.clone());
+    if let Err(e) = d.load_table_checked(di, &pb, false) {
+        println!("{}", e);
+        return;
+    }
+    println!("packed: {} differences", compare("packed", &a.tables[ai], &d.tables[di]));
+}

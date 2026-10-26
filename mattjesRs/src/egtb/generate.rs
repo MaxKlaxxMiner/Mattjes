@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use super::control::Control;
-use super::table::{Set, Table, Value, MAX_PLIES};
+use super::table::{Set, Table, Value, MAX_PLIES_WIDE};
 use super::Material;
 use crate::bitboard::{piece_attacks, Board};
 use crate::chess::{new_buffer, Move, Piece, Pos, WIDTH};
@@ -38,11 +38,14 @@ pub struct Stats {
     /// Candidate evaluations (forward move generation) over all levels.
     pub evaluations: usize,
     pub duration: Duration,
-    /// Distances beyond MAX_PLIES occurred, the table is incomplete.
+    /// Distances beyond MAX_PLIES_WIDE occurred, the table is incomplete.
     pub overflow: bool,
-    /// Positions with distance MAX_PLIES+1 (or waiting for deeper cross-table
-    /// children): a lower bound of what is missing.
+    /// Positions with distance MAX_PLIES_WIDE+1 (or waiting for deeper
+    /// cross-table children): a lower bound of what is missing.
     pub beyond: usize,
+    /// Distances beyond MAX_PLIES occurred: the table takes two bytes per
+    /// entry (`Table::widen`).
+    pub wide: bool,
     /// The Control aborted the generation, the table is empty.
     pub aborted: bool,
     /// The table came from its exact file (`raw_path`), nothing was computed
@@ -216,87 +219,108 @@ impl Set {
     /// Computes one table whose dependencies are all exact in memory.
     fn generate_one(&mut self, ti: usize, workers: usize, ctrl: Option<&Control>, progress: Progress) -> Stats {
         let start = Instant::now();
-        self.tables[ti].values = (0..self.tables[ti].size).map(|_| std::sync::atomic::AtomicU8::new(0)).collect();
-        let set: &Set = self;
-        let t = &set.tables[ti];
-        let g = Generator::new(set, t, true, ctrl);
+        self.tables[ti].allocate(false); // one byte per entry until a level needs more
+        let state = GenState::new(self.tables[ti].size);
         let aborted = || ctrl.is_some_and(|c| c.aborted());
+        let name = self.tables[ti].mat.name();
 
         let mut st = Stats::default();
-        let name = t.mat.name();
         let mut phase = Instant::now();
-        let (legal, mates) = parallel_chunks(
-            workers,
-            t.size,
-            1 << 16,
-            g.ctrl,
-            Some(&mut |done, total| progress(&format!("{:<5} scanning {} ({:.0} s)", name, percent(done, total), phase.elapsed().as_secs_f64()))),
-            &|lo, hi| g.init_range(lo, hi),
-        );
+        {
+            let set: &Set = self;
+            let t = &set.tables[ti];
+            let g = Generator::new(set, t, &state, ctrl);
+            let (legal, mates) = parallel_chunks(
+                workers,
+                t.size,
+                1 << 16,
+                g.ctrl,
+                Some(&mut |done, total| progress(&format!("{:<5} scanning {} ({:.0} s)", name, percent(done, total), phase.elapsed().as_secs_f64()))),
+                &|lo, hi| g.init_range(lo, hi),
+            );
+            st.legal = legal;
+            st.mates = mates;
+        }
         if aborted() {
-            drop(g);
             self.tables[ti].clear();
             return Stats { aborted: true, ..Stats::default() };
         }
-        st.legal = legal;
-        st.mates = mates;
         // one compact status line per step; the level lines below are the only
         // frequent ones and are throttled by the UCI layer
-        progress(&format!("{:<5} {:>13} indices, {:>13} legal, {:>10} mates", t.mat.name(), group(t.size), group(legal), group(mates)));
+        progress(&format!("{:<5} {:>13} indices, {:>13} legal, {:>10} mates", name, group(self.tables[ti].size), group(st.legal), group(st.mates)));
 
         let mut completed = false;
-        for level in 1..=MAX_PLIES {
-            let cur = &g.cand[(level % 3) as usize];
-            g.take_pending(level, cur);
-            phase = Instant::now();
-            let (changed, evals) = parallel_bits(
-                workers,
-                cur,
-                g.ctrl,
-                Some(&mut |done, total| progress(&format!("      level {:>3}: {} ({:.0} s)", level, percent(done, total), phase.elapsed().as_secs_f64()))),
-                &|idx| g.scan_candidate(level, idx),
-            );
-            if aborted() {
-                drop(g);
-                self.tables[ti].clear();
-                return Stats { aborted: true, ..Stats::default() };
+        let mut level = 1;
+        while level <= MAX_PLIES_WIDE && !completed {
+            if level >= self.widen_level && !self.tables[ti].is_wide() {
+                // the next level does not fit a byte: the table takes two
+                // bytes per entry from here on, nothing is computed twice
+                let at = Instant::now();
+                self.tables[ti].widen();
+                progress(&format!("{:<5} level {} exceeds {} plies: widened to two bytes per entry in {:.1} s", name, level, level - 1, at.elapsed().as_secs_f64()));
             }
-            st.evaluations += evals;
-            cur.clear();
-            if changed > 0 {
-                st.levels = level;
-                if level % 2 == 1 {
-                    st.wins += changed;
-                    st.max_win = level;
-                } else {
-                    st.losses += changed;
-                    st.max_loss = level;
+            let set: &Set = self;
+            let t = &set.tables[ti];
+            let g = Generator::new(set, t, &state, ctrl);
+            // the levels until the table has to be widened (never once it is)
+            while level <= MAX_PLIES_WIDE && (t.is_wide() || level < set.widen_level) {
+                let cur = &g.cand[(level % 3) as usize];
+                g.take_pending(level, cur);
+                phase = Instant::now();
+                let (changed, evals) = parallel_bits(
+                    workers,
+                    cur,
+                    g.ctrl,
+                    Some(&mut |done, total| progress(&format!("      level {:>3}: {} ({:.0} s)", level, percent(done, total), phase.elapsed().as_secs_f64()))),
+                    &|idx| g.scan_candidate(level, idx),
+                );
+                if aborted() {
+                    drop(g);
+                    self.tables[ti].clear();
+                    return Stats { aborted: true, ..Stats::default() };
                 }
-                progress(&format!("      level {:>3}: {:>12} positions, {:>13} evaluated", level, group(changed), group(evals)));
-            }
-            if !g.cand[((level + 1) % 3) as usize].any() && !g.cand[((level + 2) % 3) as usize].any() && !g.pending_beyond(level) {
-                completed = true;
-                break;
+                st.evaluations += evals;
+                cur.clear();
+                if changed > 0 {
+                    st.levels = level;
+                    if level % 2 == 1 {
+                        st.wins += changed;
+                        st.max_win = level;
+                    } else {
+                        st.losses += changed;
+                        st.max_loss = level;
+                    }
+                    progress(&format!("      level {:>3}: {:>12} positions, {:>13} evaluated", level, group(changed), group(evals)));
+                }
+                if !g.cand[((level + 1) % 3) as usize].any() && !g.cand[((level + 2) % 3) as usize].any() && !g.pending_beyond(level) {
+                    completed = true;
+                    break;
+                }
+                level += 1;
             }
         }
-        if !completed || g.beyond.load(Ordering::Relaxed) > 0 {
-            // distances beyond MAX_PLIES cannot be stored in a byte; the positions
-            // that were still open stay 0 and would read as draws. One more scan
-            // at level MAX_PLIES+1 without storing counts them (their own parents
-            // are not followed, so the count is a lower bound).
-            let level = MAX_PLIES + 1;
+        let set: &Set = self;
+        let t = &set.tables[ti];
+        if !completed || state.beyond.load(Ordering::Relaxed) > 0 {
+            // distances beyond MAX_PLIES_WIDE cannot be stored; the positions
+            // that were still open stay 0 and would read as draws. One more
+            // scan at level MAX_PLIES_WIDE+1 without storing counts them (their
+            // own parents are not followed, so the count is a lower bound).
+            let g = Generator::new(set, t, &state, ctrl);
+            let level = MAX_PLIES_WIDE + 1;
             let cur = &g.cand[(level % 3) as usize];
             g.take_pending(level, cur);
             let (beyond, evals) = parallel_bits(workers, cur, g.ctrl, None, &|idx| g.scan_candidate(level, idx));
             st.evaluations += evals;
-            st.beyond = beyond + g.beyond.load(Ordering::Relaxed);
+            st.beyond = beyond + state.beyond.load(Ordering::Relaxed);
             st.overflow = true;
-            progress(&format!("{:<5} WARNING: distances exceed {} plies, at least {} positions left as draws", t.mat.name(), MAX_PLIES, group(st.beyond)));
+            progress(&format!("{:<5} WARNING: distances exceed {} plies, at least {} positions left as draws", name, MAX_PLIES_WIDE, group(st.beyond)));
         }
-        st.losses += mates;
-        st.draws = legal - st.wins - st.losses;
+        st.wide = t.is_wide();
+        st.losses += st.mates;
+        st.draws = st.legal - st.wins - st.losses;
         t.raw_checksum.store(super::checksum(t.bytes()), std::sync::atomic::Ordering::Relaxed);
-        let Generator { invalid, .. } = g;
+        let GenState { invalid, .. } = state;
         t.set_invalid(invalid); // kept until the table is written (fill), 1/8 of the table
         st.duration = start.elapsed();
         progress(&format!(
@@ -317,7 +341,8 @@ impl Set {
     /// positions whose stored value disagrees. The first few are reported.
     pub fn verify(&self, ti: usize, workers: usize, report: &(dyn Fn(&str) + Sync)) -> usize {
         let t = &self.tables[ti];
-        let g = Generator::new(self, t, false, None);
+        let state = GenState::new(0); // no levels: no candidates, no pending lists
+        let g = Generator::new(self, t, &state, None);
         let reported = AtomicU32::new(0);
         let (bad, _) = parallel_chunks(workers, t.size, 1 << 16, None, None, &|lo, hi| {
             let mut sq = [Pos::NONE; 6];
@@ -372,13 +397,10 @@ impl Set {
     }
 }
 
-struct Generator<'a> {
-    set: &'a Set,
-    t: &'a Table,
-    /// White king, black king, slots.
-    pieces: Vec<Piece>,
-    /// Pawns of both colors: a double step can create an en passant right.
-    en_passant_possible: bool,
+/// The state of a generation that outlives a `Generator`: the table is
+/// widened between two levels (`Table::widen` needs it mutably), the
+/// generator borrowing it is built anew afterwards.
+struct GenState {
     /// `cand[level % 3]` holds the candidates of a level: positions with a child
     /// decided in the previous level (and, with en passant, two levels back).
     cand: [Bitset; 3],
@@ -390,52 +412,84 @@ struct Generator<'a> {
     /// in-table child will trigger: their decisive children lie in smaller tables
     /// (captures, promotions) with a larger distance. Split into shards by
     /// index (`pending_shard_of`): a single lock taken for every entry made 32
-    /// workers spend most of the scan in the kernel (futex).
+    /// workers spend most of the scan in the kernel (futex). The levels grow
+    /// on demand (a wide dependency can register levels in the hundreds).
     pending: Vec<PendingShard>,
-    /// Pause/abort from outside (None = never).
-    ctrl: Option<&'a Control>,
-    /// Positions waiting for a level beyond MAX_PLIES+1 (cannot be stored).
+    /// Positions waiting for a level beyond MAX_PLIES_WIDE+1 (cannot be stored).
     beyond: AtomicUsize,
 }
 
+impl GenState {
+    /// The state for a table of n entries (0: no levels, for `verify`).
+    fn new(n: usize) -> GenState {
+        GenState {
+            cand: [Bitset::new(n), Bitset::new(n), Bitset::new(n)],
+            invalid: Bitset::new(n),
+            pending: (0..PENDING_SHARDS).map(|_| PendingShard(Mutex::new(Vec::new()))).collect(),
+            beyond: AtomicUsize::new(0),
+        }
+    }
+}
+
+struct Generator<'a> {
+    set: &'a Set,
+    t: &'a Table,
+    /// White king, black king, slots.
+    pieces: Vec<Piece>,
+    /// Pawns of both colors: a double step can create an en passant right.
+    en_passant_possible: bool,
+    /// The fields of the `GenState`.
+    cand: &'a [Bitset; 3],
+    invalid: &'a Bitset,
+    pending: &'a [PendingShard],
+    beyond: &'a AtomicUsize,
+    /// Pause/abort from outside (None = never).
+    ctrl: Option<&'a Control>,
+}
+
 impl<'a> Generator<'a> {
-    fn new(set: &'a Set, t: &'a Table, with_candidates: bool, ctrl: Option<&'a Control>) -> Generator<'a> {
+    fn new(set: &'a Set, t: &'a Table, state: &'a GenState, ctrl: Option<&'a Control>) -> Generator<'a> {
         let mut pieces = vec![Piece::WHITE_KING, Piece::BLACK_KING];
         pieces.extend_from_slice(&t.slots);
         let white_pawns = t.slots.contains(&Piece::WHITE_PAWN);
         let black_pawns = t.slots.contains(&Piece::BLACK_PAWN);
-        let n = if with_candidates { t.size } else { 0 };
         Generator {
             set,
             t,
             pieces,
             en_passant_possible: white_pawns && black_pawns,
-            cand: [Bitset::new(n), Bitset::new(n), Bitset::new(n)],
-            invalid: Bitset::new(n),
-            pending: (0..PENDING_SHARDS).map(|_| PendingShard(Mutex::new((0..MAX_PLIES as usize + 2).map(|_| PendingList::default()).collect()))).collect(),
+            cand: &state.cand,
+            invalid: &state.invalid,
+            pending: &state.pending,
+            beyond: &state.beyond,
             ctrl,
-            beyond: AtomicUsize::new(0),
         }
     }
 
     fn register_pending(&self, level: u32, idx: usize) {
-        if level > MAX_PLIES + 1 {
+        if level > MAX_PLIES_WIDE + 1 {
             self.beyond.fetch_add(1, Ordering::Relaxed); // beyond the value range: counted for the overflow report
             return;
         }
-        self.pending[pending_shard_of(idx)].0.lock().unwrap()[level as usize].add(idx);
+        let mut p = self.pending[pending_shard_of(idx)].0.lock().unwrap();
+        if p.len() <= level as usize {
+            p.resize_with(level as usize + 1, PendingList::default);
+        }
+        p[level as usize].add(idx);
     }
 
     fn pending_beyond(&self, level: u32) -> bool {
-        self.pending.iter().any(|p| p.0.lock().unwrap()[level as usize + 1..].iter().any(|v| v.count > 0))
+        self.pending.iter().any(|p| p.0.lock().unwrap().iter().skip(level as usize + 1).any(|v| v.count > 0))
     }
 
     /// Moves the entries of a level from every shard into a candidate set.
     fn take_pending(&self, level: u32, cur: &Bitset) {
-        for p in &self.pending {
+        for p in self.pending {
             let mut p = p.0.lock().unwrap();
-            p[level as usize].each(|idx| cur.set(idx));
-            p[level as usize].reset();
+            if let Some(list) = p.get_mut(level as usize) {
+                list.each(|idx| cur.set(idx));
+                list.reset();
+            }
         }
     }
 
@@ -513,7 +567,7 @@ impl<'a> Generator<'a> {
         let n = self.pieces.len();
         let s = &mut sq[..n];
         let white_move = t.decode(idx, s);
-        let dry = level > MAX_PLIES; // the overflow check only counts
+        let dry = level > MAX_PLIES_WIDE; // the overflow check only counts
         if self.en_passant_possible && !dry {
             // a double step into this position may have created an en passant right;
             // that parent is decided by this position's children, not by this value

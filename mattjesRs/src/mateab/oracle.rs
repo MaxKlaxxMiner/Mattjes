@@ -23,9 +23,9 @@ pub const UNBOUNDED: u32 = 1 << 20;
 fn dtm_bounds(wdl: &crate::syzygy::Tables, b: &Board, win: bool) -> (u32, u32) {
     let Some((bucket, step)) = wdl.probe_dtm(b) else { return (1, UNBOUNDED) };
     let v = if win {
-        egtb::Value((bucket as u32 * step).min(127) as u8) // the upper end of the bucket, as quantize stores it
+        egtb::Value::of_moves(true, (bucket as u32 * step).min(127)) // the upper end of the bucket, as quantize stores it
     } else {
-        egtb::Value((128 + bucket as u32 * step).min(255) as u8)
+        egtb::Value::of_moves(false, (bucket as u32 * step).min(127))
     };
     v.bounds(step)
 }

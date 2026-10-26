@@ -181,7 +181,7 @@ impl Set {
         let t = &self.tables[ti];
         let (peak_commit, peak_ws) = peak_memory().unwrap_or((0, 0));
         format!(
-            "{} pieces={} indices={} legal={} wins={} losses={} draws={} longest_plies={} levels={} evaluations={} seconds={:.1} workers={} overflow={} beyond={} peak_commit_mb={} peak_ws_mb={} checksum={:016x} {}",
+            "{} pieces={} indices={} legal={} wins={} losses={} draws={} longest_plies={} levels={} evaluations={} seconds={:.1} workers={} overflow={} beyond={} wide={} peak_commit_mb={} peak_ws_mb={} checksum={:016x} {}",
             t.mat.name(),
             t.mat.pieces(),
             t.size,
@@ -196,6 +196,7 @@ impl Set {
             workers,
             st.overflow,
             st.beyond,
+            st.wide,
             peak_commit >> 20,
             peak_ws >> 20,
             t.raw_checksum(),

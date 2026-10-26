@@ -39,14 +39,18 @@ pub struct BlockStore {
     pub distinct: u64,
     /// The first read error (the table then answers Draw, reported once).
     pub err: Option<String>,
+    /// The entries of a wide table (0 = a one-byte table): the file holds
+    /// the low plane, then the high plane (`Value::to_planes`).
+    wide_entries: usize,
 }
 
 impl BlockStore {
-    pub fn new(file: File, index: lz::Index) -> BlockStore {
+    /// `wide_entries` is the table size of a wide table, 0 otherwise.
+    pub fn new(file: File, index: lz::Index, wide_entries: usize) -> BlockStore {
         let slots = (CACHE_BYTES / index.block_size).max(1).min(index.blocks());
         let scratch = vec![0u8; index.max_packed()];
         let seen = vec![0u64; index.blocks().div_ceil(64)];
-        BlockStore { file, index, slots: (0..slots).map(|_| Vec::new()).collect(), tags: vec![-1; slots], scratch, hits: 0, misses: 0, seen, distinct: 0, err: None }
+        BlockStore { file, index, slots: (0..slots).map(|_| Vec::new()).collect(), tags: vec![-1; slots], scratch, hits: 0, misses: 0, seen, distinct: 0, err: None, wide_entries }
     }
 
     pub fn blocks(&self) -> usize {
@@ -60,8 +64,18 @@ impl BlockStore {
         self.seen.fill(0);
     }
 
-    /// The byte at raw position idx, decoding its block on a miss.
+    /// The value of entry idx: one byte, or the two planes of a wide table.
     pub fn value(&mut self, idx: usize) -> Value {
+        if self.wide_entries == 0 {
+            return Value::from_byte(self.byte(idx));
+        }
+        let lo = self.byte(idx);
+        Value::from_planes(lo, self.byte(self.wide_entries + idx))
+    }
+
+    /// The byte at raw position idx, decoding its block on a miss (a read
+    /// error gives 0).
+    fn byte(&mut self, idx: usize) -> u8 {
         let block = idx / self.index.block_size;
         let slot = block % self.slots.len();
         if self.tags[slot] != block as i32 {
@@ -78,12 +92,12 @@ impl BlockStore {
                     self.err = Some(format!("egtb: block {}: {}", block, e));
                 }
                 self.tags[slot] = -1;
-                return Value::DRAW;
+                return 0;
             }
             self.tags[slot] = block as i32;
         } else {
             self.hits += 1;
         }
-        Value(self.slots[slot][idx - block * self.index.block_size])
+        self.slots[slot][idx - block * self.index.block_size]
     }
 }

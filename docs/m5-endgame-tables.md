@@ -1202,6 +1202,44 @@ Start, im Durchlauf also monoton (1,3 GB über die bauernlosen Materialien, 3,4 
 mit einem Bauern, 7,4 GB mit zwei), je Material eine obere Schranke; das erste
 Material jedes Plateaus hat sie gemessen. Für `EstimateBytes` ist das sicher.
 
+### Zwei Byte je Stellung, nur wo nötig, und der Raw-Durchlauf (2026-10-26, Rust)
+
+Die längsten Sechs-Steiner (KRNKNN mit 262 Zügen) sprengen das Byte (Gewinne bis
+253, Verluste bis 254 Halbzüge). Statt sie neu zu rechnen, **verbreitert der
+Generator die Tabelle an Ort und Stelle**: `Value` ist intern 16 Bit (Zugzahl,
+Verlustbasis 0x8000), eine Tabelle hält ihre Einträge in `values` (ein Byte,
+`Value::to_byte`/`from_byte`, das alte Format v3) oder in `wide` (zwei Byte). Erreicht
+die Ebenen-Schleife Ebene 255 (`Set.widen_level`), wandelt `Table::widen` das
+Byte-Feld in ein 16-Bit-Feld (kurz drei Byte je Eintrag) und rechnet ab dort weiter;
+nichts wird doppelt gerechnet. Kandidaten, Bitsets und Pending-Listen liegen dafür
+in `GenState`, die Pending-Ebenen wachsen nach Bedarf (eine breite Abhängigkeit kann
+Ebenen über 255 vormerken; früher fielen solche Einträge in den `beyond`-Zähler).
+Eine Abhängigkeit mit zwei Byte erzwingt nichts: die abhängige Tabelle wird erst
+breit, wenn ihre eigenen Ebenen über 254 gehen. Tabellen mit einem Byte bleiben
+byteidentisch, alle Prüfsummen gelten weiter; die Prüfsumme einer breiten Tabelle
+läuft über ihre 16-Bit-Einträge (little endian, so wie sie im Speicher liegen).
+
+**Datei:** Byte 5 des Kopfes ist die Wertbreite (0/1 ein Byte, 2 zwei Byte). Eine
+breite Tabelle steht als **zwei Ebenen** im Container (2n Byte): erst die
+Low-Ebene (Verlust-Bit 0x80 plus Zugzahl modulo 128, für jeden Wert bis 127 Züge
+also genau das Ein-Byte-Format), dann die High-Ebene (Zugzahl / 128, fast überall
+0). Die Ebenen werden blockweise aus den Einträgen gebaut (`lz::pack_indexed_with`)
+und blockweise zurückgelesen (`Index::unpack_each`), ohne Kopie der Tabelle; der
+Blockspeicher liest bei einer breiten gepackten Tabelle zwei Bytes.
+
+**Test** `egtb-widen <Name> <Ebene> <Ordner>`: das Material samt aller Abhängigkeiten
+zweimal erzeugt, normal und ab der Ebene breit, jeder Wert verglichen, dann die breite
+Datei geschrieben, ganz und gepackt geladen und wieder verglichen. KBNKN ab Ebene 40
+(Server, 32 Worker): 17 breite Tabellen, 0 Abweichungen, Datei 44,1 statt 42,9 MB
+(+2,9 %, die leere High-Ebene), normale Prüfsumme wie in `TABLE_CHECKSUMS`.
+
+**Raw-Durchlauf** (`EgtbRawOnly` zusammen mit `EgtbForceGen`): Produkt eines Materials
+ist seine exakte Datei (`.bin.raw`), keine WDL, keine DTM; alle Raws bleiben. Die
+Raw-Dateien werden auf allen Workern gepackt (`save_raw_table_with`). Zwischen zwei
+Materialien bleiben die Tabellen, die ein späteres Material nachschlägt, im RAM
+(`release_tables`, bis ein Drittel des Speichers, die zuerst gebrauchten zuerst),
+statt sie von der Storage Box neu zu lesen.
+
 ## Offen
 
 - **KPPKP ist unvollständig** (mindestens 7 Verluste in 254 Halbzügen lesen sich als

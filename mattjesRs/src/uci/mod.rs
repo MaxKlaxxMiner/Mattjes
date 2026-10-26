@@ -73,6 +73,7 @@ pub struct Engine<W: Write + Send + 'static> {
     // options
     write_cache: bool, // EgtbWriteCache: write generated tables to the cache directory
     force_gen: bool,   // EgtbForceGen: go infinite generates every material the options allow, one after the other (sweep.rs)
+    raw_only: bool,    // EgtbRawOnly: the sweep writes the exact files only (no WDL, no DTM) and keeps them all
     generate5: bool,   // EgtbGenerate5: build missing five-piece tables during go infinite
     generate6: bool,   // EgtbGenerate6: the same for six pieces
     cache_dir: PathBuf, // EgtbPath
@@ -140,6 +141,7 @@ pub fn run<R: Read + Send + 'static, W: Write + Send + 'static>(input: R, out: W
         name: name.to_string(),
         write_cache: false,
         force_gen: false,
+        raw_only: false,
         generate5: false,
         generate6: false,
         cache_dir: egtb::default_cache_dir(),
@@ -267,6 +269,7 @@ impl<W: Write + Send + 'static> Engine<W> {
                 self.send(&format!("option name MatePnGoal type combo default {} var mate var win", DEFAULT_GOAL));
                 self.send("option name EgtbWriteCache type check default false");
                 self.send("option name EgtbForceGen type check default false");
+                self.send("option name EgtbRawOnly type check default false");
                 self.send("option name EgtbGenerate5 type check default false");
                 self.send("option name EgtbGenerate6 type check default false");
                 self.send(&format!("option name EgtbPath type string default {}", self.cache_dir.display()));
@@ -400,6 +403,8 @@ impl<W: Write + Send + 'static> Engine<W> {
             self.generate6 = flag;
         } else if name.eq_ignore_ascii_case("EgtbForceGen") {
             self.force_gen = flag;
+        } else if name.eq_ignore_ascii_case("EgtbRawOnly") {
+            self.raw_only = flag;
         } else if name.eq_ignore_ascii_case("EgtbPath") {
             self.cache_dir = PathBuf::from(&value);
             if let Some(set) = self.set.as_mut() {

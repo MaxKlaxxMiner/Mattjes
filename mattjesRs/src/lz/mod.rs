@@ -290,16 +290,41 @@ pub fn pack_indexed_to<W: std::io::Write>(w: &mut W, data: &[u8], block_size: us
         let end = ((i + 1) * block_size).min(data.len());
         *blocks[i].lock().unwrap() = compress_block(&data[i * block_size..end], DEPTH);
     });
-    w.write_all(&(data.len() as u64).to_le_bytes())?;
+    write_indexed(w, data.len(), block_size, &blocks)
+}
+
+/// `pack_indexed_to` for data that does not exist as one slice: `fill(off,
+/// dst)` writes the raw bytes [off, off + dst.len()) of the `len` bytes into
+/// dst, one block at a time (a wide table's planes are built from its
+/// two-byte entries this way, without a copy of the table). Same container.
+pub fn pack_indexed_with<W: std::io::Write>(w: &mut W, len: usize, block_size: usize, workers: usize, fill: &(dyn Fn(usize, &mut [u8]) + Sync)) -> std::io::Result<()> {
+    if block_size == 0 {
+        return Err(std::io::Error::other("lz: bad block size"));
+    }
+    let n = len.div_ceil(block_size);
+    let blocks: Vec<std::sync::Mutex<Vec<u8>>> = (0..n).map(|_| std::sync::Mutex::new(Vec::new())).collect();
+    parallel_for(n, workers, &|i| {
+        let end = ((i + 1) * block_size).min(len);
+        let mut raw = vec![0u8; end - i * block_size];
+        fill(i * block_size, &mut raw);
+        *blocks[i].lock().unwrap() = compress_block(&raw, DEPTH);
+    });
+    write_indexed(w, len, block_size, &blocks)
+}
+
+/// Writes the header, the offsets and the compressed blocks of an indexed container.
+fn write_indexed<W: std::io::Write>(w: &mut W, len: usize, block_size: usize, blocks: &[std::sync::Mutex<Vec<u8>>]) -> std::io::Result<()> {
+    let n = blocks.len();
+    w.write_all(&(len as u64).to_le_bytes())?;
     w.write_all(&(block_size as u32).to_le_bytes())?;
     w.write_all(&(n as u32).to_le_bytes())?;
     let mut off = 0u64;
-    for b in &blocks {
+    for b in blocks {
         w.write_all(&off.to_le_bytes())?;
         off += b.lock().unwrap().len() as u64;
     }
     w.write_all(&off.to_le_bytes())?;
-    for b in &blocks {
+    for b in blocks {
         w.write_all(&b.lock().unwrap())?;
     }
     Ok(())
@@ -391,6 +416,27 @@ impl Index {
         let src = &mut scratch[..(b - a) as usize];
         read_exact_at(f, src, self.data_start + a)?;
         decompress_block(&mut dst[..self.block_len(i)], src).map_err(std::io::Error::other)
+    }
+
+    /// Reads every block and hands each decoded block to `sink(off, data)`
+    /// (its raw offset and bytes), blocks in parallel: the counterpart of
+    /// `pack_indexed_with` for data that is not kept as one slice.
+    pub fn unpack_each(&self, f: &std::fs::File, workers: usize, sink: &(dyn Fn(usize, &[u8]) + Sync)) -> std::io::Result<()> {
+        let mut packed = vec![0u8; self.packed_len() as usize];
+        read_exact_at(f, &mut packed, self.data_start)?;
+        let error: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+        parallel_for(self.blocks(), workers, &|i| {
+            let mut raw = vec![0u8; self.block_len(i)];
+            let src = &packed[self.offsets[i] as usize..self.offsets[i + 1] as usize];
+            match decompress_block(&mut raw, src) {
+                Ok(()) => sink(i * self.block_size, &raw),
+                Err(e) => *error.lock().unwrap() = Some(e),
+            }
+        });
+        match error.into_inner().unwrap() {
+            Some(e) => Err(std::io::Error::other(e)),
+            None => Ok(()),
+        }
     }
 
     /// Reads every block and decodes the whole container into dst (exactly

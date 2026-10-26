@@ -261,7 +261,7 @@ fn probe_with_base(oracle: &crate::mateab::Tables, base: &Set, b: &Board) -> (cr
 
 fn dtm_bounds_of(wdl: &Tables, b: &Board, win: bool) -> (u32, u32) {
     let Some((bucket, step)) = wdl.probe_dtm(b) else { return (1, crate::mateab::UNBOUNDED) };
-    let v = if win { crate::egtb::Value((bucket as u32 * step).min(127) as u8) } else { crate::egtb::Value((128 + bucket as u32 * step).min(255) as u8) };
+    let v = crate::egtb::Value::of_moves(win, (bucket as u32 * step).min(127));
     v.bounds(step)
 }
 

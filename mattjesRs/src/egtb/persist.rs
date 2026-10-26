@@ -5,7 +5,10 @@
 //!
 //! File format (v3, 2026-10-16): 4 bytes magic "MEG3", 1 byte step (the
 //! resolution of the values in moves, `Table::step`: 1 = exact, n = buckets of
-//! n moves), 3 bytes zero, 8 bytes raw checksum (the constant in the code, over
+//! n moves), 1 byte value width (0 or 1 = one byte per entry, 2 = a wide
+//! table, since 2026-10-26: the container then holds 2n bytes, the low plane
+//! of all entries, then the high plane, `Value::to_planes`), 2 bytes zero, 8
+//! bytes raw checksum (the constant in the code, over
 //! the exact values as generated, dead and illegal entries as 0), then the
 //! indexed lz container with the values (`lz::pack_indexed_to`: block offsets
 //! up front, so a table beyond the base is read block by block through a
@@ -18,11 +21,11 @@
 //! always exact. Go and Rust must produce byte-identical files.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use super::generate::{Progress, Stats};
-use super::table::{Set, Table};
+use super::table::{Set, Table, Value};
 use super::Material;
 use crate::lz;
 
@@ -207,6 +210,7 @@ fn write_file(path: &Path, tables: &[&Table], raw_checksum: u64, step: u32, bloc
         }
         t.fill();
     }
+    let wide = tables.len() == 1 && tables[0].is_wide();
     // a single table (every material beyond the base) is packed in place: no
     // copy of 15 GB for a six-piece table; only the base file concatenates
     let joined: Vec<u8>;
@@ -230,9 +234,21 @@ fn write_file(path: &Path, tables: &[&Table], raw_checksum: u64, step: u32, bloc
     let mut w = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(&tmp)?);
     use std::io::Write;
     w.write_all(MAGIC)?;
-    w.write_all(&[step as u8, 0, 0, 0])?;
+    w.write_all(&[step as u8, if wide { 2 } else { 1 }, 0, 0])?;
     w.write_all(&raw_checksum.to_le_bytes())?;
-    lz::pack_indexed_to(&mut w, raw, block_size, workers)?;
+    if wide {
+        // the two planes, built block by block from the entries
+        let v = tables[0].wide_values();
+        let n = v.len();
+        lz::pack_indexed_with(&mut w, 2 * n, block_size, workers, &|off, dst| {
+            for (j, b) in dst.iter_mut().enumerate() {
+                let pos = off + j;
+                *b = if pos < n { Value(v[pos]).to_planes().0 } else { Value(v[pos - n]).to_planes().1 };
+            }
+        })?;
+    } else {
+        lz::pack_indexed_to(&mut w, raw, block_size, workers)?;
+    }
     w.flush()?;
     drop(w);
     std::fs::rename(&tmp, path)
@@ -248,21 +264,28 @@ pub fn tmp_path(path: &Path) -> PathBuf {
 
 /// Opens a cache file and reads its header and block index; the caller either
 /// unpacks everything (`read_file`) or keeps the file for block reads
-/// (`open_table`). `size` is the raw length the tables expect. Returns the
-/// file, the index, the step and the raw checksum.
-fn open_file(path: &Path, size: usize) -> std::io::Result<(std::fs::File, lz::Index, u32, u64)> {
+/// (`open_table`). `size` is the number of entries the tables expect.
+/// Returns the file, the index, the step, the raw checksum and whether the
+/// entries are wide (two planes).
+fn open_file(path: &Path, size: usize) -> std::io::Result<(std::fs::File, lz::Index, u32, u64, bool)> {
     let f = std::fs::File::open(path)?;
     let mut header = [0u8; HEADER_BYTES];
     if lz::read_exact_at(&f, &mut header, 0).is_err() || &header[..4] != MAGIC {
         return Err(io_err(format!("egtb: {} is not a cache file (format {:?}, regenerate)", path.display(), String::from_utf8_lossy(&header[..4]))));
     }
     let step = (header[4] as u32).max(1);
+    let wide = match header[5] {
+        0 | 1 => false,
+        2 => true,
+        w => return Err(io_err(format!("egtb: {} has {} bytes per entry", path.display(), w))),
+    };
     let raw_checksum = u64::from_le_bytes(header[8..16].try_into().unwrap());
     let ix = lz::Index::read(&f, HEADER_BYTES as u64).map_err(|e| io_err(format!("egtb: {}: {}", path.display(), e)))?;
-    if ix.raw_len != size {
-        return Err(io_err(format!("egtb: {} holds {} bytes, expected {}", path.display(), ix.raw_len, size)));
+    let want = if wide { 2 * size } else { size };
+    if ix.raw_len != want {
+        return Err(io_err(format!("egtb: {} holds {} bytes, expected {}", path.display(), ix.raw_len, want)));
     }
-    Ok((f, ix, step, raw_checksum))
+    Ok((f, ix, step, raw_checksum, wide))
 }
 
 /// Reads a cache file into the tables as a whole (the base). Returns the raw
@@ -273,12 +296,45 @@ fn read_file(path: &Path, tables: &mut [&mut Table], workers: usize) -> std::io:
     for t in tables.iter_mut() {
         t.clear();
     }
-    let (f, ix, step, raw_checksum) = open_file(path, size)?;
+    let (f, ix, step, raw_checksum, wide) = open_file(path, size)?;
+    if wide && tables.len() != 1 {
+        return Err(io_err(format!("egtb: {} is wide, only single tables can be", path.display())));
+    }
     for t in tables.iter_mut() {
-        t.values = (0..t.size).map(|_| AtomicU8::new(0)).collect();
+        t.allocate(wide);
     }
     // decompress into one buffer, then split (the tables are separate slices)
-    if tables.len() == 1 {
+    if wide {
+        // each plane block ors its byte into the entries (low and high
+        // byte), then every entry turns from the plane form into its value
+        let t = &tables[0];
+        let n = t.size;
+        ix.unpack_each(&f, workers, &|off, data| {
+            for (j, &b) in data.iter().enumerate() {
+                let pos = off + j;
+                if pos < n {
+                    t.wide[pos].fetch_or(b as u16, Ordering::Relaxed);
+                } else {
+                    t.wide[pos - n].fetch_or((b as u16) << 8, Ordering::Relaxed);
+                }
+            }
+        })
+        .map_err(|e| io_err(format!("egtb: {}: {}", path.display(), e)))?;
+        let chunks = t.wide.chunks(1 << 20).collect::<Vec<_>>();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..workers.max(1) {
+                s.spawn(|| loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(c) = chunks.get(i) else { break };
+                    for e in c.iter() {
+                        let raw = e.load(Ordering::Relaxed);
+                        e.store(Value::from_planes(raw as u8, (raw >> 8) as u8).0, Ordering::Relaxed);
+                    }
+                });
+            }
+        });
+    } else if tables.len() == 1 {
         ix.unpack_all(&f, tables[0].bytes_mut(), workers).map_err(|e| io_err(format!("egtb: {}: {}", path.display(), e)))?;
     } else {
         let mut dst = vec![0u8; size];
@@ -302,8 +358,8 @@ fn read_file(path: &Path, tables: &mut [&mut Table], workers: usize) -> std::io:
 /// checksum from the header.
 fn open_table(path: &Path, t: &mut Table) -> std::io::Result<u64> {
     t.clear();
-    let (f, ix, step, raw_checksum) = open_file(path, t.size)?;
-    t.set_packed(super::blockstore::BlockStore::new(f, ix));
+    let (f, ix, step, raw_checksum, wide) = open_file(path, t.size)?;
+    t.set_packed(super::blockstore::BlockStore::new(f, ix, if wide { t.size } else { 0 }));
     t.set_filled(true);
     t.set_step(step);
     Ok(raw_checksum)
@@ -448,6 +504,11 @@ impl Set {
     /// can serve a later generation as a dependency. The table must still be
     /// exact.
     pub fn save_raw_table(&self, ti: usize, path: &Path) -> std::io::Result<()> {
+        self.save_raw_table_with(ti, path, IO_WORKERS)
+    }
+
+    /// `save_raw_table` packed on `workers` threads.
+    pub fn save_raw_table_with(&self, ti: usize, path: &Path, workers: usize) -> std::io::Result<()> {
         let t = &self.tables[ti];
         if !t.is_generated() {
             return Err(io_err(format!("egtb: table {} not generated", t.mat.name())));
@@ -455,13 +516,19 @@ impl Set {
         if !t.is_exact() {
             return Err(io_err(format!("egtb: table {} is quantised (step {}), no exact file", t.mat.name(), t.step())));
         }
-        write_file(path, &[t], t.raw_checksum(), 1, BLOCK_BYTES, IO_WORKERS)
+        write_file(path, &[t], t.raw_checksum(), 1, BLOCK_BYTES, workers)
     }
 
     /// Reads an exact table (`raw_path`) completely into memory, as a
     /// generation needs its dependencies. Checks the step, the size and, when
     /// recorded, the checksum.
     pub fn load_raw_table(&mut self, ti: usize, path: &Path) -> std::io::Result<()> {
+        self.load_raw_table_checked(ti, path, true)
+    }
+
+    /// `load_raw_table`, comparing with the recorded checksum only when
+    /// `check` is set (a test widens a recorded one-byte table on purpose).
+    pub fn load_raw_table_checked(&mut self, ti: usize, path: &Path, check: bool) -> std::io::Result<()> {
         let result = read_file(path, &mut [&mut self.tables[ti]], IO_WORKERS);
         let t = &mut self.tables[ti];
         let sum = match result {
@@ -477,7 +544,7 @@ impl Set {
             return Err(io_err(format!("egtb: {} is quantised (step {}), expected an exact table", path.display(), step)));
         }
         t.raw_checksum.store(sum, std::sync::atomic::Ordering::Relaxed);
-        if let Some(want) = recorded_checksum(&t.mat.name()) {
+        if let Some(want) = recorded_checksum(&t.mat.name()).filter(|_| check) {
             if sum != want {
                 t.clear();
                 return Err(io_err(format!("egtb: {} has checksum {:016x}, expected {:016x}", path.display(), sum, want)));
@@ -514,6 +581,12 @@ impl Set {
     /// compressed in the file and is read block by block (`open_table`).
     /// Checks size and, when recorded, the checksum.
     pub fn load_table(&mut self, ti: usize, path: &Path) -> std::io::Result<()> {
+        self.load_table_checked(ti, path, true)
+    }
+
+    /// `load_table`, comparing with the recorded checksum only when `check`
+    /// is set.
+    pub fn load_table_checked(&mut self, ti: usize, path: &Path, check: bool) -> std::io::Result<()> {
         let result = open_table(path, &mut self.tables[ti]);
         let t = &mut self.tables[ti];
         let sum = match result {
@@ -524,7 +597,7 @@ impl Set {
             }
         };
         t.raw_checksum.store(sum, std::sync::atomic::Ordering::Relaxed);
-        if let Some(want) = recorded_checksum(&t.mat.name()) {
+        if let Some(want) = recorded_checksum(&t.mat.name()).filter(|_| check) {
             if sum != want {
                 t.clear();
                 return Err(io_err(format!("egtb: {} has checksum {:016x}, expected {:016x}", path.display(), sum, want)));
