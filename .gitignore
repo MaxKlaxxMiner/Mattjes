@@ -1,6 +1,8 @@
 # build outputs
 runMattjesGo.exe
 runMattjesRs.exe
+runMattjesGo
+runMattjesRs
 *.exe
 *.exe.old
 *.dll
@@ -8,7 +10,7 @@ runMattjesRs.exe
 *.dylib
 *.test
 *.out
-mattjesRs/target/
+mattjesRs/target*/
 
 # IDE
 .idea/
