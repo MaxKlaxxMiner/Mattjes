@@ -42,6 +42,7 @@ func main() {
 	//   test                                              the experiment block in experiments()
 	//   egtb-list <pieces>                                names of all materials with that many pieces
 	//   egtb-measure <name>... [--verify] [--workers N]   generate or load the tables, log to the cache dir
+	//   egtb-widen <name> <level> <dir> [--workers N]     the two-byte tables against the one-byte ones
 	if len(os.Args) == 1 {
 		// MATTJES_CPUPROFILE=<file> writes a CPU profile of the UCI session
 		// (go tool pprof -top runMattjesGo.exe <file>), for measuring the

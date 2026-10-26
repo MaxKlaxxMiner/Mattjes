@@ -98,7 +98,7 @@ func egtbGenerate(names []string, workers int, verbose bool, verify bool) {
 		if t == nil {
 			panic("unknown material " + name)
 		}
-		if t.Values != nil {
+		if t.Generated() {
 			continue // already generated as a dependency
 		}
 		stats[name] = set.Generate(t, workers, progress)
@@ -109,7 +109,7 @@ func egtbGenerate(names []string, workers int, verbose bool, verify bool) {
 		fmt.Println("forward verification (every position recomputed from its children):")
 		start = time.Now()
 		for _, t := range set.Tables {
-			if t.Values == nil {
+			if !t.Generated() {
 				continue
 			}
 			bad := set.Verify(t, workers, func(line string) { fmt.Println(line) })
@@ -424,6 +424,18 @@ func runCommand(args []string) {
 		egtbList(pieces)
 	case "egtb-measure":
 		egtbMeasure(names, workers, verify)
+	case "egtb-widen":
+		name, level, dir := "KBNKN", 40, "tests/widen"
+		if len(names) > 0 {
+			name = names[0]
+		}
+		if len(names) > 1 {
+			level, _ = strconv.Atoi(names[1])
+		}
+		if len(names) > 2 {
+			dir = names[2]
+		}
+		egtbWiden(name, level, workers, dir)
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command", args[0])
 		os.Exit(2)
@@ -504,4 +516,94 @@ func imageBoard(whiteMove bool, sq []chess.Pos, pieces []chess.Piece, tf int, fl
 		}
 	}
 	return bitboard.FromPieces(whiteMove != flip, sq2, ps2)
+}
+
+// egtbWiden checks the two-byte tables (Table.widen, 2026-10-26), see
+// tests_egtb.rs egtb_widen: the material is generated twice with all its
+// dependencies, once with one byte per entry and once widened before level;
+// all values must agree. Then both go through their exact files in dir
+// (narrow/ and wide/), the wide file is loaded whole and packed, and must
+// give the values of the one-byte table again. Go and Rust must write the
+// same files.
+func egtbWiden(name string, level, workers int, dir string) {
+	m, err := egtb.Parse(name)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	quiet := func(string) {}
+	gen := func(widen int) (*egtb.Set, *egtb.Table) {
+		s := egtb.NewSet()
+		s.WidenLevel = widen
+		start := time.Now()
+		s.GenerateAll(workers, quiet)
+		t := s.AddMaterial(m)
+		st := s.Generate(t, workers, quiet)
+		wide := 0
+		for _, x := range s.Tables {
+			if x.IsWide() {
+				wide++
+			}
+		}
+		fmt.Printf("%s widened from level %d: %d levels, longest mate %d plies, %d wide tables, checksum %016x, %.1f s\n", m.Name(), widen, st.Levels, st.MaxWin, wide, t.RawChecksum, time.Since(start).Seconds())
+		return s, t
+	}
+	a, ta := gen(egtb.MaxPlies + 1)
+	b, tb := gen(level)
+	compare := func(what string, x, y *egtb.Table) int {
+		bad := 0
+		for idx := 0; idx < x.Size; idx++ {
+			if x.Value(idx) != y.Value(idx) {
+				if bad < 5 {
+					fmt.Printf("  %s %s: index %d %s vs %s\n", what, x.Mat.Name(), idx, x.Value(idx), y.Value(idx))
+				}
+				bad++
+			}
+		}
+		return bad
+	}
+	bad := 0
+	for i := range a.Tables {
+		bad += compare("generated", a.Tables[i], b.Tables[i])
+	}
+	fmt.Printf("generated: %d differences over %d tables\n", bad, len(a.Tables))
+	if !tb.IsWide() {
+		fmt.Printf("%s did not get wide (longest mate below level %d)\n", m.Name(), level)
+		return
+	}
+	a.CacheDir, b.CacheDir = filepath.Join(dir, "narrow"), filepath.Join(dir, "wide")
+	pa, pb := a.RawPath(ta), b.RawPath(tb)
+	for _, x := range []struct {
+		s *egtb.Set
+		t *egtb.Table
+		p string
+	}{{a, ta, pa}, {b, tb, pb}} {
+		start := time.Now()
+		if err := x.s.SaveRawTable(x.t, x.p); err != nil {
+			fmt.Println(err)
+			return
+		}
+		size := int64(0)
+		if fi, err := os.Stat(x.p); err == nil {
+			size = fi.Size()
+		}
+		fmt.Printf("written %s (%s bytes, %.1f s)\n", x.p, egtb.Group(int(size)), time.Since(start).Seconds())
+	}
+	// both are filled now (dead entries hold their predecessor), alike
+	c := egtb.NewSet()
+	tc := c.AddMaterial(m)
+	start := time.Now()
+	if err := c.LoadRawTableChecked(tc, pb, false); err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Printf("loaded whole in %.1f s, wide %v, checksum %016x\n", time.Since(start).Seconds(), tc.IsWide(), tc.RawChecksum)
+	fmt.Printf("loaded whole: %d differences\n", compare("loaded", ta, tc))
+	d := egtb.NewSet()
+	td := d.AddMaterial(m)
+	if err := d.LoadTableChecked(td, pb, false); err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Printf("packed: %d differences\n", compare("packed", ta, td))
 }

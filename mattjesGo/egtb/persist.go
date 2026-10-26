@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unsafe"
 
 	"github.com/MaxKlaxxMiner/Mattjes/mattjesGo/lz"
 )
@@ -20,7 +19,10 @@ import (
 //
 // File format (v3, 2026-10-16): 4 bytes magic "MEG3", 1 byte step (the
 // resolution of the values in moves, Table.Step: 1 = exact, n = buckets of n
-// moves), 3 bytes zero, 8 bytes raw checksum (the constant in the code, over
+// moves), 1 byte value width (0 or 1 = one byte per entry, 2 = a wide table,
+// since 2026-10-26: the container then holds 2n bytes, the low plane of all
+// entries, then the high plane, Value.ToPlanes), 2 bytes zero, 8 bytes raw
+// checksum (the constant in the code, over
 // the exact values as generated, dead and illegal entries as 0), then the
 // indexed lz container with the values (lz.PackIndexedTo: block offsets up
 // front, so a table beyond the base is read block by block through a block
@@ -111,8 +113,8 @@ var TableChecksums = map[string]uint64{
 
 // Checksum is a 64-bit hash over 8-byte little-endian words (FNV-1a style
 // with a final mix), fast enough for 170 MB and trivial to reproduce in Rust.
-func Checksum(values []Value) uint64 {
-	data := bytesOf(values)
+// A table's checksum covers Table.bytes.
+func Checksum(data []byte) uint64 {
 	const prime = 0x100000001b3
 	h := uint64(0xcbf29ce484222325)
 	i := 0
@@ -130,19 +132,11 @@ func Checksum(values []Value) uint64 {
 	return h
 }
 
-// bytesOf views the values as bytes without copying (Value is a byte).
-func bytesOf(v []Value) []byte {
-	if len(v) == 0 {
-		return nil
-	}
-	return unsafe.Slice((*byte)(unsafe.Pointer(&v[0])), len(v))
-}
-
 // rawChecksum returns the checksum of the generated values, computing it when
 // the table was never saved or loaded.
 func (t *Table) rawChecksum() uint64 {
-	if t.RawChecksum == 0 && !t.filled && t.Values != nil {
-		t.RawChecksum = Checksum(t.Values)
+	if t.RawChecksum == 0 && !t.filled && t.Generated() {
+		t.RawChecksum = Checksum(t.bytes())
 	}
 	return t.RawChecksum
 }
@@ -155,12 +149,20 @@ func (t *Table) fill() {
 	}
 	t.rawChecksum()
 	if t.invalid != nil {
-		prev := Draw
+		var prev byte
 		for i, v := range t.Values {
 			if t.invalid.get(i) {
 				t.Values[i] = prev
 			} else {
 				prev = v
+			}
+		}
+		var prevWide uint16
+		for i, v := range t.Wide {
+			if t.invalid.get(i) {
+				t.Wide[i] = prevWide
+			} else {
+				prevWide = v
 			}
 		}
 		t.invalid = nil
@@ -284,7 +286,7 @@ func FormatBytes(b uint64) string {
 // in the header).
 func writeFile(path string, tables []*Table, rawChecksum uint64, step, blockSize, workers int) error {
 	for _, t := range tables {
-		if t.Values == nil {
+		if !t.Generated() {
 			return fmt.Errorf("egtb: table %s not generated", t.Mat.Name())
 		}
 		if t.Step != step {
@@ -294,13 +296,17 @@ func writeFile(path string, tables []*Table, rawChecksum uint64, step, blockSize
 	}
 	// a single table (every material beyond the base) is packed in place: no
 	// copy of 15 GB for a six-piece table; only the base file concatenates
+	wide := len(tables) == 1 && tables[0].IsWide()
 	var raw []byte
 	if len(tables) == 1 {
-		raw = bytesOf(tables[0].Values)
+		raw = tables[0].Values
 	} else {
 		raw = make([]byte, 0, sumSize(tables))
 		for _, t := range tables {
-			raw = append(raw, bytesOf(t.Values)...)
+			if t.IsWide() {
+				return fmt.Errorf("egtb: table %s is wide, only single tables can be", t.Mat.Name())
+			}
+			raw = append(raw, t.Values...)
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -317,12 +323,32 @@ func writeFile(path string, tables []*Table, rawChecksum uint64, step, blockSize
 	var header [headerBytes]byte
 	copy(header[:], magic)
 	header[4] = byte(step)
+	header[5] = 1
+	if wide {
+		header[5] = 2
+	}
 	binary.LittleEndian.PutUint64(header[8:], rawChecksum)
 	if _, err := w.Write(header[:]); err != nil {
 		f.Close()
 		return err
 	}
-	if err := lz.PackIndexedTo(w, raw, blockSize, workers); err != nil {
+	if wide {
+		// the two planes, built block by block from the entries
+		v := tables[0].Wide
+		n := len(v)
+		err = lz.PackIndexedWith(w, 2*n, blockSize, workers, func(off int, dst []byte) {
+			for j := range dst {
+				if pos := off + j; pos < n {
+					dst[j], _ = Value(v[pos]).ToPlanes()
+				} else {
+					_, dst[j] = Value(v[pos-n]).ToPlanes()
+				}
+			}
+		})
+	} else {
+		err = lz.PackIndexedTo(w, raw, blockSize, workers)
+	}
+	if err != nil {
 		f.Close()
 		return err
 	}
@@ -350,30 +376,42 @@ func sumSize(tables []*Table) int {
 
 // openFile opens a cache file and reads its header and block index; the
 // caller either unpacks everything (readFile) or keeps the file for block
-// reads (openTable). size is the raw length the tables expect.
-func openFile(path string, size int) (f *os.File, ix *lz.Index, step int, rawChecksum uint64, err error) {
+// reads (openTable). size is the number of entries the tables expect; wide
+// reports two planes.
+func openFile(path string, size int) (f *os.File, ix *lz.Index, step int, rawChecksum uint64, wide bool, err error) {
 	f, err = os.Open(path)
 	if err != nil {
-		return nil, nil, 0, 0, err
+		return nil, nil, 0, 0, false, err
 	}
-	fail := func(err error) (*os.File, *lz.Index, int, uint64, error) {
+	fail := func(err error) (*os.File, *lz.Index, int, uint64, bool, error) {
 		f.Close()
-		return nil, nil, 0, 0, err
+		return nil, nil, 0, 0, false, err
 	}
 	var header [headerBytes]byte
 	if n, err := f.ReadAt(header[:], 0); n < headerBytes || string(header[:4]) != magic {
 		return fail(fmt.Errorf("egtb: %s is not a cache file (format %q, regenerate; %v)", path, string(header[:4]), err))
 	}
 	step = max(1, int(header[4]))
+	switch header[5] {
+	case 0, 1:
+	case 2:
+		wide = true
+	default:
+		return fail(fmt.Errorf("egtb: %s has %d bytes per entry", path, header[5]))
+	}
 	rawChecksum = binary.LittleEndian.Uint64(header[8:])
 	ix, err = lz.ReadIndex(f, headerBytes)
 	if err != nil {
 		return fail(fmt.Errorf("egtb: %s: %v", path, err))
 	}
-	if ix.RawLen != size {
-		return fail(fmt.Errorf("egtb: %s holds %d bytes, expected %d", path, ix.RawLen, size))
+	want := size
+	if wide {
+		want = 2 * size
 	}
-	return f, ix, step, rawChecksum, nil
+	if ix.RawLen != want {
+		return fail(fmt.Errorf("egtb: %s holds %d bytes, expected %d", path, ix.RawLen, want))
+	}
+	return f, ix, step, rawChecksum, wide, nil
 }
 
 // readFile reads a cache file into the tables as a whole (the base).
@@ -381,18 +419,46 @@ func openFile(path string, size int) (f *os.File, ix *lz.Index, step int, rawChe
 // illegal ones hold their predecessor) and the tables carry the file's step.
 func readFile(path string, tables []*Table, workers int) (rawChecksum uint64, compressed bool, err error) {
 	clearTables(tables)
-	f, ix, step, rawChecksum, err := openFile(path, sumSize(tables))
+	f, ix, step, rawChecksum, wide, err := openFile(path, sumSize(tables))
 	if err != nil {
 		return 0, false, err
 	}
 	defer f.Close()
+	if wide && len(tables) != 1 {
+		return 0, true, fmt.Errorf("egtb: %s is wide, only single tables can be", path)
+	}
 	for _, t := range tables {
-		t.Values = make([]Value, t.Size)
+		t.allocate(wide)
+	}
+	if wide {
+		// each plane block puts its bytes into the entries (low or high
+		// byte, distinct bytes per block), then every entry turns from the
+		// plane form into its value
+		t := tables[0]
+		n := t.Size
+		raw := t.bytes() // little endian: low byte at 2i, high byte at 2i+1
+		err := ix.UnpackEach(f, workers, func(off int, data []byte) {
+			for j, b := range data {
+				if pos := off + j; pos < n {
+					raw[2*pos] = b
+				} else {
+					raw[2*(pos-n)+1] = b
+				}
+			}
+		})
+		if err != nil {
+			return 0, true, fmt.Errorf("egtb: %s: %v", path, err)
+		}
+		for i, w := range t.Wide {
+			t.Wide[i] = uint16(ValueOfPlanes(byte(w), byte(w>>8)))
+		}
+		t.filled, t.Step = true, step
+		return rawChecksum, true, nil
 	}
 	// decompress into one buffer, then split (the tables are separate slices)
 	var dst []byte
 	if len(tables) == 1 {
-		dst = bytesOf(tables[0].Values)
+		dst = tables[0].Values
 	} else {
 		dst = make([]byte, ix.RawLen)
 	}
@@ -402,7 +468,7 @@ func readFile(path string, tables []*Table, workers int) (rawChecksum uint64, co
 	if len(tables) > 1 {
 		off := 0
 		for _, t := range tables {
-			copy(bytesOf(t.Values), dst[off:off+t.Size])
+			copy(t.Values, dst[off:off+t.Size])
 			off += t.Size
 		}
 	}
@@ -418,11 +484,15 @@ func readFile(path string, tables []*Table, workers int) (rawChecksum uint64, co
 // raw checksum from the header.
 func openTable(path string, t *Table) (rawChecksum uint64, err error) {
 	clearTables([]*Table{t})
-	f, ix, step, rawChecksum, err := openFile(path, t.Size)
+	f, ix, step, rawChecksum, wide, err := openFile(path, t.Size)
 	if err != nil {
 		return 0, err
 	}
-	t.packed = newBlockStore(f, ix)
+	wideEntries := 0
+	if wide {
+		wideEntries = t.Size
+	}
+	t.packed = newBlockStore(f, ix, wideEntries)
 	t.filled = true
 	t.Step = step
 	return rawChecksum, nil
@@ -434,7 +504,7 @@ func clearTables(tables []*Table) {
 			t.packed.close()
 			t.packed = nil
 		}
-		t.Values = nil
+		t.Values, t.Wide = nil, nil
 		t.filled = false
 		t.RawChecksum = 0
 		t.invalid = nil
@@ -483,7 +553,7 @@ func (s *Set) Load(path string) error {
 // a dependency. The header keeps the checksum of the exact values. Verify
 // before saving.
 func (s *Set) SaveTable(t *Table, path string) error {
-	if t.Values == nil {
+	if !t.Generated() {
 		return fmt.Errorf("egtb: table %s not generated", t.Mat.Name())
 	}
 	sum := t.rawChecksum() // of the exact values, before quantising
@@ -497,7 +567,7 @@ func (s *Set) SaveTable(t *Table, path string) error {
 // unquantised (RawPath): the values stay exact in memory, the file can serve
 // a later generation as a dependency. The table must still be exact.
 func (s *Set) SaveRawTable(t *Table, path string) error {
-	if t.Values == nil {
+	if !t.Generated() {
 		return fmt.Errorf("egtb: table %s not generated", t.Mat.Name())
 	}
 	if !t.Exact() {
@@ -510,6 +580,12 @@ func (s *Set) SaveRawTable(t *Table, path string) error {
 // generation needs its dependencies. Checks the step, the size and, when
 // recorded, the checksum.
 func (s *Set) LoadRawTable(t *Table, path string) error {
+	return s.LoadRawTableChecked(t, path, true)
+}
+
+// LoadRawTableChecked is LoadRawTable, comparing with the recorded checksum
+// only when check is set (a test widens a recorded one-byte table on purpose).
+func (s *Set) LoadRawTableChecked(t *Table, path string, check bool) error {
 	sum, _, err := readFile(path, []*Table{t}, IOWorkers)
 	if err != nil {
 		clearTables([]*Table{t})
@@ -521,7 +597,7 @@ func (s *Set) LoadRawTable(t *Table, path string) error {
 		return fmt.Errorf("egtb: %s is quantised (step %d), expected an exact table", path, step)
 	}
 	t.RawChecksum = sum
-	if want, known := TableChecksums[t.Mat.Name()]; known && sum != want {
+	if want, known := TableChecksums[t.Mat.Name()]; known && check && sum != want {
 		clearTables([]*Table{t})
 		return fmt.Errorf("egtb: %s has checksum %016x, expected %016x", path, sum, want)
 	}
@@ -564,13 +640,19 @@ func (s *Set) SaveBoth(t *Table, progress Progress) error {
 // stays compressed in the file and is read block by block (openTable).
 // Checks size and, when recorded, the checksum.
 func (s *Set) LoadTable(t *Table, path string) error {
+	return s.LoadTableChecked(t, path, true)
+}
+
+// LoadTableChecked is LoadTable, comparing with the recorded checksum only
+// when check is set.
+func (s *Set) LoadTableChecked(t *Table, path string, check bool) error {
 	sum, err := openTable(path, t)
 	if err != nil {
 		clearTables([]*Table{t})
 		return err
 	}
 	t.RawChecksum = sum
-	if want, known := TableChecksums[t.Mat.Name()]; known && sum != want {
+	if want, known := TableChecksums[t.Mat.Name()]; known && check && sum != want {
 		clearTables([]*Table{t})
 		return fmt.Errorf("egtb: %s has checksum %016x, expected %016x", path, sum, want)
 	}
@@ -627,7 +709,7 @@ func (s *Set) LoadOrGenerateTable(m Material, workers int, progress Progress) (t
 		progress = func(string) {}
 	}
 	t = s.AddMaterial(m)
-	if t.Values != nil {
+	if t.Generated() {
 		return t, Stats{}, true
 	}
 	path := s.TablePath(t)

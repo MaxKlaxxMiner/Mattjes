@@ -321,8 +321,34 @@ func PackIndexedTo(w io.Writer, data []byte, blockSize, workers int) error {
 	parallelFor(n, workers, func(i int) {
 		blocks[i] = compressBlock(data[i*blockSize:min(len(data), (i+1)*blockSize)], Depth)
 	})
+	return writeIndexed(w, len(data), blockSize, blocks)
+}
+
+// PackIndexedWith is PackIndexedTo for data that does not exist as one
+// slice: fill(off, dst) writes the raw bytes [off, off+len(dst)) of the
+// length bytes into dst, one block at a time (a wide table's planes are built
+// from its two-byte entries this way, without a copy of the table). Same
+// container.
+func PackIndexedWith(w io.Writer, length, blockSize, workers int, fill func(off int, dst []byte)) error {
+	if blockSize <= 0 {
+		return errors.New("lz: bad block size")
+	}
+	n := (length + blockSize - 1) / blockSize
+	blocks := make([][]byte, n)
+	parallelFor(n, workers, func(i int) {
+		raw := make([]byte, min(length, (i+1)*blockSize)-i*blockSize)
+		fill(i*blockSize, raw)
+		blocks[i] = compressBlock(raw, Depth)
+	})
+	return writeIndexed(w, length, blockSize, blocks)
+}
+
+// writeIndexed writes the header, the offsets and the compressed blocks of an
+// indexed container.
+func writeIndexed(w io.Writer, length, blockSize int, blocks [][]byte) error {
+	n := len(blocks)
 	var header [headerBytes]byte
-	binary.LittleEndian.PutUint64(header[0:], uint64(len(data)))
+	binary.LittleEndian.PutUint64(header[0:], uint64(length))
 	binary.LittleEndian.PutUint32(header[8:], uint32(blockSize))
 	binary.LittleEndian.PutUint32(header[12:], uint32(n))
 	if _, err := w.Write(header[:]); err != nil {
@@ -418,6 +444,30 @@ func (ix *Index) ReadBlock(r io.ReaderAt, i int, scratch, dst []byte) error {
 		return err
 	}
 	return decompressBlock(dst[:ix.BlockLen(i)], src)
+}
+
+// UnpackEach reads every block and hands each decoded block to sink(off,
+// data) (its raw offset and bytes), blocks in parallel: the counterpart of
+// PackIndexedWith for data that is not kept as one slice.
+func (ix *Index) UnpackEach(r io.ReaderAt, workers int, sink func(off int, data []byte)) error {
+	packed := make([]byte, ix.PackedLen())
+	if err := readAt(r, packed, ix.dataStart); err != nil {
+		return err
+	}
+	n := ix.Blocks()
+	errs := make([]error, n)
+	parallelFor(n, workers, func(i int) {
+		raw := make([]byte, ix.BlockLen(i))
+		if errs[i] = decompressBlock(raw, packed[ix.offsets[i]:ix.offsets[i+1]]); errs[i] == nil {
+			sink(i*ix.BlockSize, raw)
+		}
+	})
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
 }
 
 // UnpackAll reads every block and decodes the whole container into dst

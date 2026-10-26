@@ -1231,7 +1231,13 @@ Blockspeicher liest bei einer breiten gepackten Tabelle zwei Bytes.
 zweimal erzeugt, normal und ab der Ebene breit, jeder Wert verglichen, dann die breite
 Datei geschrieben, ganz und gepackt geladen und wieder verglichen. KBNKN ab Ebene 40
 (Server, 32 Worker): 17 breite Tabellen, 0 Abweichungen, Datei 44,1 statt 42,9 MB
-(+2,9 %, die leere High-Ebene), normale Prüfsumme wie in `TABLE_CHECKSUMS`.
+(+2,9 %, die leere High-Ebene), normale Prüfsumme wie in `TABLE_CHECKSUMS`. Go zieht
+mit (`Table.Values` ist jetzt `[]byte`, dazu `Table.Wide []uint16`, `Value` ist
+`uint16`, `Table.Value`/`SetValue`/`Generated`, `lz.PackIndexedWith`/`UnpackEach`,
+Testbank `egtb-widen`): KPKP ab Ebene 20 (29 breite Tabellen, 0 Abweichungen) gibt in
+Go und Rust dieselben Prüfsummen und byteidentische Dateien, schmal wie breit. Der
+Raw-Durchlauf und das Schreiben im Hintergrund (Rust: der Durchlauf packt, ein eigener
+Thread schreibt, das nächste Material rechnet schon) gibt es nur in Rust.
 
 **Raw-Durchlauf** (`EgtbRawOnly` zusammen mit `EgtbForceGen`): Produkt eines Materials
 ist seine exakte Datei (`.bin.raw`), keine WDL, keine DTM; alle Raws bleiben. Die

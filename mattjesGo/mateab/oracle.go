@@ -86,9 +86,9 @@ func (o Tables) dtmBounds(b *bitboard.Board, win bool) (lo, hi int) {
 	}
 	var v egtb.Value
 	if win {
-		v = egtb.Value(min(bucket*step, 127)) // the upper end of the bucket, as Quantize stores it
+		v = egtb.ValueOfMoves(true, min(bucket*step, 127)) // the upper end of the bucket, as Quantize stores it
 	} else {
-		v = egtb.Value(min(128+bucket*step, 255))
+		v = egtb.ValueOfMoves(false, min(bucket*step, 127))
 	}
 	return v.Bounds(step)
 }

@@ -35,22 +35,35 @@ type blockStore struct {
 	seen     []uint64 // bitmap of the blocks ever decoded: the working set of a search
 	distinct uint64
 	err      error // the first read error (the table then answers Draw, reported once)
+	// wideEntries is the size of a wide table (0 = a one-byte table): the
+	// file holds the low plane, then the high plane (Value.ToPlanes).
+	wideEntries int
 }
 
-func newBlockStore(f *os.File, ix *lz.Index) *blockStore {
+func newBlockStore(f *os.File, ix *lz.Index, wideEntries int) *blockStore {
 	slots := max(1, CacheBytes/ix.BlockSize)
 	if slots > ix.Blocks() {
 		slots = ix.Blocks()
 	}
-	s := &blockStore{file: f, index: ix, slots: make([][]byte, slots), tags: make([]int32, slots), scratch: make([]byte, ix.MaxPacked()), seen: make([]uint64, (ix.Blocks()+63)/64)}
+	s := &blockStore{file: f, index: ix, slots: make([][]byte, slots), tags: make([]int32, slots), scratch: make([]byte, ix.MaxPacked()), seen: make([]uint64, (ix.Blocks()+63)/64), wideEntries: wideEntries}
 	for i := range s.tags {
 		s.tags[i] = -1
 	}
 	return s
 }
 
-// value returns the byte at raw position idx, decoding its block on a miss.
+// value returns entry idx: one byte, or the two planes of a wide table.
 func (s *blockStore) value(idx int) Value {
+	if s.wideEntries == 0 {
+		return ValueOfByte(s.byteAt(idx))
+	}
+	lo := s.byteAt(idx)
+	return ValueOfPlanes(lo, s.byteAt(s.wideEntries+idx))
+}
+
+// byteAt returns the byte at raw position idx, decoding its block on a miss
+// (a read error gives 0).
+func (s *blockStore) byteAt(idx int) byte {
 	block := idx / s.index.BlockSize
 	slot := block % len(s.slots)
 	if s.tags[slot] != int32(block) {
@@ -67,13 +80,13 @@ func (s *blockStore) value(idx int) Value {
 				s.err = fmt.Errorf("egtb: %s: block %d: %v", s.file.Name(), block, err)
 			}
 			s.tags[slot] = -1
-			return Draw
+			return 0
 		}
 		s.tags[slot] = int32(block)
 	} else {
 		s.hits++
 	}
-	return Value(s.slots[slot][idx-block*s.index.BlockSize])
+	return s.slots[slot][idx-block*s.index.BlockSize]
 }
 
 func (s *blockStore) close() {

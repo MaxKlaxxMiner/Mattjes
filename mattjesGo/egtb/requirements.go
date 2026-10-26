@@ -76,7 +76,7 @@ func (s *Set) EstimateBytes(t *Table) (bytes int, measured bool) {
 	}
 	n := t.Size + t.Size/2 + t.Size/4
 	for _, d := range t.Mat.Dependencies() {
-		if dt := s.Find(d.Name()); dt == nil || dt.Values == nil {
+		if dt := s.Find(d.Name()); dt == nil || !dt.Generated() {
 			n += newTable(d).Size
 		}
 	}
@@ -105,6 +105,6 @@ func AppendLog(cacheDir, line string) error {
 // fields from egtb-measure and from the UCI mode).
 func (s *Set) LogLine(t *Table, st Stats, workers int, source string) string {
 	peakCommit, peakWorking, _ := PeakMemory()
-	return fmt.Sprintf("%s pieces=%d indices=%d legal=%d wins=%d losses=%d draws=%d longest_plies=%d levels=%d evaluations=%d seconds=%.1f workers=%d overflow=%v beyond=%d peak_commit_mb=%d peak_ws_mb=%d checksum=%016x %s",
-		t.Mat.Name(), t.Mat.Pieces(), t.Size, st.Legal, st.Wins, st.Losses, st.Draws, st.MaxWin, st.Levels, st.Evaluations, st.Duration.Seconds(), workers, st.Overflow, st.Beyond, peakCommit>>20, peakWorking>>20, t.RawChecksum, source)
+	return fmt.Sprintf("%s pieces=%d indices=%d legal=%d wins=%d losses=%d draws=%d longest_plies=%d levels=%d evaluations=%d seconds=%.1f workers=%d overflow=%v beyond=%d wide=%v peak_commit_mb=%d peak_ws_mb=%d checksum=%016x %s",
+		t.Mat.Name(), t.Mat.Pieces(), t.Size, st.Legal, st.Wins, st.Losses, st.Draws, st.MaxWin, st.Levels, st.Evaluations, st.Duration.Seconds(), workers, st.Overflow, st.Beyond, st.Wide, peakCommit>>20, peakWorking>>20, t.RawChecksum, source)
 }

@@ -236,7 +236,7 @@ func (e *Engine) runSweep(set *egtb.Set, j *job, plan []egtb.Material, workers i
 		// nothing stays in memory: the files are the product, the next
 		// material loads its dependencies from their exact files
 		for _, gt := range set.Tables[len(set.Base()):] {
-			if gt.Values != nil {
+			if gt.Generated() {
 				set.Release(gt)
 			}
 		}

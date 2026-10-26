@@ -76,7 +76,7 @@ func deriveWdl(set *egtb.Set, t *egtb.Table, workers int) *wdlTable {
 					continue
 				}
 				w.valid[idx] = true
-				own := wdlSymbol(t.Values[idx])
+				own := wdlSymbol(t.Value(idx))
 				w.plain[idx] = own
 				best := byte(0)
 				hasCapture := false

@@ -138,9 +138,9 @@ func (src *Source) symbolAt(b *bitboard.Board, buf *chess.MoveBuffer, v egtb.Val
 		}
 		return 0
 	case q.IsWin():
-		return byte((int(q) + src.step - 1) / src.step) // 1 .. 127/step
+		return byte((q.Moves() + src.step - 1) / src.step) // 1 .. 127/step
 	}
-	m := int(q) - 128 // loss: bucket 0 = mated now
+	m := q.Moves() // loss: bucket 0 = mated now
 	bucket := byte((m + src.step - 1) / src.step)
 	if src.signed {
 		return byte(127/src.step) + 1 + bucket
@@ -167,7 +167,7 @@ func NewSourceDTM(set *egtb.Set, t *egtb.Table, step int, signed, drawFree bool,
 }
 
 func newSource(set *egtb.Set, t *egtb.Table, workers int, src *Source) *Source {
-	if t.Values == nil || !t.Exact() {
+	if !t.Generated() || !t.Exact() {
 		panic("syzygy: NewSource needs an exact table in memory: " + t.Mat.Name())
 	}
 	pieces := piecesOf(t.Mat)
@@ -195,7 +195,7 @@ func newSource(set *egtb.Set, t *egtb.Table, workers int, src *Source) *Source {
 					continue
 				}
 				legal++
-				own := src.symbolAt(&b, &buf, t.Values[idx])
+				own := src.symbolAt(&b, &buf, t.Value(idx))
 				if own&boundedFlag != 0 { // bounded, or DontCare (a free draw)
 					decided++
 				}

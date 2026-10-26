@@ -22,8 +22,9 @@ type Stats struct {
 	Levels                            int
 	Evaluations                       int // candidate evaluations (forward move generation) over all levels
 	Duration                          time.Duration
-	Overflow                          bool // distances beyond MaxPlies occurred, the table is incomplete
-	Beyond                            int  // positions with distance MaxPlies+1 (or waiting for deeper cross-table children): a lower bound of what is missing
+	Overflow                          bool // distances beyond MaxPliesWide occurred, the table is incomplete
+	Beyond                            int  // positions with distance MaxPliesWide+1 (or waiting for deeper cross-table children): a lower bound of what is missing
+	Wide                              bool // distances beyond MaxPlies occurred: the table takes two bytes per entry (Table.widen)
 	Aborted                           bool // the Control aborted the generation, the table is empty
 	Loaded                            bool // the table came from its exact file (RawPath), nothing was computed (GenerateNotify)
 }
@@ -101,7 +102,7 @@ func canonicalMaterial(w, b []chess.Piece) Material {
 // GenerateAll computes every table that is not filled yet, in order.
 func (s *Set) GenerateAll(workers int, progress Progress) {
 	for _, t := range s.Tables {
-		if t.Values == nil {
+		if !t.Generated() {
 			s.Generate(t, workers, progress)
 		}
 	}
@@ -143,7 +144,7 @@ func (s *Set) GenerateNotify(t *Table, workers int, ctrl *Control, progress Prog
 		// quantised or packed table (loaded earlier, or a cache file beyond
 		// the base, which is always both) is replaced by its exact file or
 		// regenerated in memory instead
-		if dt.available() && (!dt.Exact() || dt.Values == nil) {
+		if dt.available() && (!dt.Exact() || !dt.Generated()) {
 			progress(fmt.Sprintf("egtb: dependency %s is quantised (step %d) or packed, it is needed exactly", dt.Mat.Name(), dt.Step))
 			clearTables([]*Table{dt})
 		}
@@ -187,7 +188,7 @@ func (s *Set) loadRaw(t *Table, progress Progress) bool {
 // generate computes one table whose dependencies are all exact in memory.
 func (s *Set) generate(t *Table, workers int, ctrl *Control, progress Progress) Stats {
 	start := time.Now()
-	t.Values = make([]Value, t.Size)
+	t.allocate(false) // one byte per entry until a level needs more
 	g := newGenerator(s, t)
 	g.ctrl = ctrl
 	for i := range g.cand {
@@ -196,7 +197,7 @@ func (s *Set) generate(t *Table, workers int, ctrl *Control, progress Progress) 
 	g.invalid = newBitset(t.Size)
 	t.invalid = g.invalid // kept until the table is written (fill), 1/8 of the table
 	abort := func() Stats {
-		t.Values, t.invalid = nil, nil
+		t.Values, t.Wide, t.invalid = nil, nil, nil
 		return Stats{Aborted: true}
 	}
 
@@ -215,7 +216,14 @@ func (s *Set) generate(t *Table, workers int, ctrl *Control, progress Progress) 
 	progress(fmt.Sprintf("%-5s %13s indices, %13s legal, %10s mates", t.Mat.Name(), Group(t.Size), Group(legal), Group(mates)))
 
 	completed := false
-	for level := 1; level <= MaxPlies; level++ {
+	for level := 1; level <= MaxPliesWide; level++ {
+		if level >= s.WidenLevel && !t.IsWide() {
+			// the next level does not fit a byte: the table takes two bytes
+			// per entry from here on, nothing is computed twice
+			at := time.Now()
+			t.widen()
+			progress(fmt.Sprintf("%-5s level %d exceeds %d plies: widened to two bytes per entry in %.1f s", t.Mat.Name(), level, level-1, time.Since(at).Seconds()))
+		}
 		cur := g.cand[level%3]
 		g.takePending(level, cur)
 		g.level = level
@@ -246,11 +254,11 @@ func (s *Set) generate(t *Table, workers int, ctrl *Control, progress Progress) 
 		}
 	}
 	if !completed || g.beyond.Load() > 0 {
-		// distances beyond MaxPlies cannot be stored in a byte; the positions
-		// that were still open stay 0 and would read as draws. One more scan
-		// at level MaxPlies+1 without storing counts them (their own parents
+		// distances beyond MaxPliesWide cannot be stored; the positions that
+		// were still open stay 0 and would read as draws. One more scan at
+		// level MaxPliesWide+1 without storing counts them (their own parents
 		// are not followed, so the count is a lower bound).
-		level := MaxPlies + 1
+		level := MaxPliesWide + 1
 		cur := g.cand[level%3]
 		g.takePending(level, cur)
 		g.level = level
@@ -258,11 +266,12 @@ func (s *Set) generate(t *Table, workers int, ctrl *Control, progress Progress) 
 		st.Evaluations += evals
 		st.Beyond = beyond + int(g.beyond.Load())
 		st.Overflow = true
-		progress(fmt.Sprintf("%-5s WARNING: distances exceed %d plies, at least %s positions left as draws", t.Mat.Name(), MaxPlies, Group(st.Beyond)))
+		progress(fmt.Sprintf("%-5s WARNING: distances exceed %d plies, at least %s positions left as draws", t.Mat.Name(), MaxPliesWide, Group(st.Beyond)))
 	}
+	st.Wide = t.IsWide()
 	st.Losses += mates
 	st.Draws = legal - st.Wins - st.Losses
-	t.RawChecksum = Checksum(t.Values)
+	t.RawChecksum = Checksum(t.bytes())
 	st.Duration = time.Since(start)
 	progress(fmt.Sprintf("%-5s wins %12s, losses %12s, draws %12s, longest mate %d plies = %d moves, %.1f s",
 		t.Mat.Name(), Group(st.Wins), Group(st.Losses), Group(st.Draws), st.MaxWin, st.LongestMate(), st.Duration.Seconds()))
@@ -302,9 +311,10 @@ type generator struct {
 	// in-table child will trigger: their decisive children lie in smaller
 	// tables (captures, promotions) with a larger distance. Split into shards
 	// by index (pendingShardOf): a single lock taken for every entry made 32
-	// workers spend most of the scan in the kernel (futex).
+	// workers spend most of the scan in the kernel (futex). The levels grow
+	// on demand (a wide dependency can register levels in the hundreds).
 	pending [pendingShards]pendingShard
-	beyond  atomic.Int64 // positions waiting for a level beyond MaxPlies+1 (cannot be stored)
+	beyond  atomic.Int64 // positions waiting for a level beyond MaxPliesWide+1 (cannot be stored)
 }
 
 func newGenerator(s *Set, t *Table) *generator {
@@ -323,12 +333,15 @@ func newGenerator(s *Set, t *Table) *generator {
 }
 
 func (g *generator) registerPending(level, idx int) {
-	if level > MaxPlies+1 {
+	if level > MaxPliesWide+1 {
 		g.beyond.Add(1) // beyond the value range: counted for the overflow report
 		return
 	}
 	sh := &g.pending[pendingShardOf(idx)]
 	sh.mu.Lock()
+	for len(sh.lists) <= level {
+		sh.lists = append(sh.lists, &pendingList{})
+	}
 	sh.lists[level].add(idx)
 	sh.mu.Unlock()
 }
@@ -353,8 +366,10 @@ func (g *generator) takePending(level int, cur bitset) {
 	for i := range g.pending {
 		sh := &g.pending[i]
 		sh.mu.Lock()
-		sh.lists[level].each(cur.set)
-		sh.lists[level].reset()
+		if level < len(sh.lists) {
+			sh.lists[level].each(cur.set)
+			sh.lists[level].reset()
+		}
 		sh.mu.Unlock()
 	}
 }
@@ -364,11 +379,12 @@ func (g *generator) takePending(level int, cur bitset) {
 // chunks handed out at the same time fall into different shards.
 const pendingShards = 64
 
-// pendingShard holds the lists of all levels for one shard; the lists array
-// keeps the locks of neighbouring shards on different cache lines.
+// pendingShard holds the lists of all levels for one shard, padded so
+// that the locks of neighbouring shards sit on different cache lines.
 type pendingShard struct {
 	mu    sync.Mutex
-	lists [MaxPlies + 2]pendingList
+	lists []*pendingList
+	_     [128]byte
 }
 
 // pendingShardOf is the shard of an index: its 65,536-index chunk.
@@ -552,7 +568,7 @@ func (g *generator) initRange(lo, hi int) (int, int) {
 		n := b.GenMoves(&buf)
 		if n == 0 {
 			if b.InCheck() {
-				t.Values[idx] = LossIn(0)
+				t.SetValue(idx, LossIn(0))
 				mates++
 				g.markParents(s, whiteMove, g.cand[1])
 			}
@@ -594,11 +610,11 @@ func (g *generator) initRange(lo, hi int) (int, int) {
 // scan is dry: it only counts what the byte cannot hold.
 func (g *generator) scanCandidates(idx int) (int, int) {
 	t := g.t
-	if t.Values[idx] != 0 || g.invalid.get(idx) {
+	if t.Value(idx) != Draw || g.invalid.get(idx) {
 		return 0, 0 // decided already, or an illegal parent reached by an un-move
 	}
 	level := g.level
-	dry := level > MaxPlies
+	dry := level > MaxPliesWide
 	var sq [6]chess.Pos
 	var buf chess.MoveBuffer
 	s := sq[:len(g.pieces)]
@@ -639,7 +655,7 @@ moves:
 		switch {
 		case minLoss == level-1:
 			if !dry {
-				t.Values[idx] = WinIn(level)
+				t.SetValue(idx, WinIn(level))
 			}
 			decided = true
 		case minLoss < level-1:
@@ -651,7 +667,7 @@ moves:
 		switch {
 		case maxWin == level-1:
 			if !dry {
-				t.Values[idx] = LossIn(level)
+				t.SetValue(idx, LossIn(level))
 			}
 			decided = true
 		case maxWin < level-1:
@@ -803,7 +819,7 @@ func (g *generator) child(b *bitboard.Board, sq []chess.Pos, m chess.Move) Value
 			break
 		}
 	}
-	return g.t.Values[g.t.Index(!b.WhiteMove, s[:n])]
+	return g.t.Value(g.t.Index(!b.WhiteMove, s[:n]))
 }
 
 // evalEnPassant values a position with an en passant right from its children:
@@ -889,11 +905,11 @@ func (s *Set) Verify(t *Table, workers int, report func(string)) int {
 					want = LossIn(maxWin + 1)
 				}
 			}
-			if t.Values[idx] != want {
+			if t.Value(idx) != want {
 				bad++
 				if reported.Add(1) <= 5 && report != nil {
 					b := t.Board(idx)
-					report(fmt.Sprintf("  %s: index %d %s stored %s, children say %s", t.Mat.Name(), idx, b.FEN(), t.Values[idx], want))
+					report(fmt.Sprintf("  %s: index %d %s stored %s, children say %s", t.Mat.Name(), idx, b.FEN(), t.Value(idx), want))
 				}
 			}
 		}

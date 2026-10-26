@@ -366,7 +366,7 @@ func (e *Engine) attachWdl() {
 // (docs/m5-endgame-tables.md, "Schneller schreiben").
 func writeDtm(set *egtb.Set, t *egtb.Table, workers int, progress func(string)) {
 	path := set.DtmFile(t.Mat)
-	if !fileMissing(path) || t.Values == nil || !t.Exact() {
+	if !fileMissing(path) || !t.Generated() || !t.Exact() {
 		return
 	}
 	start := time.Now()
@@ -427,7 +427,7 @@ func ticking(label string, progress func(string), build func(sink func(string)))
 // read it (the DTM file is written regardless, it is read after either).
 func writeWdl(set *egtb.Set, t *egtb.Table, tb *syzygy.Tables, workers int, progress func(string)) {
 	path := set.WdlFile(t.Mat)
-	if !fileMissing(path) || t.Values == nil || !t.Exact() {
+	if !fileMissing(path) || !t.Generated() || !t.Exact() {
 		return
 	}
 	if tb != nil && tb.HasOriginal(t.Mat) {
@@ -461,12 +461,12 @@ func (e *Engine) saveTables() {
 		}
 		e.flush()
 	}
-	if e.set.Base()[0].Values != nil {
+	if e.set.Base()[0].Generated() {
 		base := e.set.BasePath()
 		write(base, func() error { return e.set.Save(base) })
 	}
 	for _, t := range e.set.Tables[len(e.set.Base()):] {
-		if t.Values != nil {
+		if t.Generated() {
 			path := e.set.TablePath(t)
 			write(path, func() error { return e.set.SaveTable(t, path) })
 		}
@@ -789,7 +789,7 @@ func (e *Engine) startJobFrom(m egtb.Material, set *egtb.Set) bool {
 			return
 		}
 		for _, gt := range set.Tables[len(set.Base()):] {
-			if gt.Values == nil {
+			if !gt.Generated() {
 				continue
 			}
 			// the quantised .bin is no longer written (2026-10-22): the WDL and
