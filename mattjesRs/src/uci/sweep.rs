@@ -219,10 +219,12 @@ fn run_sweep<W: Write + Send + 'static>(mut set: Set, ctrl: Arc<Control>, plan: 
         let _ = writeln!(o, "info string egtb: ({} / {}) {}", current.load(std::sync::atomic::Ordering::Relaxed), n, compact(line.strip_prefix("egtb: ").unwrap_or(line)));
         let _ = o.flush();
     };
-    // level lines come up to 254 times per table: at most one every few seconds
+    // every finished level gets its line ("level 12: 1,234 positions, ...",
+    // the sweep's log is the record of a table); only the percentage lines
+    // within a long phase are thinned out to one every few seconds
     let mut last_level: Option<Instant> = None;
     let mut progress = |line: &str| {
-        if line.starts_with(' ') {
+        if line.starts_with(' ') && !line.contains(" positions, ") {
             if last_level.is_some_and(|t| t.elapsed() < PROGRESS_INTERVAL) {
                 return;
             }
