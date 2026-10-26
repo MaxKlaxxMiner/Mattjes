@@ -217,8 +217,7 @@ func (s *Set) generate(t *Table, workers int, ctrl *Control, progress Progress) 
 	completed := false
 	for level := 1; level <= MaxPlies; level++ {
 		cur := g.cand[level%3]
-		g.pending[level].each(cur.set)
-		g.pending[level].reset()
+		g.takePending(level, cur)
 		g.level = level
 		phase = time.Now()
 		g.tick = func(done, total int) {
@@ -253,8 +252,7 @@ func (s *Set) generate(t *Table, workers int, ctrl *Control, progress Progress) 
 		// are not followed, so the count is a lower bound).
 		level := MaxPlies + 1
 		cur := g.cand[level%3]
-		g.pending[level].each(cur.set)
-		g.pending[level].reset()
+		g.takePending(level, cur)
 		g.level = level
 		beyond, evals := g.parallelBits(workers, cur, g.scanCandidates)
 		st.Evaluations += evals
@@ -302,10 +300,11 @@ type generator struct {
 	invalid bitset
 	// pending[level] lists positions whose decision waits for a level that no
 	// in-table child will trigger: their decisive children lie in smaller
-	// tables (captures, promotions) with a larger distance.
-	pending   [MaxPlies + 2]pendingList
-	pendingMu sync.Mutex
-	beyond    atomic.Int64 // positions waiting for a level beyond MaxPlies+1 (cannot be stored)
+	// tables (captures, promotions) with a larger distance. Split into shards
+	// by index (pendingShardOf): a single lock taken for every entry made 32
+	// workers spend most of the scan in the kernel (futex).
+	pending [pendingShards]pendingShard
+	beyond  atomic.Int64 // positions waiting for a level beyond MaxPlies+1 (cannot be stored)
 }
 
 func newGenerator(s *Set, t *Table) *generator {
@@ -328,18 +327,53 @@ func (g *generator) registerPending(level, idx int) {
 		g.beyond.Add(1) // beyond the value range: counted for the overflow report
 		return
 	}
-	g.pendingMu.Lock()
-	g.pending[level].add(idx)
-	g.pendingMu.Unlock()
+	sh := &g.pending[pendingShardOf(idx)]
+	sh.mu.Lock()
+	sh.lists[level].add(idx)
+	sh.mu.Unlock()
 }
 
 func (g *generator) pendingBeyond(level int) bool {
-	for l := level + 1; l < len(g.pending); l++ {
-		if g.pending[l].count > 0 {
-			return true
+	for i := range g.pending {
+		sh := &g.pending[i]
+		sh.mu.Lock()
+		for l := level + 1; l < len(sh.lists); l++ {
+			if sh.lists[l].count > 0 {
+				sh.mu.Unlock()
+				return true
+			}
 		}
+		sh.mu.Unlock()
 	}
 	return false
+}
+
+// takePending moves the entries of a level from every shard into a candidate set.
+func (g *generator) takePending(level int, cur bitset) {
+	for i := range g.pending {
+		sh := &g.pending[i]
+		sh.mu.Lock()
+		sh.lists[level].each(cur.set)
+		sh.lists[level].reset()
+		sh.mu.Unlock()
+	}
+}
+
+// pendingShards is the number of shards of the pending lists, more than the
+// workers: the workers take chunks of 65,536 consecutive indices, so the
+// chunks handed out at the same time fall into different shards.
+const pendingShards = 64
+
+// pendingShard holds the lists of all levels for one shard; the lists array
+// keeps the locks of neighbouring shards on different cache lines.
+type pendingShard struct {
+	mu    sync.Mutex
+	lists [MaxPlies + 2]pendingList
+}
+
+// pendingShardOf is the shard of an index: its 65,536-index chunk.
+func pendingShardOf(idx int) int {
+	return (idx >> 16) % pendingShards
 }
 
 // pendingList holds the indices registered for one level in 4-byte entries:

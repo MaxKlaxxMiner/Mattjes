@@ -247,11 +247,7 @@ impl Set {
         let mut completed = false;
         for level in 1..=MAX_PLIES {
             let cur = &g.cand[(level % 3) as usize];
-            {
-                let mut pending = g.pending.lock().unwrap();
-                pending[level as usize].each(|idx| cur.set(idx));
-                pending[level as usize].reset();
-            }
+            g.take_pending(level, cur);
             phase = Instant::now();
             let (changed, evals) = parallel_bits(
                 workers,
@@ -290,11 +286,7 @@ impl Set {
             // are not followed, so the count is a lower bound).
             let level = MAX_PLIES + 1;
             let cur = &g.cand[(level % 3) as usize];
-            {
-                let mut pending = g.pending.lock().unwrap();
-                pending[level as usize].each(|idx| cur.set(idx));
-                pending[level as usize].reset();
-            }
+            g.take_pending(level, cur);
             let (beyond, evals) = parallel_bits(workers, cur, g.ctrl, None, &|idx| g.scan_candidate(level, idx));
             st.evaluations += evals;
             st.beyond = beyond + g.beyond.load(Ordering::Relaxed);
@@ -396,8 +388,10 @@ struct Generator<'a> {
     invalid: Bitset,
     /// `pending[level]` lists positions whose decision waits for a level that no
     /// in-table child will trigger: their decisive children lie in smaller tables
-    /// (captures, promotions) with a larger distance.
-    pending: Mutex<Vec<PendingList>>,
+    /// (captures, promotions) with a larger distance. Split into shards by
+    /// index (`pending_shard_of`): a single lock taken for every entry made 32
+    /// workers spend most of the scan in the kernel (futex).
+    pending: Vec<PendingShard>,
     /// Pause/abort from outside (None = never).
     ctrl: Option<&'a Control>,
     /// Positions waiting for a level beyond MAX_PLIES+1 (cannot be stored).
@@ -418,7 +412,7 @@ impl<'a> Generator<'a> {
             en_passant_possible: white_pawns && black_pawns,
             cand: [Bitset::new(n), Bitset::new(n), Bitset::new(n)],
             invalid: Bitset::new(n),
-            pending: Mutex::new((0..MAX_PLIES as usize + 2).map(|_| PendingList::default()).collect()),
+            pending: (0..PENDING_SHARDS).map(|_| PendingShard(Mutex::new((0..MAX_PLIES as usize + 2).map(|_| PendingList::default()).collect()))).collect(),
             ctrl,
             beyond: AtomicUsize::new(0),
         }
@@ -429,12 +423,20 @@ impl<'a> Generator<'a> {
             self.beyond.fetch_add(1, Ordering::Relaxed); // beyond the value range: counted for the overflow report
             return;
         }
-        self.pending.lock().unwrap()[level as usize].add(idx);
+        self.pending[pending_shard_of(idx)].0.lock().unwrap()[level as usize].add(idx);
     }
 
     fn pending_beyond(&self, level: u32) -> bool {
-        let p = self.pending.lock().unwrap();
-        p[level as usize + 1..].iter().any(|v| v.count > 0)
+        self.pending.iter().any(|p| p.0.lock().unwrap()[level as usize + 1..].iter().any(|v| v.count > 0))
+    }
+
+    /// Moves the entries of a level from every shard into a candidate set.
+    fn take_pending(&self, level: u32, cur: &Bitset) {
+        for p in &self.pending {
+            let mut p = p.0.lock().unwrap();
+            p[level as usize].each(|idx| cur.set(idx));
+            p[level as usize].reset();
+        }
     }
 
     /// Marks invalid indices and mates, makes the parents of the mates the
@@ -758,6 +760,21 @@ pub struct PendingList {
 /// Entries per block (256 KB); the unused tail of the last block per segment
 /// and level is the only waste.
 const PENDING_BLOCK: usize = 1 << 16;
+
+/// Shards of the pending lists, more than the workers: the workers take chunks
+/// of 65,536 consecutive indices, so the chunks handed out at the same time
+/// fall into different shards.
+const PENDING_SHARDS: usize = 64;
+
+/// One shard on cache lines of its own, so neighbouring workers do not
+/// contend for the line holding both locks.
+#[repr(align(128))]
+struct PendingShard(Mutex<Vec<PendingList>>);
+
+/// The pending shard of an index: its 65,536-index chunk.
+fn pending_shard_of(idx: usize) -> usize {
+    (idx >> 16) % PENDING_SHARDS
+}
 
 impl PendingList {
     fn add(&mut self, idx: usize) {
