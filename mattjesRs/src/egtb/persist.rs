@@ -201,6 +201,34 @@ fn io_err(msg: String) -> std::io::Error {
 /// are filled first; `step` is the resolution they all share (recorded in the
 /// header).
 fn write_file(path: &Path, tables: &[&Table], raw_checksum: u64, step: u32, block_size: usize, workers: usize) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    // written beside the target and renamed when complete: a reader never
+    // sees a partial file (a sweep may be killed while writing)
+    let tmp = tmp_path(path);
+    let mut w = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(&tmp)?);
+    write_to(&mut w, tables, raw_checksum, step, block_size, workers)?;
+    use std::io::Write;
+    w.flush()?;
+    drop(w);
+    std::fs::rename(&tmp, path)
+}
+
+/// Writes a file that was packed into memory before (`Set::pack_raw_table`),
+/// through its temporary twin like `write_file`: the sweep hands this to a
+/// thread of its own, so the next material is computed meanwhile.
+pub fn write_packed(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = tmp_path(path);
+    std::fs::write(&tmp, data)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// The content of a cache file: header and compressed values.
+fn write_to<W: std::io::Write>(w: &mut W, tables: &[&Table], raw_checksum: u64, step: u32, block_size: usize, workers: usize) -> std::io::Result<()> {
     for t in tables {
         if !t.is_generated() {
             return Err(io_err(format!("egtb: table {} not generated", t.mat.name())));
@@ -225,14 +253,6 @@ fn write_file(path: &Path, tables: &[&Table], raw_checksum: u64, step: u32, bloc
         joined = v;
         &joined
     };
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    // written beside the target and renamed when complete: a reader never
-    // sees a partial file (a sweep may be killed while writing)
-    let tmp = tmp_path(path);
-    let mut w = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(&tmp)?);
-    use std::io::Write;
     w.write_all(MAGIC)?;
     w.write_all(&[step as u8, if wide { 2 } else { 1 }, 0, 0])?;
     w.write_all(&raw_checksum.to_le_bytes())?;
@@ -240,18 +260,16 @@ fn write_file(path: &Path, tables: &[&Table], raw_checksum: u64, step: u32, bloc
         // the two planes, built block by block from the entries
         let v = tables[0].wide_values();
         let n = v.len();
-        lz::pack_indexed_with(&mut w, 2 * n, block_size, workers, &|off, dst| {
+        lz::pack_indexed_with(w, 2 * n, block_size, workers, &|off, dst| {
             for (j, b) in dst.iter_mut().enumerate() {
                 let pos = off + j;
                 *b = if pos < n { Value(v[pos]).to_planes().0 } else { Value(v[pos - n]).to_planes().1 };
             }
         })?;
     } else {
-        lz::pack_indexed_to(&mut w, raw, block_size, workers)?;
+        lz::pack_indexed_to(w, raw, block_size, workers)?;
     }
-    w.flush()?;
-    drop(w);
-    std::fs::rename(&tmp, path)
+    Ok(())
 }
 
 /// The temporary twin a file is written to before it is renamed into place
@@ -505,6 +523,18 @@ impl Set {
     /// exact.
     pub fn save_raw_table(&self, ti: usize, path: &Path) -> std::io::Result<()> {
         self.save_raw_table_with(ti, path, IO_WORKERS)
+    }
+
+    /// The exact file of a table (`save_raw_table`) packed into memory on
+    /// `workers` threads, for `write_packed`: only the compressed bytes.
+    pub fn pack_raw_table(&self, ti: usize, workers: usize) -> std::io::Result<Vec<u8>> {
+        let t = &self.tables[ti];
+        if !t.is_exact() {
+            return Err(io_err(format!("egtb: table {} is quantised (step {}), no exact file", t.mat.name(), t.step())));
+        }
+        let mut v = Vec::new();
+        write_to(&mut v, &[t], t.raw_checksum(), 1, BLOCK_BYTES, workers)?;
+        Ok(v)
     }
 
     /// `save_raw_table` packed on `workers` threads.

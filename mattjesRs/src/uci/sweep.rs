@@ -62,12 +62,13 @@ const KEEP_DIVISOR: u64 = 3;
 
 /// Releases every table beyond the base after a material, except the ones
 /// a later material looks up, as far as they fit `budget` bytes (the ones
-/// needed soonest first). Returns (tables kept, their bytes).
-fn release_tables(set: &mut Set, rest: &[Material], budget: u64) -> (usize, u64) {
+/// needed soonest first), and the ones whose file is still being written.
+/// Returns (tables kept, their bytes).
+fn release_tables(set: &mut Set, rest: &[Material], budget: u64, writer: &RawWriter) -> (usize, u64) {
     let mut keep = Vec::new();
     for gi in set.base().len()..set.tables.len() {
         let t = &set.tables[gi];
-        if !t.is_available() {
+        if !t.is_available() || writer.is_writing(set, gi) {
             continue;
         }
         match first_use(&t.mat, rest) {
@@ -89,19 +90,74 @@ fn release_tables(set: &mut Set, rest: &[Material], budget: u64) -> (usize, u64)
     (n, sum)
 }
 
-/// Writes the exact file of a table when it is missing, packed on
-/// `workers` threads (the sweep has nothing else to do meanwhile).
-fn save_raw(set: &Set, ti: usize, workers: usize, say: &dyn Fn(&str)) {
+/// Writes the packed exact files on a thread of its own, so that the next
+/// material is computed while the last one goes to the (slow) storage box.
+/// Packing stays with the sweep (all workers, seconds); the queue holds one
+/// file besides the one being written, so a slow disk throttles the sweep
+/// instead of filling the memory. A table stays in memory while its file is
+/// on the way (`writing`), a later material may need it. Dropping the
+/// writer waits for the queue.
+struct RawWriter {
+    queue: Option<mpsc::SyncSender<(std::path::PathBuf, Vec<u8>, String)>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    writing: Arc<Mutex<std::collections::HashSet<std::path::PathBuf>>>,
+}
+
+impl RawWriter {
+    /// `say(prefix, line)` reports a written file under the plan number of
+    /// its material (prefix "(3 / 475)").
+    fn new<W: Write + Send + 'static>(out: Arc<Mutex<W>>) -> RawWriter {
+        let (tx, rx) = mpsc::sync_channel::<(std::path::PathBuf, Vec<u8>, String)>(1);
+        let writing: Arc<Mutex<std::collections::HashSet<std::path::PathBuf>>> = Arc::default();
+        let w = writing.clone();
+        let thread = std::thread::spawn(move || {
+            for (path, data, prefix) in rx {
+                let at = Instant::now();
+                let line = match egtb::write_packed(&path, &data) {
+                    Ok(()) => format!("written exact to {} ({} MB, {:.1} s)", path.display(), data.len() >> 20, at.elapsed().as_secs_f64()),
+                    Err(e) => format!("{}: {}", path.display(), e),
+                };
+                drop(data);
+                w.lock().unwrap().remove(&path);
+                let mut o = out.lock().unwrap();
+                let _ = writeln!(o, "info string egtb: {} {}", prefix, line);
+                let _ = o.flush();
+            }
+        });
+        RawWriter { queue: Some(tx), thread: Some(thread), writing }
+    }
+
+    /// Whether the exact file of a table is still on its way to the disk.
+    fn is_writing(&self, set: &Set, ti: usize) -> bool {
+        self.writing.lock().unwrap().contains(&set.raw_path(&set.tables[ti]))
+    }
+}
+
+impl Drop for RawWriter {
+    fn drop(&mut self) {
+        self.queue = None; // closes the channel: the thread ends after the queue
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// Packs the exact file of a table when it is missing (on `workers`
+/// threads) and hands it to the writer.
+fn save_raw(set: &Set, ti: usize, workers: usize, writer: &RawWriter, prefix: &str, say: &dyn Fn(&str)) {
     let path = set.raw_path(&set.tables[ti]);
-    if path.exists() {
+    if path.exists() || writer.is_writing(set, ti) {
         return;
     }
     let at = Instant::now();
-    match set.save_raw_table_with(ti, &path, workers) {
-        Ok(()) => {
-            let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    match set.pack_raw_table(ti, workers) {
+        Ok(data) => {
             let t = &set.tables[ti];
-            say(&format!("written exact to {} ({} MB{}, {:.1} s)", path.display(), bytes >> 20, if t.is_wide() { ", two bytes per entry" } else { "" }, at.elapsed().as_secs_f64()))
+            say(&format!("packed exact {} ({} MB{}, {:.1} s), written in the background", t.mat.name(), data.len() >> 20, if t.is_wide() { ", two bytes per entry" } else { "" }, at.elapsed().as_secs_f64()));
+            writer.writing.lock().unwrap().insert(path.clone());
+            if let Some(q) = &writer.queue {
+                let _ = q.send((path, data, prefix.to_string()));
+            }
         }
         Err(e) => say(&e.to_string()),
     }
@@ -233,6 +289,7 @@ fn run_sweep<W: Write + Send + 'static>(mut set: Set, ctrl: Arc<Control>, plan: 
         say(line);
     };
     let start = Instant::now();
+    let writer = RawWriter::new(out.clone());
     for (i, m) in plan.iter().enumerate() {
         if !ctrl.wait() {
             return; // aborted between two materials
@@ -253,6 +310,7 @@ fn run_sweep<W: Write + Send + 'static>(mut set: Set, ctrl: Arc<Control>, plan: 
         // every computed table gets its log line and its files; a dependency
         // the generator had to compute (its exact file was gone) keeps an
         // exact file only when a later material of the plan needs it
+        let prefix = format!("({} / {})", i + 1, n);
         let mut done = |set: &mut Set, gi: usize, st: &egtb::Stats| {
             if !st.loaded {
                 if let Err(e) = egtb::append_log(&set.cache_dir, &set.log_line(gi, st, workers, "uci")) {
@@ -260,13 +318,13 @@ fn run_sweep<W: Write + Send + 'static>(mut set: Set, ctrl: Arc<Control>, plan: 
                 }
             }
             if raw_only {
-                save_raw(set, gi, workers, &say);
+                save_raw(set, gi, workers, &writer, &prefix, &say);
                 return;
             }
             write_wdl_file(set, gi, syz.as_deref(), workers, &say);
             write_dtm_file(set, gi, workers, &say);
             if gi != ti && needed_later(&set.tables[gi].mat, rest) {
-                save_raw(set, gi, workers, &say);
+                save_raw(set, gi, workers, &writer, &prefix, &say);
             }
         };
         let mut loaded = false;
@@ -289,13 +347,13 @@ fn run_sweep<W: Write + Send + 'static>(mut set: Set, ctrl: Arc<Control>, plan: 
             }
         }
         if !raw_only && needed_later(m, rest) {
-            save_raw(&set, ti, workers, &say);
+            save_raw(&set, ti, workers, &writer, &prefix, &say);
         }
         // the files are the product; what a later material looks up stays
         // in memory as far as the budget goes, the rest is loaded again
         // from its exact file
         let budget = egtb::available_memory().map_or(0, |(total, _)| total / KEEP_DIVISOR);
-        let (kept, bytes) = release_tables(&mut set, rest, budget);
+        let (kept, bytes) = release_tables(&mut set, rest, budget, &writer);
         if kept > 0 {
             say(&format!("kept {} exact tables for later materials in memory ({})", kept, egtb::format_bytes(bytes)));
         }
@@ -304,5 +362,6 @@ fn run_sweep<W: Write + Send + 'static>(mut set: Set, ctrl: Arc<Control>, plan: 
         }
         say(&format!("{} done, {:?} since the start", m.name(), Duration::from_secs(start.elapsed().as_secs())));
     }
+    drop(writer); // the last files reach the disk before the sweep reports its end
     let _ = tx.send(Event::Done(set));
 }
