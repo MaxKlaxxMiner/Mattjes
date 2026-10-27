@@ -280,6 +280,9 @@ impl Material {
         Material { white: w, black: b }
     }
 
+    /// The two-bit signature; four of a kind do not fit it and get the
+    /// sentinel (SIGNATURE_SPACE-1) like their boards, the set finds them by
+    /// `wide_signature`.
     pub fn signature(&self) -> Signature {
         let mut s = 0u32;
         for &p in &self.white {
@@ -287,6 +290,22 @@ impl Material {
         }
         for &p in &self.black {
             s += 1 << (10 + type_bit(p));
+        }
+        if self.wide_signature() != wide_of(s) {
+            return SIGNATURE_SPACE as u32 - 1;
+        }
+        s
+    }
+
+    /// Three bits per type and colour, white in the low fifteen bits: room
+    /// for four of a kind (KBBBBK), which only a few materials reach.
+    pub fn wide_signature(&self) -> u32 {
+        let mut s = 0u32;
+        for &p in &self.white {
+            s += 1 << wide_bit(p);
+        }
+        for &p in &self.black {
+            s += 1 << (15 + wide_bit(p));
         }
         s
     }
@@ -303,6 +322,31 @@ fn type_bit(p: Piece) -> u32 {
     2 * (piece_order(p) - 1) as u32 // pawn 0, knight 2, bishop 4, rook 6, queen 8
 }
 
+fn wide_bit(p: Piece) -> u32 {
+    3 * (piece_order(p) - 1) as u32 // pawn 0, knight 3, bishop 6, rook 9, queen 12
+}
+
+/// The wide signature of a two-bit one (counts up to three).
+fn wide_of(sig: Signature) -> u32 {
+    let mut s = 0u32;
+    for p in [Piece::PAWN, Piece::KNIGHT, Piece::BISHOP, Piece::ROOK, Piece::QUEEN] {
+        s += ((sig >> type_bit(p)) & 3) << wide_bit(p);
+        s += ((sig >> (10 + type_bit(p))) & 3) << (15 + wide_bit(p));
+    }
+    s
+}
+
+/// The wide signature of the board and the one with swapped colors (see
+/// `Material::wide_signature`).
+pub fn board_wide_signature(b: &Board) -> (u32, u32) {
+    let (mut w, mut bl) = (0u32, 0u32);
+    for p in [Piece::PAWN, Piece::KNIGHT, Piece::BISHOP, Piece::ROOK, Piece::QUEEN] {
+        w += b.piece_bb(Piece::WHITE | p).count_ones() << wide_bit(p);
+        bl += b.piece_bb(Piece::BLACK | p).count_ones() << wide_bit(p);
+    }
+    (w | bl << 15, bl | w << 15)
+}
+
 /// The signature of the board and the one with swapped colors. The kings are
 /// not counted.
 pub fn board_signature(b: &Board) -> (Signature, Signature) {
@@ -311,7 +355,8 @@ pub fn board_signature(b: &Board) -> (Signature, Signature) {
         let (cw, cb) = (b.piece_bb(Piece::WHITE | p).count_ones(), b.piece_bb(Piece::BLACK | p).count_ones());
         if cw > 3 || cb > 3 {
             // four of a kind do not fit the two-bit field and would alias
-            // another material (four pawns look like a knight): no table
+            // another material (four pawns look like a knight): the
+            // sentinel, the set looks them up by the wide signature
             return (SIGNATURE_SPACE as u32 - 1, SIGNATURE_SPACE as u32 - 1);
         }
         w += cw << type_bit(p);

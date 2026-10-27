@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use super::generate::Bitset;
 use super::index::{KkTable, PAWN_OFFSET, PAWN_SQUARES, PIECE_SQUARES, SYMMETRY};
-use super::{board_signature, Material, SIGNATURE_SPACE};
+use super::{board_signature, board_wide_signature, Material, SIGNATURE_SPACE};
 use crate::bitboard::Board;
 use crate::chess::{Piece, Pos};
 
@@ -584,6 +584,9 @@ pub struct Set {
     base_count: usize,
     /// signature -> table index, -1 none
     by_sig: Vec<i16>,
+    /// The materials with four of a kind (two-bit signature = sentinel):
+    /// wide signature -> table index, a handful at most.
+    four: Vec<(u32, i16)>,
     /// Holds the cache files (the base file and one per larger material);
     /// next to the binary unless changed.
     pub cache_dir: std::path::PathBuf,
@@ -647,7 +650,7 @@ impl Set {
 
     /// Allocates the base tables without values; `generate_all` or `load` fills them.
     pub fn new() -> Set {
-        let mut s = Set { tables: Vec::new(), base_count: 0, by_sig: vec![-1; SIGNATURE_SPACE], cache_dir: super::persist::default_cache_dir(), missing: std::sync::Arc::new(Mutex::new(std::collections::HashMap::new())), widen_level: MAX_PLIES + 1 };
+        let mut s = Set { tables: Vec::new(), base_count: 0, by_sig: vec![-1; SIGNATURE_SPACE], four: Vec::new(), cache_dir: super::persist::default_cache_dir(), missing: std::sync::Arc::new(Mutex::new(std::collections::HashMap::new())), widen_level: MAX_PLIES + 1 };
         for m in Material::all() {
             s.add_material(m);
         }
@@ -667,7 +670,12 @@ impl Set {
             return i;
         }
         assert!(m.pieces() <= MAX_PIECES && self.tables.len() < i16::MAX as usize, "egtb: cannot add material {}", m.name());
-        self.by_sig[m.signature() as usize] = self.tables.len() as i16;
+        let sig = m.signature() as usize;
+        if sig == SIGNATURE_SPACE - 1 {
+            self.four.push((m.wide_signature(), self.tables.len() as i16));
+        } else {
+            self.by_sig[sig] = self.tables.len() as i16;
+        }
         self.tables.push(Table::new(m));
         self.tables.len() - 1
     }
@@ -714,7 +722,10 @@ impl Set {
         if !t.is_available() {
             // registered but not generated: no index for nothing (a search
             // asks millions of times), but counted as demand
-            *self.missing.lock().unwrap().entry(t.mat.signature()).or_insert(0) += 1;
+            let sig = t.mat.signature();
+            if sig as usize != SIGNATURE_SPACE - 1 {
+                *self.missing.lock().unwrap().entry(sig).or_insert(0) += 1;
+            }
             return None;
         }
         let idx = t.index_of(b, flip);
@@ -833,6 +844,16 @@ impl Set {
             return None;
         }
         let (sig, flipped) = board_signature(b);
+        if sig as usize == SIGNATURE_SPACE - 1 {
+            // four of a kind: the short list by wide signature
+            let (w, wf) = board_wide_signature(b);
+            let find = |ws: u32| self.four.iter().find(|&&(s, _)| s == ws).map(|&(_, ti)| ti as usize);
+            return match (find(w), find(wf)) {
+                (Some(ti), _) => Some((&self.tables[ti], false)),
+                (None, Some(ti)) => Some((&self.tables[ti], true)),
+                _ => None,
+            };
+        }
         let mut flip = false;
         let mut ti = self.by_sig[sig as usize];
         if ti < 0 {
@@ -842,11 +863,8 @@ impl Set {
         if ti < 0 {
             // a material without a table: counted, so that the demand of a
             // search can drive which table is generated next
-            // (`missing_tables`); four of a kind (the sentinel signature)
-            // never has a table
-            if sig as usize != SIGNATURE_SPACE - 1 {
-                *self.missing.lock().unwrap().entry(sig.min(flipped)).or_insert(0) += 1;
-            }
+            // (`missing_tables`)
+            *self.missing.lock().unwrap().entry(sig.min(flipped)).or_insert(0) += 1;
             return None;
         }
         Some((&self.tables[ti as usize], flip))
