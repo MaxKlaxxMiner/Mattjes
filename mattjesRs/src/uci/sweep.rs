@@ -90,6 +90,10 @@ fn release_tables(set: &mut Set, rest: &[Material], budget: u64, writer: &RawWri
     (n, sum)
 }
 
+/// How often the writer tries a file, and the pause between two attempts.
+const WRITE_ATTEMPTS: u32 = 10;
+const WRITE_RETRY: Duration = Duration::from_secs(30);
+
 /// Writes the packed exact files on a thread of its own, so that the next
 /// material is computed while the last one goes to the (slow) storage box.
 /// Packing stays with the sweep (all workers, seconds); the queue holds one
@@ -111,17 +115,33 @@ impl RawWriter {
         let writing: Arc<Mutex<std::collections::HashSet<std::path::PathBuf>>> = Arc::default();
         let w = writing.clone();
         let thread = std::thread::spawn(move || {
-            for (path, data, prefix) in rx {
-                let at = Instant::now();
-                let line = match egtb::write_packed(&path, &data) {
-                    Ok(()) => format!("written exact to {} ({} MB, {:.1} s)", path.display(), data.len() >> 20, at.elapsed().as_secs_f64()),
-                    Err(e) => format!("{}: {}", path.display(), e),
-                };
-                drop(data);
-                w.lock().unwrap().remove(&path);
+            let say = |prefix: &str, line: &str| {
                 let mut o = out.lock().unwrap();
                 let _ = writeln!(o, "info string egtb: {} {}", prefix, line);
                 let _ = o.flush();
+            };
+            for (path, data, prefix) in rx {
+                // the storage box drops its connection now and then (and
+                // refuses the reconnect for a minute): the file is tried
+                // again instead of being lost
+                let mut line = String::new();
+                for attempt in 1..=WRITE_ATTEMPTS {
+                    let at = Instant::now();
+                    match egtb::write_packed(&path, &data) {
+                        Ok(()) => {
+                            line = format!("written exact to {} ({} MB, {:.1} s)", path.display(), data.len() >> 20, at.elapsed().as_secs_f64());
+                            break;
+                        }
+                        Err(e) if attempt < WRITE_ATTEMPTS => {
+                            say(&prefix, &format!("{}: {}, attempt {} of {}, again in {} s", path.display(), e, attempt, WRITE_ATTEMPTS, WRITE_RETRY.as_secs()));
+                            std::thread::sleep(WRITE_RETRY);
+                        }
+                        Err(e) => line = format!("{}: {}, given up after {} attempts", path.display(), e, WRITE_ATTEMPTS),
+                    }
+                }
+                drop(data);
+                w.lock().unwrap().remove(&path);
+                say(&prefix, &line);
             }
         });
         RawWriter { queue: Some(tx), thread: Some(thread), writing }
