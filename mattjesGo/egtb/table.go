@@ -298,6 +298,9 @@ type Set struct {
 	Tables    []*Table
 	baseCount int     // the first baseCount tables are the four-piece base
 	bySig     []int16 // signature -> table index, -1 none
+	// four holds the materials with four of a kind (two-bit signature =
+	// sentinel): wide signature -> table index, a handful at most.
+	four []sigTable
 	// CacheDir holds the cache files (BaseFileName and one file per larger
 	// material); next to the binary unless changed.
 	CacheDir string
@@ -374,7 +377,11 @@ func (s *Set) AddMaterial(m Material) *Table {
 		panic("egtb: cannot add material " + m.Name())
 	}
 	t := newTable(m)
-	s.bySig[m.signature()] = int16(len(s.Tables))
+	if sig := m.signature(); sig == signatureSpace-1 {
+		s.four = append(s.four, sigTable{m.wideSignature(), int16(len(s.Tables))})
+	} else {
+		s.bySig[sig] = int16(len(s.Tables))
+	}
 	s.Tables = append(s.Tables, t)
 	return t
 }
@@ -481,7 +488,9 @@ func (s *Set) lookup(b *bitboard.Board) (t *Table, v Value, ok bool) {
 		return nil, Draw, false
 	}
 	if !t.available() { // registered but not generated: no index for nothing (a search asks millions of times), but counted as demand
-		s.countMissing(t.Mat.signature())
+		if sig := t.Mat.signature(); sig != signatureSpace-1 {
+			s.countMissing(sig)
+		}
 		return nil, Draw, false
 	}
 	idx := t.indexOf(b, flip)
@@ -596,6 +605,12 @@ func (s *Set) Locate(b *bitboard.Board) (t *Table, idx int, ok bool) {
 	return t, t.indexOf(b, flip), true
 }
 
+// sigTable maps a wide signature to a table index (Set.four).
+type sigTable struct {
+	sig uint32
+	ti  int16
+}
+
 // findTable finds the table of a position's material (registered, generated
 // or not) and whether the colors have to be swapped for it.
 func (s *Set) findTable(b *bitboard.Board) (t *Table, flip bool, ok bool) {
@@ -607,6 +622,21 @@ func (s *Set) findTable(b *bitboard.Board) (t *Table, flip bool, ok bool) {
 		return nil, false, false
 	}
 	sig, flipped := boardSignature(b)
+	if sig == signatureSpace-1 {
+		// four of a kind: the short list by wide signature
+		w, wf := boardWideSignature(b)
+		for _, f := range s.four {
+			if f.sig == w {
+				return s.Tables[f.ti], false, true
+			}
+		}
+		for _, f := range s.four {
+			if f.sig == wf {
+				return s.Tables[f.ti], true, true
+			}
+		}
+		return nil, false, false
+	}
 	ti := s.bySig[sig]
 	if ti < 0 {
 		ti = s.bySig[flipped]
@@ -614,11 +644,8 @@ func (s *Set) findTable(b *bitboard.Board) (t *Table, flip bool, ok bool) {
 	}
 	if ti < 0 {
 		// a material without a table: counted, so that the demand of a
-		// search can drive which table is generated next (MissingTables);
-		// four of a kind (the sentinel signature) never has a table
-		if sig != signatureSpace-1 {
-			s.countMissing(min(sig, flipped))
-		}
+		// search can drive which table is generated next (MissingTables)
+		s.countMissing(min(sig, flipped))
 		return nil, false, false
 	}
 	return s.Tables[ti], flip, true

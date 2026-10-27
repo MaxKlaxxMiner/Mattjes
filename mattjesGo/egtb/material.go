@@ -238,6 +238,13 @@ func typeBit(p chess.Piece) uint {
 	return 2 * uint(pieceOrder(p)-1) // pawn 0, knight 2, bishop 4, rook 6, queen 8
 }
 
+func wideBit(p chess.Piece) uint {
+	return 3 * uint(pieceOrder(p)-1) // pawn 0, knight 3, bishop 6, rook 9, queen 12
+}
+
+// signature is the two-bit signature; four of a kind do not fit it and get
+// the sentinel (signatureSpace-1) like their boards, the set finds them by
+// wideSignature.
 func (m Material) signature() Signature {
 	var s Signature
 	for _, p := range m.White {
@@ -246,7 +253,44 @@ func (m Material) signature() Signature {
 	for _, p := range m.Black {
 		s += 1 << (10 + typeBit(p))
 	}
+	if m.wideSignature() != wideOf(s) {
+		return signatureSpace - 1
+	}
 	return s
+}
+
+// wideSignature has three bits per type and colour, white in the low fifteen
+// bits: room for four of a kind (KBBBBK), which only a few materials reach.
+func (m Material) wideSignature() uint32 {
+	var s uint32
+	for _, p := range m.White {
+		s += 1 << wideBit(p)
+	}
+	for _, p := range m.Black {
+		s += 1 << (15 + wideBit(p))
+	}
+	return s
+}
+
+// wideOf is the wide signature of a two-bit one (counts up to three).
+func wideOf(sig Signature) uint32 {
+	var s uint32
+	for _, p := range []chess.Piece{chess.Pawn, chess.Knight, chess.Bishop, chess.Rook, chess.Queen} {
+		s += uint32((sig>>typeBit(p))&3) << wideBit(p)
+		s += uint32((sig>>(10+typeBit(p)))&3) << (15 + wideBit(p))
+	}
+	return s
+}
+
+// boardWideSignature returns the wide signature of the board and the one
+// with swapped colors (see wideSignature).
+func boardWideSignature(b *bitboard.Board) (uint32, uint32) {
+	var w, bl uint32
+	for _, p := range []chess.Piece{chess.Pawn, chess.Knight, chess.Bishop, chess.Rook, chess.Queen} {
+		w += uint32(bits.OnesCount64(b.PieceBB(chess.White|p))) << wideBit(p)
+		bl += uint32(bits.OnesCount64(b.PieceBB(chess.Black|p))) << wideBit(p)
+	}
+	return w | bl<<15, bl | w<<15
 }
 
 // boardSignature returns the signature of the board and the one with swapped
@@ -257,7 +301,8 @@ func boardSignature(b *bitboard.Board) (Signature, Signature) {
 		cw, cb := bits.OnesCount64(b.PieceBB(chess.White|p)), bits.OnesCount64(b.PieceBB(chess.Black|p))
 		if cw > 3 || cb > 3 {
 			// four of a kind do not fit the two-bit field and would alias
-			// another material (four pawns look like a knight): no table
+			// another material (four pawns look like a knight): the
+			// sentinel, the set looks them up by the wide signature
 			return signatureSpace - 1, signatureSpace - 1
 		}
 		w += Signature(cw) << typeBit(p)
