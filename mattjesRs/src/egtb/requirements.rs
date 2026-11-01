@@ -155,21 +155,34 @@ pub fn append_log(cache_dir: &Path, line: &str) -> std::io::Result<()> {
     writeln!(f, "{}", line)
 }
 
+/// The memory an unmeasured generation takes per entry of its own table, in
+/// eighths of a byte: the values (8), four bitsets (4), the pending lists
+/// (16: KBBNKP took about 3.3 bytes per entry beside its dependencies on
+/// 2026-10-27, the old 1/4 from KRRKBN was 65 GiB short) and the widening
+/// reserve (16: a level beyond 254 plies copies the table to two bytes per
+/// entry while the old one still lives; a fifth of the six-piece pawn
+/// tables do it, and nobody knows which before).
+const EIGHTHS_PER_ENTRY: usize = 8 + 4 + 16 + 16;
+
 impl Set {
     /// The memory a generation of the table needs: the measured peak when
-    /// recorded, otherwise an estimate from the table size (table, four
-    /// bitsets of 1/8, pending lists of about 1/4 as seen on KRRKBN) plus the
-    /// direct dependencies that are not loaded yet. The bool says "measured".
+    /// recorded, otherwise an estimate from the table size
+    /// (`EIGHTHS_PER_ENTRY`) plus the direct dependencies that are not in
+    /// memory yet, a wide one (its exact file has two bytes per entry)
+    /// counted twice. The bool says "measured".
     pub fn estimate_bytes(&self, ti: usize) -> (usize, bool) {
         let t = &self.tables[ti];
         if let Some(r) = requirement(&t.mat.name()) {
             return (r.peak_mb << 20, true);
         }
-        let mut n = t.size + t.size / 2 + t.size / 4;
+        let mut n = t.size / 8 * EIGHTHS_PER_ENTRY;
         for d in t.mat.dependencies() {
             match self.find(&d.name()) {
                 Some(i) if self.tables[i].is_generated() => {}
-                _ => n += Table::new(d).size,
+                _ => {
+                    let dt = Table::new(d);
+                    n += if self.raw_is_wide(&dt) { 2 * dt.size } else { dt.size };
+                }
             }
         }
         (n, false)

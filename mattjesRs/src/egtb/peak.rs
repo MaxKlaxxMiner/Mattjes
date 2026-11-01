@@ -81,6 +81,19 @@ pub fn peak_memory() -> Option<(u64, u64)> {
     Some((proc_value("/proc/self/status", "VmPeak:")?, proc_value("/proc/self/status", "VmHWM:")?))
 }
 
+/// Starts the peak resident set (VmHWM) anew from the current one, so that
+/// the next measurement line holds the peak of one material instead of the
+/// whole process (the sweep runs for days). VmPeak cannot be reset.
+#[cfg(not(windows))]
+pub fn reset_peak() {
+    let _ = std::fs::write("/proc/self/clear_refs", "5");
+}
+
+/// Windows has no reset for the peak working set: the lines keep the peak
+/// of the process.
+#[cfg(windows)]
+pub fn reset_peak() {}
+
 /// The number of processor cores of the machine, SMT siblings counted once
 /// (a generation beside the search takes cores - 1 workers, so the search
 /// keeps a core of its own): the distinct (package, core) pairs of the sysfs

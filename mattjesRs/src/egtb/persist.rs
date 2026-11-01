@@ -549,6 +549,15 @@ impl Set {
         write_file(path, &[t], t.raw_checksum(), 1, BLOCK_BYTES, workers)
     }
 
+    /// Whether the exact file of a table holds two bytes per entry (header
+    /// byte 5), so that loading it takes twice its size; false without a
+    /// file. Reads the header only.
+    pub fn raw_is_wide(&self, t: &Table) -> bool {
+        let Ok(f) = std::fs::File::open(self.raw_path(t)) else { return false };
+        let mut header = [0u8; HEADER_BYTES];
+        lz::read_exact_at(&f, &mut header, 0).is_ok() && &header[..4] == MAGIC && header[5] == 2
+    }
+
     /// Reads an exact table (`raw_path`) completely into memory, as a
     /// generation needs its dependencies. Checks the step, the size and, when
     /// recorded, the checksum.

@@ -90,6 +90,49 @@ fn release_tables(set: &mut Set, rest: &[Material], budget: u64, writer: &RawWri
     (n, sum)
 }
 
+/// The share of the machine's memory a generation leaves free beside the
+/// tables and its estimate (1/RESERVE_DIVISOR): the system, the writer's
+/// queue (up to two packed files) and the packing at the end.
+const RESERVE_DIVISOR: u64 = 16;
+
+/// The bytes of every table in memory as an array (the base included).
+fn bytes_in_memory(set: &Set) -> u64 {
+    set.tables.iter().filter(|t| t.is_generated()).map(|t| t.bytes().len() as u64).sum()
+}
+
+/// Before the generation of table ti: while the tables in memory and the
+/// estimate `need` exceed `limit`, releases the kept tables the material
+/// does not look up, the ones needed latest first (a table whose file is
+/// still on its way to the disk is waited for). On 2026-10-29 KBBPKP met
+/// 190.9 GiB of kept tables with 400 GiB of its own and the OOM killer
+/// ended the sweep. Returns (tables released, their bytes, the bytes still
+/// in memory).
+fn make_room(set: &mut Set, ti: usize, rest: &[Material], need: u64, limit: u64, writer: &RawWriter) -> (usize, u64, u64) {
+    let mut held = bytes_in_memory(set);
+    if held + need <= limit {
+        return (0, 0, held);
+    }
+    let deps: std::collections::HashSet<String> = set.tables[ti].mat.dependencies().iter().map(|d| d.name()).collect();
+    let mut spare: Vec<(usize, usize)> = (set.base().len()..set.tables.len())
+        .filter(|&gi| gi != ti && set.tables[gi].is_generated() && !deps.contains(&set.tables[gi].mat.name()))
+        .map(|gi| (first_use(&set.tables[gi].mat, rest).unwrap_or(usize::MAX), gi))
+        .collect();
+    spare.sort_by(|a, b| b.cmp(a));
+    let (mut n, mut freed) = (0, 0u64);
+    for (_, gi) in spare {
+        if held + need <= limit {
+            break;
+        }
+        writer.wait_for(set, gi);
+        let bytes = set.tables[gi].bytes().len() as u64;
+        set.release(gi);
+        held -= bytes;
+        freed += bytes;
+        n += 1;
+    }
+    (n, freed, held)
+}
+
 /// How often the writer tries a file, and the pause between two attempts.
 const WRITE_ATTEMPTS: u32 = 10;
 const WRITE_RETRY: Duration = Duration::from_secs(30);
@@ -150,6 +193,14 @@ impl RawWriter {
     /// Whether the exact file of a table is still on its way to the disk.
     fn is_writing(&self, set: &Set, ti: usize) -> bool {
         self.writing.lock().unwrap().contains(&set.raw_path(&set.tables[ti]))
+    }
+
+    /// Waits until the exact file of a table has reached the disk (or the
+    /// writer gave up on it).
+    fn wait_for(&self, set: &Set, ti: usize) {
+        while self.is_writing(set, ti) {
+            std::thread::sleep(Duration::from_millis(500));
+        }
     }
 }
 
@@ -310,22 +361,45 @@ fn run_sweep<W: Write + Send + 'static>(mut set: Set, ctrl: Arc<Control>, plan: 
     };
     let start = Instant::now();
     let writer = RawWriter::new(out.clone());
+    // a skipped material is skipped for every later one that looks it up:
+    // the generator would compute it as a dependency instead
+    let mut skipped = std::collections::HashSet::new();
     for (i, m) in plan.iter().enumerate() {
         if !ctrl.wait() {
             return; // aborted between two materials
         }
         current.store(i + 1, std::sync::atomic::Ordering::Relaxed);
         let rest = &plan[i + 1..];
+        if let Some(d) = m.dependencies().iter().find(|d| skipped.contains(&d.name())) {
+            say(&format!("{} looks up {}, which was skipped: skipped", m.name(), d.name()));
+            skipped.insert(m.name());
+            continue;
+        }
         let ti = set.add_material(m.clone());
         let size = set.tables[ti].size;
         let (need, measured) = set.estimate_bytes(ti);
         let how = if measured { "measured" } else { "estimated" };
         if let Some((total, _)) = egtb::available_memory() {
-            if need as u64 > total {
-                say(&format!("{} needs about {} ({}), the machine has {}: skipped", m.name(), egtb::format_bytes(need as u64), how, egtb::format_bytes(total)));
+            let limit = total - total / RESERVE_DIVISOR;
+            let (released, freed, held) = make_room(&mut set, ti, rest, need as u64, limit, &writer);
+            if released > 0 {
+                say(&format!("released {} kept tables ({}) to make room for {}", released, egtb::format_bytes(freed), m.name()));
+            }
+            if held + need as u64 > limit {
+                say(&format!(
+                    "{} needs about {} ({}) beside {} of tables it looks up, more than {} of the machine's {}: skipped",
+                    m.name(),
+                    egtb::format_bytes(need as u64),
+                    how,
+                    egtb::format_bytes(held),
+                    egtb::format_bytes(limit),
+                    egtb::format_bytes(total)
+                ));
+                skipped.insert(m.name());
                 continue;
             }
         }
+        egtb::reset_peak(); // the measurement line of this material holds its own peak
         say(&format!("generating {} ({} MB table, about {} RAM {})", m.name(), size >> 20, egtb::format_bytes(need as u64), how));
         // every computed table gets its log line and its files; a dependency
         // the generator had to compute (its exact file was gone) keeps an
