@@ -409,6 +409,21 @@ impl Index {
         self.block_size.min(self.raw_len - i * self.block_size)
     }
 
+    /// Reads every compressed block into memory as one slice, for
+    /// `decode_block`.
+    pub fn read_packed(&self, f: &std::fs::File) -> std::io::Result<Vec<u8>> {
+        let mut packed = vec![0u8; self.packed_len() as usize];
+        read_exact_at(f, &mut packed, self.data_start)?;
+        Ok(packed)
+    }
+
+    /// Decodes block i from the compressed blocks in memory (`read_packed`)
+    /// into dst (at least block_len(i) bytes).
+    pub fn decode_block(&self, packed: &[u8], i: usize, dst: &mut [u8]) -> Result<(), String> {
+        let src = &packed[self.offsets[i] as usize..self.offsets[i + 1] as usize];
+        decompress_block(&mut dst[..self.block_len(i)], src)
+    }
+
     /// Reads block i from the file and decodes it into dst (at least
     /// block_len(i) bytes) using scratch (at least max_packed bytes).
     pub fn read_block(&self, f: &std::fs::File, i: usize, scratch: &mut [u8], dst: &mut [u8]) -> std::io::Result<()> {

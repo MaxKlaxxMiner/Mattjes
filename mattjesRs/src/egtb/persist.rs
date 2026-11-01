@@ -549,6 +549,34 @@ impl Set {
         write_file(path, &[t], t.raw_checksum(), 1, BLOCK_BYTES, workers)
     }
 
+    /// Loads an exact table (`raw_path`) compressed into memory
+    /// (`MemStore`): the generator looks its values up block by block. Checks
+    /// the step, the size and, when recorded and `check` is set (as in
+    /// `load_raw_table_checked`), the checksum from the header.
+    pub fn load_raw_packed(&mut self, ti: usize, path: &Path, check: bool) -> std::io::Result<()> {
+        let t = &mut self.tables[ti];
+        t.clear();
+        let (f, ix, step, sum, wide) = open_file(path, t.size)?;
+        if step != 1 {
+            return Err(io_err(format!("egtb: {} is quantised (step {}), expected an exact table", path.display(), step)));
+        }
+        if let Some(want) = recorded_checksum(&t.mat.name()).filter(|_| check) {
+            if sum != want {
+                return Err(io_err(format!("egtb: {} has checksum {:016x}, expected {:016x}", path.display(), sum, want)));
+            }
+        }
+        t.set_mem(super::blockstore::MemStore::new(&f, ix, if wide { t.size } else { 0 })?);
+        t.raw_checksum.store(sum, std::sync::atomic::Ordering::Relaxed);
+        t.set_filled(true);
+        Ok(())
+    }
+
+    /// The bytes the exact file of a table takes (what `load_raw_packed`
+    /// holds in memory, a few KB of header and index more); 0 without a file.
+    pub fn raw_file_bytes(&self, t: &Table) -> usize {
+        std::fs::metadata(self.raw_path(t)).map_or(0, |m| m.len() as usize)
+    }
+
     /// Whether the exact file of a table holds two bytes per entry (header
     /// byte 5), so that loading it takes twice its size; false without a
     /// file. Reads the header only.

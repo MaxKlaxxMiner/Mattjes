@@ -471,3 +471,63 @@ pub fn egtb_widen(name: &str, level: u32, workers: usize, dir: &str) {
     }
     println!("packed: {} differences", compare("packed", &a.tables[ai], &d.tables[di]));
 }
+
+/// Stage 2 of the sweep's memory plan (2026-11-01): per material, its exact
+/// file loaded as an array against the same file held packed in memory
+/// (`MemStore`, every value compared), then the material generated with its
+/// dependencies as arrays and packed (`pack_deps`), checksums and times
+/// side by side. Reads the exact files of `dir`, writes nothing.
+pub fn egtb_packed(names: &[&str], workers: usize, dir: &str) {
+    let mut quiet = |_: &str| {};
+    let load = |quiet: &mut dyn FnMut(&str)| -> Set {
+        let mut s = Set::load_or_generate(&std::path::Path::new(dir).join(egtb::BASE_FILE_NAME), workers, false, quiet);
+        s.cache_dir = std::path::PathBuf::from(dir);
+        s
+    };
+    for name in names {
+        let m = match egtb::Material::parse(name) {
+            Ok(m) => m,
+            Err(e) => {
+                println!("{}", e);
+                continue;
+            }
+        };
+        let (mut a, mut b) = (load(&mut quiet), load(&mut quiet));
+        let (ai, bi) = (a.add_material(m.clone()), b.add_material(m.clone()));
+        let path = a.raw_path(&a.tables[ai]);
+        let start = Instant::now();
+        // without the recorded checksum: a widened file (KPPKP) has another one
+        if let Err(e) = a.load_raw_table_checked(ai, &path, false).and_then(|_| b.load_raw_packed(bi, &path, false)) {
+            println!("{}: {}", m.name(), e);
+            continue;
+        }
+        let loaded = start.elapsed().as_secs_f64();
+        let (x, y) = (&a.tables[ai], &b.tables[bi]);
+        let start = Instant::now();
+        let mut bad = 0;
+        for idx in 0..x.size {
+            if x.value(idx) != y.value(idx) {
+                if bad < 5 {
+                    println!("  {}: index {} array {} packed {}", m.name(), idx, x.value(idx), y.value(idx));
+                }
+                bad += 1;
+            }
+        }
+        println!("{} file: {} entries{}, {} differences, loaded in {:.1} s, compared in {:.1} s", m.name(), x.size, if x.is_wide() { " wide" } else { "" }, bad, loaded, start.elapsed().as_secs_f64());
+        a.release(ai);
+        b.release(bi);
+        b.pack_deps = true;
+        let mut sums = Vec::new();
+        for (what, s) in [("arrays", &mut a), ("packed", &mut b)] {
+            let start = Instant::now();
+            let ti = s.add_material(m.clone());
+            let st = s.generate(ti, workers, &mut quiet);
+            let misses: u64 = s.tables.iter().filter_map(|t| t.mem_misses()).sum();
+            let sum = s.tables[ti].raw_checksum();
+            println!("{} generated with dependencies as {}: checksum {:016x}, {} levels, {:.1} s, {} blocks decoded", m.name(), what, sum, st.levels, start.elapsed().as_secs_f64(), misses);
+            sums.push(sum);
+        }
+        let recorded = egtb::recorded_checksum(&m.name()).map_or("none recorded".to_string(), |r| format!("recorded {:016x}", r));
+        println!("{}: {} ({})", m.name(), if sums[0] == sums[1] { "same checksum" } else { "CHECKSUMS DIFFER" }, recorded);
+    }
+}

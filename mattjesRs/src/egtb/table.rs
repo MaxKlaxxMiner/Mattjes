@@ -204,6 +204,9 @@ pub struct Table {
     /// is empty then; the generator never uses such a table. A mutex, because
     /// lookups take a shared reference (uncontended: one search thread).
     packed: Option<Mutex<super::blockstore::BlockStore>>,
+    /// Serves a dependency of the generator that is held compressed in
+    /// memory (`Set.pack_deps`): exact values, lookups from every worker.
+    mem: Option<super::blockstore::MemStore>,
     /// The checksum of the values as generated (dead and illegal entries as 0);
     /// set after generation or read from the cache file header. Checksum
     /// constants in the code refer to this. 0 = not computed yet.
@@ -242,6 +245,7 @@ impl Table {
             values: Vec::new(),
             wide: Vec::new(),
             packed: None,
+            mem: None,
             raw_checksum: std::sync::atomic::AtomicU64::new(0),
             invalid: Mutex::new(None),
             filled: std::sync::atomic::AtomicBool::new(false),
@@ -375,6 +379,7 @@ impl Table {
         self.values = Vec::new();
         self.wide = Vec::new();
         self.packed = None;
+        self.mem = None;
         self.raw_checksum.store(0, Ordering::Relaxed);
         *self.invalid.lock().unwrap() = None;
         self.set_filled(false);
@@ -396,9 +401,28 @@ impl Table {
     }
 
     /// Whether the table answers lookups: generated or loaded as a whole, or
-    /// loaded packed.
+    /// loaded packed (in its file or in memory).
     pub fn is_available(&self) -> bool {
-        self.is_generated() || self.packed.is_some()
+        self.is_generated() || self.packed.is_some() || self.mem.is_some()
+    }
+
+    /// Whether the table is held compressed in memory for the generator.
+    pub fn is_mem_packed(&self) -> bool {
+        self.mem.is_some()
+    }
+
+    pub(super) fn set_mem(&mut self, store: super::blockstore::MemStore) {
+        self.mem = Some(store);
+    }
+
+    pub(super) fn mem(&self) -> Option<&super::blockstore::MemStore> {
+        self.mem.as_ref()
+    }
+
+    /// The blocks all threads decoded from a table held packed in memory
+    /// (None for any other table).
+    pub fn mem_misses(&self) -> Option<u64> {
+        self.mem.as_ref().map(|m| m.misses.load(Ordering::Relaxed))
     }
 
     /// Whether the table stays compressed in its file.
@@ -422,6 +446,9 @@ impl Table {
         }
         if !self.wide.is_empty() {
             return Value(self.wide[idx].load(Ordering::Relaxed));
+        }
+        if let Some(m) = &self.mem {
+            return m.value(idx);
         }
         self.packed.as_ref().expect("a table answers lookups only when available").lock().unwrap().value(idx)
     }
@@ -600,6 +627,10 @@ pub struct Set {
     /// widens a table before this level (MAX_PLIES+1, the first that does
     /// not fit a byte; tests lower it to exercise the widening).
     pub widen_level: u32,
+    /// The generator loads the dependencies it needs from their exact files
+    /// compressed into memory (`MemStore`) instead of as arrays: set by the
+    /// sweep for a material whose dependencies do not fit as arrays.
+    pub pack_deps: bool,
 }
 
 impl Set {
@@ -650,7 +681,7 @@ impl Set {
 
     /// Allocates the base tables without values; `generate_all` or `load` fills them.
     pub fn new() -> Set {
-        let mut s = Set { tables: Vec::new(), base_count: 0, by_sig: vec![-1; SIGNATURE_SPACE], four: Vec::new(), cache_dir: super::persist::default_cache_dir(), missing: std::sync::Arc::new(Mutex::new(std::collections::HashMap::new())), widen_level: MAX_PLIES + 1 };
+        let mut s = Set { tables: Vec::new(), base_count: 0, by_sig: vec![-1; SIGNATURE_SPACE], four: Vec::new(), cache_dir: super::persist::default_cache_dir(), missing: std::sync::Arc::new(Mutex::new(std::collections::HashMap::new())), widen_level: MAX_PLIES + 1, pack_deps: false };
         for m in Material::all() {
             s.add_material(m);
         }

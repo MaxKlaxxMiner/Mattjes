@@ -102,19 +102,20 @@ fn bytes_in_memory(set: &Set) -> u64 {
 
 /// Before the generation of table ti: while the tables in memory and the
 /// estimate `need` exceed `limit`, releases the kept tables the material
-/// does not look up, the ones needed latest first (a table whose file is
+/// does not look up (with `keep_deps` false the ones it looks up too, they
+/// come back packed), the ones needed latest first (a table whose file is
 /// still on its way to the disk is waited for). On 2026-10-29 KBBPKP met
 /// 190.9 GiB of kept tables with 400 GiB of its own and the OOM killer
 /// ended the sweep. Returns (tables released, their bytes, the bytes still
 /// in memory).
-fn make_room(set: &mut Set, ti: usize, rest: &[Material], need: u64, limit: u64, writer: &RawWriter) -> (usize, u64, u64) {
+fn make_room(set: &mut Set, ti: usize, rest: &[Material], need: u64, limit: u64, writer: &RawWriter, keep_deps: bool) -> (usize, u64, u64) {
     let mut held = bytes_in_memory(set);
     if held + need <= limit {
         return (0, 0, held);
     }
     let deps: std::collections::HashSet<String> = set.tables[ti].mat.dependencies().iter().map(|d| d.name()).collect();
     let mut spare: Vec<(usize, usize)> = (set.base().len()..set.tables.len())
-        .filter(|&gi| gi != ti && set.tables[gi].is_generated() && !deps.contains(&set.tables[gi].mat.name()))
+        .filter(|&gi| gi != ti && set.tables[gi].is_generated() && !(keep_deps && deps.contains(&set.tables[gi].mat.name())))
         .map(|gi| (first_use(&set.tables[gi].mat, rest).unwrap_or(usize::MAX), gi))
         .collect();
     spare.sort_by(|a, b| b.cmp(a));
@@ -377,11 +378,30 @@ fn run_sweep<W: Write + Send + 'static>(mut set: Set, ctrl: Arc<Control>, plan: 
         }
         let ti = set.add_material(m.clone());
         let size = set.tables[ti].size;
-        let (need, measured) = set.estimate_bytes(ti);
-        let how = if measured { "measured" } else { "estimated" };
+        let (mut need, measured) = set.estimate_bytes(ti);
+        let mut how = if measured { "measured" } else { "estimated" };
+        let mut packed = false;
         if let Some((total, _)) = egtb::available_memory() {
             let limit = total - total / RESERVE_DIVISOR;
-            let (released, freed, held) = make_room(&mut set, ti, rest, need as u64, limit, &writer);
+            let (mut released, mut freed, mut held) = make_room(&mut set, ti, rest, need as u64, limit, &writer, true);
+            if held + need as u64 > limit {
+                // stage 2: the dependencies come compressed into memory, and
+                // when that does not fit either, the kept ones go too (they
+                // come back packed), the ones needed latest first
+                packed = true;
+                how = "estimated, dependencies packed into memory";
+                loop {
+                    need = set.estimate_packed_bytes(ti, workers);
+                    if held + need as u64 <= limit {
+                        break;
+                    }
+                    let (r, f, h) = make_room(&mut set, ti, rest, need as u64, limit, &writer, false);
+                    if r == 0 {
+                        break;
+                    }
+                    (released, freed, held) = (released + r, freed + f, h);
+                }
+            }
             if released > 0 {
                 say(&format!("released {} kept tables ({}) to make room for {}", released, egtb::format_bytes(freed), m.name()));
             }
@@ -399,6 +419,7 @@ fn run_sweep<W: Write + Send + 'static>(mut set: Set, ctrl: Arc<Control>, plan: 
                 continue;
             }
         }
+        set.pack_deps = packed;
         egtb::reset_peak(); // the measurement line of this material holds its own peak
         say(&format!("generating {} ({} MB table, about {} RAM {})", m.name(), size >> 20, egtb::format_bytes(need as u64), how));
         // every computed table gets its log line and its files; a dependency
@@ -443,9 +464,14 @@ fn run_sweep<W: Write + Send + 'static>(mut set: Set, ctrl: Arc<Control>, plan: 
         if !raw_only && needed_later(m, rest) {
             save_raw(&set, ti, workers, &writer, &prefix, &say);
         }
+        if packed {
+            set.pack_deps = false;
+            let (n, misses) = set.tables.iter().filter_map(|t| t.mem_misses()).fold((0, 0), |(n, s), x| (n + 1, s + x));
+            say(&format!("{} dependencies served packed from memory, {} blocks decoded", n, misses));
+        }
         // the files are the product; what a later material looks up stays
         // in memory as far as the budget goes, the rest is loaded again
-        // from its exact file
+        // from its exact file (a table held packed is always released)
         let budget = egtb::available_memory().map_or(0, |(total, _)| total / KEEP_DIVISOR);
         let (kept, bytes) = release_tables(&mut set, rest, budget, &writer);
         if kept > 0 {

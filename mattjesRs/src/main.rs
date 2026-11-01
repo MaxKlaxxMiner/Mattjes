@@ -54,6 +54,7 @@ fn main() {
     //   egtb-list <pieces>                                names of all materials with that many pieces
     //   egtb-measure <name>... [--verify] [--workers N]   generate or load the tables, log to the cache dir
     //   egtb-widen <name> <level> <dir> [--workers N]     the two-byte tables against the one-byte ones
+    //   egtb-packed <name>... [--workers N] <cache dir>   tables held packed in memory against their arrays (reads only)
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     if args.is_empty() {
@@ -67,6 +68,10 @@ fn main() {
             "test" => experiments(),
             "egtb-list" => tests_egtb::egtb_list(args.get(1).and_then(|s| s.parse().ok()).unwrap_or(5)),
             "egtb-widen" => tests_egtb::egtb_widen(args.get(1).map_or("KBNKN", |s| s.as_str()), args.get(2).and_then(|s| s.parse().ok()).unwrap_or(40), workers, args.get(3).map_or("tests/widen", |s| s.as_str())),
+            "egtb-packed" => {
+                let names: Vec<&str> = args[1..args.len() - 1].iter().filter(|a| !a.starts_with("--") && a.parse::<usize>().is_err()).map(|s| s.as_str()).collect();
+                tests_egtb::egtb_packed(&names, workers, &args[args.len() - 1]);
+            }
             "egtb-measure" => {
                 let verify = args.iter().any(|a| a == "--verify");
                 let mut names = Vec::new();

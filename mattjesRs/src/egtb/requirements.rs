@@ -188,6 +188,27 @@ impl Set {
         (n, false)
     }
 
+    /// `estimate_bytes` with the dependencies loaded compressed into memory
+    /// (`pack_deps`): their exact files instead of their arrays, plus the
+    /// block caches of `workers` threads. Never measured.
+    pub fn estimate_packed_bytes(&self, ti: usize, workers: usize) -> usize {
+        let t = &self.tables[ti];
+        let mut n = t.size / 8 * EIGHTHS_PER_ENTRY + workers * super::blockstore::THREAD_CACHE_BYTES;
+        for d in t.mat.dependencies() {
+            match self.find(&d.name()) {
+                Some(i) if self.tables[i].is_generated() => {}
+                _ => {
+                    let dt = Table::new(d);
+                    n += match self.raw_file_bytes(&dt) {
+                        0 => dt.size, // no file: the generator computes it
+                        b => b,
+                    };
+                }
+            }
+        }
+        n
+    }
+
     /// The measurement log line of a generated table (the same fields from
     /// egtb-measure and from the UCI mode).
     pub fn log_line(&self, ti: usize, st: &Stats, workers: usize, source: &str) -> String {

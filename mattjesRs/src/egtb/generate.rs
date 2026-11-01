@@ -165,10 +165,12 @@ impl Set {
         for d in self.tables[ti].mat.dependencies() {
             let di = self.add_material(d); // beyond the base this registers the dependency on the fly
             // the levels need the exact distances of the children as an
-            // array: a quantised or packed table (loaded earlier, or a cache
-            // file beyond the base, which is always both) is replaced by its
-            // exact file or regenerated in memory instead
-            if self.tables[di].is_available() && (!self.tables[di].is_exact() || !self.tables[di].is_generated()) {
+            // array, or exact in memory (`pack_deps`): a quantised or packed
+            // table (loaded earlier, or a cache file beyond the base, which
+            // is always both) is replaced by its exact file or regenerated in
+            // memory instead
+            let t = &self.tables[di];
+            if t.is_available() && (!t.is_exact() || !t.is_generated() && !t.is_mem_packed()) {
                 progress(&format!("egtb: dependency {} is quantised (step {}) or packed, it is needed exactly", self.tables[di].mat.name(), self.tables[di].step()));
                 self.tables[di].clear();
             }
@@ -204,6 +206,19 @@ impl Set {
             return false;
         }
         let start = Instant::now();
+        if self.pack_deps {
+            return match self.load_raw_packed(ti, &path, true) {
+                Ok(()) => {
+                    let held = self.tables[ti].mem().map_or(0, |m| m.bytes());
+                    progress(&format!("egtb: loaded exact {} packed into memory ({} MB) in {:.1} s", path.display(), held >> 20, start.elapsed().as_secs_f64()));
+                    true
+                }
+                Err(e) => {
+                    progress(&format!("egtb: {}", e));
+                    false
+                }
+            };
+        }
         match self.load_raw_table(ti, &path) {
             Ok(()) => {
                 progress(&format!("egtb: loaded exact {} ({} MB) in {:.1} s", path.display(), self.tables[ti].size >> 20, start.elapsed().as_secs_f64()));

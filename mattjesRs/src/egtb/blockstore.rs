@@ -101,3 +101,89 @@ impl BlockStore {
         self.slots[slot][idx - block * self.index.block_size]
     }
 }
+
+/// The decoded blocks one thread keeps of the tables held compressed in
+/// memory (`MemStore`): 64 MB, 4,096 blocks of 16 KB, two GB for 32 workers.
+pub const THREAD_CACHE_BYTES: usize = 64 << 20;
+
+/// The block size a `MemStore` serves (the exact files' `BLOCK_BYTES`).
+const MEM_BLOCK: usize = 16 << 10;
+
+/// Hands out the ids that tell the tables apart in the thread caches.
+static NEXT_STORE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A direct-mapped cache of decoded blocks, one per thread: the tag of a
+/// slot is (store id << 32 | block + 1), 0 = empty.
+struct ThreadCache {
+    tags: Vec<u64>,
+    data: Vec<u8>,
+}
+
+thread_local! {
+    static CACHE: std::cell::RefCell<ThreadCache> = const { std::cell::RefCell::new(ThreadCache { tags: Vec::new(), data: Vec::new() }) };
+}
+
+/// Serves a dependency the generator cannot hold as an array (stage 2 of
+/// the sweep's memory plan, 2026-11-01): the whole compressed file sits in
+/// memory, a quarter of the array or less, and every worker decodes the
+/// blocks it touches into its own cache (`THREAD_CACHE_BYTES`), so that 32
+/// workers look up without a lock. A miss decodes 16 KB from memory.
+pub struct MemStore {
+    id: u64,
+    index: lz::Index,
+    packed: Vec<u8>,
+    /// The entries of a wide table (0 = a one-byte table), as in `BlockStore`.
+    wide_entries: usize,
+    /// Blocks decoded by all threads together.
+    pub misses: std::sync::atomic::AtomicU64,
+}
+
+impl MemStore {
+    pub fn new(file: &File, index: lz::Index, wide_entries: usize) -> std::io::Result<MemStore> {
+        if index.block_size != MEM_BLOCK {
+            return Err(std::io::Error::other(format!("egtb: blocks of {} bytes, the memory store serves {}", index.block_size, MEM_BLOCK)));
+        }
+        let packed = index.read_packed(file)?;
+        let id = NEXT_STORE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(MemStore { id, index, packed, wide_entries, misses: std::sync::atomic::AtomicU64::new(0) })
+    }
+
+    /// The bytes the store holds (the compressed blocks).
+    pub fn bytes(&self) -> usize {
+        self.packed.len()
+    }
+
+    /// The value of entry idx: one byte, or the two planes of a wide table.
+    pub fn value(&self, idx: usize) -> Value {
+        if self.wide_entries == 0 {
+            return Value::from_byte(self.byte(idx));
+        }
+        Value::from_planes(self.byte(idx), self.byte(self.wide_entries + idx))
+    }
+
+    /// The byte at raw position idx from this thread's cache, decoding its
+    /// block on a miss. A block that does not decode is a damaged file: the
+    /// generator must not go on with wrong values.
+    fn byte(&self, idx: usize) -> u8 {
+        let block = idx / MEM_BLOCK;
+        let tag = self.id << 32 | (block as u64 + 1);
+        CACHE.with(|c| {
+            let mut c = c.borrow_mut();
+            let slots = THREAD_CACHE_BYTES / MEM_BLOCK;
+            if c.tags.is_empty() {
+                c.tags = vec![0; slots];
+                c.data = vec![0; THREAD_CACHE_BYTES];
+            }
+            let slot = (block + self.id as usize * 7919) % slots;
+            if c.tags[slot] != tag {
+                let dst = &mut c.data[slot * MEM_BLOCK..(slot + 1) * MEM_BLOCK];
+                if let Err(e) = self.index.decode_block(&self.packed, block, dst) {
+                    panic!("egtb: block {} of a table in memory: {}", block, e);
+                }
+                c.tags[slot] = tag;
+                self.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            c.data[slot * MEM_BLOCK + idx % MEM_BLOCK]
+        })
+    }
+}
