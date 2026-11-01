@@ -197,7 +197,7 @@ impl Set {
     }
 
     /// Loads the exact file of a table beyond the base, if there is one.
-    fn load_raw(&mut self, ti: usize, progress: Progress) -> bool {
+    pub(crate) fn load_raw(&mut self, ti: usize, progress: Progress) -> bool {
         if self.tables[ti].mat.pieces() <= 4 {
             return false; // the base is one file, always exact
         }
@@ -541,10 +541,16 @@ impl<'a> Generator<'a> {
             }
             // children in smaller tables are final already: a lost one decides the
             // position at its level; if there is no other kind of child, so do
-            // won ones (a quiet move or an open child would have to decide first)
+            // won ones (a quiet move or an open child would have to decide first).
+            // A double step with an en passant right counts as well: its value can
+            // come from the en passant capture alone, and no in-table child of the
+            // position marks this parent then (the sibling without the right may be
+            // decided much later or never). In-table children are read here before
+            // their levels, so such a value is final or later than the true one,
+            // and the true level is reached by the usual marking.
             let (mut min_loss, mut max_win, mut all_cross, mut all_win) = (u32::MAX, -1i64, true, true);
             for &mv in &buf[..m] {
-                if mv.capture == Piece::NONE && mv.promo == Piece::NONE {
+                if mv.capture == Piece::NONE && mv.promo == Piece::NONE && self.en_passant_child(&b, mv).is_none() {
                     all_cross = false;
                     continue;
                 }
@@ -732,12 +738,8 @@ impl<'a> Generator<'a> {
             c.do_move(m);
             return self.set.lookup(&c).unwrap_or_else(|| panic!("egtb {}: no table for {}", self.t.mat.name(), c.fen()));
         }
-        if self.en_passant_possible && b.squares[m.from.idx()].is(Piece::PAWN) && (m.to.0 - m.from.0).abs() == 2 * WIDTH {
-            let mut c = *b;
-            c.do_move(m);
-            if c.en_passant.valid() {
-                return self.eval_en_passant(&c);
-            }
+        if let Some(c) = self.en_passant_child(b, m) {
+            return self.eval_en_passant(&c);
         }
         let mut s = [Pos::NONE; 6];
         let n = sq.len();
@@ -749,6 +751,21 @@ impl<'a> Generator<'a> {
             }
         }
         self.t.value(self.t.index(!b.white_move, &s[..n]) as usize)
+    }
+
+    /// The position after m if m is a double step that gives the opponent an en
+    /// passant right (a position outside every table), otherwise None.
+    fn en_passant_child(&self, b: &Board, m: Move) -> Option<Board> {
+        if !self.en_passant_possible || !b.squares[m.from.idx()].is(Piece::PAWN) || (m.to.0 - m.from.0).abs() != 2 * WIDTH {
+            return None;
+        }
+        let mut c = *b;
+        c.do_move(m);
+        if c.en_passant.valid() {
+            Some(c)
+        } else {
+            None
+        }
     }
 
     /// Values a position with an en passant right from its children: the side to

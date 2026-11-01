@@ -576,10 +576,16 @@ func (g *generator) initRange(lo, hi int) (int, int) {
 		}
 		// children in smaller tables are final already: a lost one decides the
 		// position at its level; if there is no other kind of child, so do
-		// won ones (a quiet move or an open child would have to decide first)
+		// won ones (a quiet move or an open child would have to decide first).
+		// A double step with an en passant right counts as well: its value can
+		// come from the en passant capture alone, and no in-table child of the
+		// position marks this parent then (the sibling without the right may be
+		// decided much later or never). In-table children are read here before
+		// their levels, so such a value is final or later than the true one,
+		// and the true level is reached by the usual marking.
 		minLoss, maxWin, allCross, allWin := 1<<30, -1, true, true
 		for _, m := range buf[:n] {
-			if m.Capture == chess.None && m.Promo == chess.None {
+			if _, ep := g.enPassantChild(&b, m); m.Capture == chess.None && m.Promo == chess.None && !ep {
 				allCross = false
 				continue
 			}
@@ -804,12 +810,8 @@ func (g *generator) child(b *bitboard.Board, sq []chess.Pos, m chess.Move) Value
 		}
 		return v
 	}
-	if g.enPassantPossible && b.Squares[m.From].Is(chess.Pawn) && (m.To-m.From == 2*chess.Width || m.From-m.To == 2*chess.Width) {
-		c := *b
-		c.DoMove(m)
-		if c.EnPassant.Valid() {
-			return g.evalEnPassant(&c)
-		}
+	if c, ok := g.enPassantChild(b, m); ok {
+		return g.evalEnPassant(&c)
 	}
 	var s [6]chess.Pos
 	n := copy(s[:], sq)
@@ -820,6 +822,17 @@ func (g *generator) child(b *bitboard.Board, sq []chess.Pos, m chess.Move) Value
 		}
 	}
 	return g.t.Value(g.t.Index(!b.WhiteMove, s[:n]))
+}
+
+// enPassantChild returns the position after m if m is a double step that gives
+// the opponent an en passant right (a position outside every table).
+func (g *generator) enPassantChild(b *bitboard.Board, m chess.Move) (bitboard.Board, bool) {
+	if !g.enPassantPossible || !b.Squares[m.From].Is(chess.Pawn) || (m.To-m.From != 2*chess.Width && m.From-m.To != 2*chess.Width) {
+		return bitboard.Board{}, false
+	}
+	c := *b
+	c.DoMove(m)
+	return c, c.EnPassant.Valid()
 }
 
 // evalEnPassant values a position with an en passant right from its children:

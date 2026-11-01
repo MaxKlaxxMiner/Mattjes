@@ -55,6 +55,7 @@ fn main() {
     //   egtb-measure <name>... [--verify] [--workers N]   generate or load the tables, log to the cache dir
     //   egtb-widen <name> <level> <dir> [--workers N]     the two-byte tables against the one-byte ones
     //   egtb-packed <name>... [--workers N] <cache dir>   tables held packed in memory against their arrays (reads only)
+    //   egtb-verify <name>... [--workers N] <cache dir>   existing exact files recomputed from their children (reads only)
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     if args.is_empty() {
@@ -71,6 +72,10 @@ fn main() {
             "egtb-packed" => {
                 let names: Vec<&str> = args[1..args.len() - 1].iter().filter(|a| !a.starts_with("--") && a.parse::<usize>().is_err()).map(|s| s.as_str()).collect();
                 tests_egtb::egtb_packed(&names, workers, &args[args.len() - 1]);
+            }
+            "egtb-verify" => {
+                let names: Vec<&str> = args[1..args.len() - 1].iter().filter(|a| !a.starts_with("--") && a.parse::<usize>().is_err()).map(|s| s.as_str()).collect();
+                tests_egtb::egtb_verify(&names, workers, &args[args.len() - 1]);
             }
             "egtb-measure" => {
                 let verify = args.iter().any(|a| a == "--verify");

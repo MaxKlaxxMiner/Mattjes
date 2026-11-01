@@ -531,3 +531,46 @@ pub fn egtb_packed(names: &[&str], workers: usize, dir: &str) {
         println!("{}: {} ({})", m.name(), if sums[0] == sums[1] { "same checksum" } else { "CHECKSUMS DIFFER" }, recorded);
     }
 }
+
+/// Forward verification of exact files that already exist (2026-11-02, the
+/// en passant fix): the table loaded as an array, its dependencies packed in
+/// memory, every legal position recomputed from its children. Reads the
+/// exact files of `dir`, writes nothing.
+pub fn egtb_verify(names: &[&str], workers: usize, dir: &str) {
+    let mut log = |line: &str| println!("{}", line);
+    let mut set = Set::load_or_generate(&std::path::Path::new(dir).join(egtb::BASE_FILE_NAME), workers, false, &mut log);
+    set.cache_dir = std::path::PathBuf::from(dir);
+    set.pack_deps = true;
+    for name in names {
+        let m = match egtb::Material::parse(name) {
+            Ok(m) => m,
+            Err(e) => {
+                println!("{}", e);
+                continue;
+            }
+        };
+        let start = Instant::now();
+        let mut missing = false;
+        for d in m.dependencies() {
+            let di = set.add_material(d);
+            if !set.tables[di].is_available() && !set.load_raw(di, &mut log) {
+                println!("{}: dependency {} has no exact file", m.name(), set.tables[di].mat.name());
+                missing = true;
+            }
+        }
+        let ti = set.add_material(m.clone());
+        let path = set.raw_path(&set.tables[ti]);
+        if missing {
+            continue;
+        }
+        if let Err(e) = set.load_raw_table_checked(ti, &path, false) {
+            println!("{}: {}", m.name(), e);
+            continue;
+        }
+        println!("{}: loaded in {:.1} s, verifying", m.name(), start.elapsed().as_secs_f64());
+        let start = Instant::now();
+        let bad = set.verify(ti, workers, &|line| println!("{}", line));
+        println!("{}: {} mismatches, checksum {:016x}, verified in {:.1} s", m.name(), bad, set.tables[ti].raw_checksum(), start.elapsed().as_secs_f64());
+        set.release(ti);
+    }
+}
