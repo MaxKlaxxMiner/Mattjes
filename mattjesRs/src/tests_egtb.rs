@@ -554,8 +554,14 @@ pub fn egtb_verify(names: &[&str], workers: usize, dir: &str) {
         for d in m.dependencies() {
             let di = set.add_material(d);
             if !set.tables[di].is_available() && !set.load_raw(di, &mut log) {
-                println!("{}: dependency {} has no exact file", m.name(), set.tables[di].mat.name());
-                missing = true;
+                // a widened file (KPPKP) has another checksum than the recorded one
+                let path = set.raw_path(&set.tables[di]);
+                if path.exists() && set.load_raw_packed(di, &path, false).is_ok() {
+                    println!("{}: dependency {} loaded without the checksum check", m.name(), set.tables[di].mat.name());
+                } else {
+                    println!("{}: dependency {} has no exact file", m.name(), set.tables[di].mat.name());
+                    missing = true;
+                }
             }
         }
         let ti = set.add_material(m.clone());
