@@ -852,9 +852,16 @@ func (g *generator) evalEnPassant(c *bitboard.Board) Value {
 	for _, m := range buf[:n] {
 		d := *c
 		d.DoMove(m)
-		v, ok := g.set.Lookup(&d)
-		if !ok {
-			panic(fmt.Sprintf("egtb %s: no value for %s after en passant position", g.t.Mat.Name(), d.FEN()))
+		// with two pawns a side the reply can be a double step that gives
+		// an en passant right back (KPPKPP): again outside every table
+		var v Value
+		if d.EnPassant.Valid() {
+			v = g.evalEnPassant(&d)
+		} else {
+			var ok bool
+			if v, ok = g.set.Lookup(&d); !ok {
+				panic(fmt.Sprintf("egtb %s: no value for %s after en passant position", g.t.Mat.Name(), d.FEN()))
+			}
 		}
 		switch {
 		case v.IsLoss():

@@ -782,7 +782,13 @@ impl<'a> Generator<'a> {
         for &m in &buf[..n] {
             let mut d = *c;
             d.do_move(m);
-            let v = self.set.lookup(&d).unwrap_or_else(|| panic!("egtb {}: no value for {} after en passant position", self.t.mat.name(), d.fen()));
+            // with two pawns a side the reply can be a double step that gives
+            // an en passant right back (KPPKPP): again outside every table
+            let v = if d.en_passant.valid() {
+                self.eval_en_passant(&d)
+            } else {
+                self.set.lookup(&d).unwrap_or_else(|| panic!("egtb {}: no value for {} after en passant position", self.t.mat.name(), d.fen()))
+            };
             if v.is_loss() {
                 min_loss = min_loss.min(v.plies());
             } else if v.is_win() {
