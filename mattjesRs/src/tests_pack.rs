@@ -60,6 +60,7 @@ impl Spec {
                 "signed" => s.signed = n() != 0,
                 "draws" => s.draws_stored = v == "stored",
                 "block" => s.opt.block_bytes = n(),
+                "blockmax" => s.opt.block_max = n(),
                 "indexbits" => s.opt.index_bits = n(),
                 "symbols" => s.opt.max_symbols = n(),
                 "symlen" => s.opt.max_symbol_len = n(),

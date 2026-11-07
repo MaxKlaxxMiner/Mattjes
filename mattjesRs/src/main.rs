@@ -221,7 +221,7 @@ fn experiments() {
         tests_pairs::pairs_measure(
             "tests/wdl",
             &test_arg(1, ""),
-            pairs::Options { block_bytes: test_int(2, 0), index_bits: test_int(3, 0), pairs_per_pass: test_int(4, 64), min_count: test_int(5, 8), max_symbols: test_int(6, 4095), max_symbol_len: test_int(7, 256), dict_sample: test_int(8, 0), workers: 12 },
+            pairs::Options { block_bytes: test_int(2, 0), block_max: 0, index_bits: test_int(3, 0), pairs_per_pass: test_int(4, 64), min_count: test_int(5, 8), max_symbols: test_int(6, 4095), max_symbol_len: test_int(7, 256), dict_sample: test_int(8, 0), workers: 12 },
             true,
         );
         return;

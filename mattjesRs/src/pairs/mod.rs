@@ -18,6 +18,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Options {
     pub block_bytes: usize,
+    /// With block_bytes 0: the largest block size tried (powers of two from
+    /// 32); the smallest container wins. 0 = 64.
+    pub block_max: usize,
     pub index_bits: usize,
     pub max_symbols: usize,
     pub max_symbol_len: usize,
@@ -160,13 +163,17 @@ pub fn pack_stats(values: &[u8], alphabet: usize, opt: Options) -> (Vec<u8>, Sta
     if opt.block_bytes > 0 {
         return c.container(opt.block_bytes, opt.index_bits);
     }
-    let (out32, st32) = c.container(32, opt.index_bits);
-    let (out64, st64) = c.container(64, opt.index_bits);
-    if out64.len() < out32.len() {
-        (out64, st64)
-    } else {
-        (out32, st32)
+    let max = if opt.block_max == 0 { 64 } else { opt.block_max };
+    let mut best = c.container(32, opt.index_bits);
+    let mut size = 64;
+    while size <= max {
+        let next = c.container(size, opt.index_bits);
+        if next.0.len() < best.0.len() {
+            best = next;
+        }
+        size *= 2;
     }
+    best
 }
 
 /// Open addressing from a pair (left<<16 | right) to its count; 0 = empty.
