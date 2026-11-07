@@ -150,10 +150,156 @@ pub const TABLE_CHECKSUMS: &[(&str, u64)] = &[
     ("KNPPK", 0xba0f257aa2ecc2ed), ("KPPKB", 0xcc9a627ad3f55921), ("KPPKN", 0x5c456acab2bbab19),
     ("KPPKQ", 0x902875aaa6992709), ("KPPKR", 0x4c92580848463cd6), ("KQPKP", 0xfeeca92d9b94747d),
     ("KQPPK", 0x0826d0219e8be912), ("KRPKP", 0x62929c193fa9a46d), ("KRPPK", 0x71e1d1f22a9e53e8),
-    ("KPPKP", 0x87cb3b021b3416b0), ("KPPPK", 0x9b0c4f0c85c11d02),
+    // KPPKP as its widened file (two bytes per entry, `WIDE_TABLES`) of the server sweep; the
+    // one-byte table of the home machine had 0x87cb3b021b3416b0
+    ("KPPKP", 0x89fe302044790610), ("KPPPK", 0x9b0c4f0c85c11d02),
     // six pieces (format v3, Rust, home machine): KRRKBN 1294 s, 35 GiB committed
     ("KRRKBN", 0x11049fde56c4b77c),
+    // the other 364 six-piece tables: the raw sweep of 2026-10-26 to 2026-11-05 on the server
+    // (measure.log; the en passant fixes 54f14b2 and 34faeee changed none of the tables
+    // generated before them, KBPKBP, KNNPKP and KPPKPP were verified with egtb-verify)
+    ("KBBBBK", 0xe5ca3311cff94fc7), ("KBBBKB", 0x1764dbd81ef7d983), ("KBBBKN", 0xc52b066e01c6c5eb),
+    ("KBBBKP", 0xb8deb82e86a71fde), ("KBBBKQ", 0xe07312b736e5afb9), ("KBBBKR", 0x92840c506fe59b0a),
+    ("KBBBNK", 0x9beec5278cbdcf7c), ("KBBBPK", 0xad4d7042a8720bbe), ("KBBKBB", 0x1ea4d201f4b65fa5),
+    ("KBBKBN", 0x165bb12b80d2c272), ("KBBKBP", 0x4d9cc7d65f13a043), ("KBBKNN", 0xfcd238affd905eed),
+    ("KBBKNP", 0x2eee4032feb442f8), ("KBBKPP", 0x0c42e619309efe10), ("KBBNKB", 0x56b44224706c3390),
+    ("KBBNKN", 0x7cb6dbab2bc38e6a), ("KBBNKP", 0x6ebfcbc280f512a9), ("KBBNKQ", 0xafb7d5f45d642c06),
+    ("KBBNKR", 0x398f66f0d7781eee), ("KBBNNK", 0xab2a4f38489fb387), ("KBBNPK", 0xb29700994546fd48),
+    ("KBBPKB", 0xa7d3aa3d4506047c), ("KBBPKN", 0xbafd0aeada7a3e4a), ("KBBPKP", 0x8772d72a7b12e8de),
+    ("KBBPKQ", 0x134300b90812c240), ("KBBPKR", 0x311e25a76c909bdb), ("KBBPPK", 0x261896b3e104458a),
+    ("KBNKBN", 0x2e78acc27433b66e), ("KBNKBP", 0x45b77e770b7fecef), ("KBNKNN", 0x50b6900311933d0a),
+    ("KBNKNP", 0xab73b93b53054c1d), ("KBNKPP", 0xae34930dddbdfef8), ("KBNNKB", 0xef9b9c2aeed36b16),
+    ("KBNNKN", 0x61f7b54c5dd32df2), ("KBNNKP", 0x58c0ce2b26b71843), ("KBNNKQ", 0xcc802715c8dfbec0),
+    ("KBNNKR", 0x655bcaf4bee2e388), ("KBNNNK", 0x393b188459333887), ("KBNNPK", 0x47bd7b4caa9c4266),
+    ("KBNPKB", 0x88731a16bcec08ad), ("KBNPKN", 0xfb5c2ce843bbc018), ("KBNPKP", 0xeb6bac1890ea30a3),
+    ("KBNPKQ", 0x7b54ea8b822438cb), ("KBNPKR", 0xafdc8e001eeb737d), ("KBNPPK", 0x80ef29e34990c0d1),
+    ("KBPKBP", 0xe0ec5cae101a7374), ("KBPKNN", 0x9d39e14a5949668b), ("KBPKNP", 0x126fde3ccfb41233),
+    ("KBPKPP", 0xc7f16e5536aab0a3), ("KBPPKB", 0x04d7e10037dafc18), ("KBPPKN", 0x104e52a6bb762ccb),
+    ("KBPPKP", 0xc7c40b428ff65d9b), ("KBPPKQ", 0x42af4e5eba539f7a), ("KBPPKR", 0x2add0e250902701e),
+    ("KBPPPK", 0x89b1410752d2e640), ("KNNKNN", 0xd655e775f2424d32), ("KNNKNP", 0xc0a8ed8ae1bc832a),
+    ("KNNKPP", 0xc299adf945c85c1b), ("KNNNKB", 0xf3c9859ae4c8fb7a), ("KNNNKN", 0xf1e88ebd324d0f5a),
+    ("KNNNKP", 0xc3389b697329c874), ("KNNNKQ", 0xda197b63f7c78cb0), ("KNNNKR", 0x63ac3fcb6a342e31),
+    ("KNNNNK", 0x02e8853fa235456f), ("KNNNPK", 0xb231a079f21b303a), ("KNNPKB", 0xdd17a33b36c58112),
+    ("KNNPKN", 0xc1d978627a1978bc), ("KNNPKP", 0x2a4e85309ad0975a), ("KNNPKQ", 0xc506e5e4dae963d9),
+    ("KNNPKR", 0x11642c6bd37f0687), ("KNNPPK", 0x15e26d1fd0da2081), ("KNPKNP", 0x90a05c3a5a46cf14),
+    ("KNPKPP", 0x12f3f72edfa0066d), ("KNPPKB", 0xf64f73d6d2b378a4), ("KNPPKN", 0x9d62ea553f6a26d7),
+    ("KNPPKP", 0x19da579c08054385), ("KNPPKQ", 0x0413cb2ad632d04f), ("KNPPKR", 0x1ca3f50693692d78),
+    ("KNPPPK", 0x9cdc388f0c06db78), ("KPPKPP", 0xda75a16e9a6ab1a8), ("KPPPKB", 0xc59d1122b099479e),
+    ("KPPPKN", 0xa1ab90e331c2a7f0), ("KPPPKP", 0xc3f5ca88eac90adf), ("KPPPKQ", 0xff183acd14b199e1),
+    ("KPPPKR", 0x5c5c3cfef0cff849), ("KPPPPK", 0x1d97dae84f5663aa), ("KQBBBK", 0x8549212e87caa42b),
+    ("KQBBKB", 0xc4a7d8c5f6d46a0c), ("KQBBKN", 0xa8591c2108a94617), ("KQBBKP", 0xd8c5de1210ec707b),
+    ("KQBBKQ", 0x4a54b70f75b9bfcc), ("KQBBKR", 0xe9e8907464bfcc65), ("KQBBNK", 0xc7703245a4a41cc6),
+    ("KQBBPK", 0x123aca42871221e3), ("KQBKBB", 0xa1e174f78df40c87), ("KQBKBN", 0x4d24fbf2b9f7cb55),
+    ("KQBKBP", 0x6995309e35c58009), ("KQBKNN", 0x36f44044afd02bbd), ("KQBKNP", 0x4bf99d249bfd6d80),
+    ("KQBKPP", 0x76abf4f1e195ea39), ("KQBKQB", 0x9f931e37192b8680), ("KQBKQN", 0x4c887fd780c31f59),
+    ("KQBKQP", 0x32c15cabd63d7e76), ("KQBKRB", 0x54799f626f4d0a7c), ("KQBKRN", 0x6eda08de1dabf054),
+    ("KQBKRP", 0xd324a656dd2c5b53), ("KQBKRR", 0x09855c38c26bbe40), ("KQBNKB", 0x331b634e011febe2),
+    ("KQBNKN", 0xc637cf61d1da7af1), ("KQBNKP", 0x316785923ea08a31), ("KQBNKQ", 0x968bbc883f948330),
+    ("KQBNKR", 0xbc64df536c3deb4c), ("KQBNNK", 0x04f8581898f3c99e), ("KQBNPK", 0x0b21c240f8e43ef2),
+    ("KQBPKB", 0x27d17bf011d9d553), ("KQBPKN", 0xdbcb19c39fd5346e), ("KQBPKP", 0xbf3331939ed8fc21),
+    ("KQBPKQ", 0xf4d68fcdb0223c3b), ("KQBPKR", 0x86aae47cfa6028bb), ("KQBPPK", 0x61d7cbfbd5258dde),
+    ("KQNKBB", 0x94c80b8e97b5d25e), ("KQNKBN", 0x15d346d74a9f378d), ("KQNKBP", 0x50022783964adbd5),
+    ("KQNKNN", 0x796d81325267fee7), ("KQNKNP", 0x0d318fb234c2288a), ("KQNKPP", 0x8052af69cac71f24),
+    ("KQNKQN", 0xd12fbbc0d882ea62), ("KQNKQP", 0xbc373ed1d71e7f23), ("KQNKRB", 0x3f457ed9e296e2b8),
+    ("KQNKRN", 0x44f330931f2ddd90), ("KQNKRP", 0xaf7d409ee1809a99), ("KQNKRR", 0xb8635f90a57e2bbf),
+    ("KQNNKB", 0xc4460f55fe79cc7e), ("KQNNKN", 0x21529db1068b86f2), ("KQNNKP", 0x865e4da0c4f28d40),
+    ("KQNNKQ", 0xf8eea41f05c10855), ("KQNNKR", 0xafae296ae36498d7), ("KQNNNK", 0x1acc0ccab72906ed),
+    ("KQNNPK", 0x4ec4355c9c727bfa), ("KQNPKB", 0xf0b040e208cfa955), ("KQNPKN", 0x89d5651a3877c7f9),
+    ("KQNPKP", 0x5fbc3792db107b56), ("KQNPKQ", 0x3c2e2cc4a795d528), ("KQNPKR", 0x83da7796dcd5e620),
+    ("KQNPPK", 0xd0c83d24f5aeea69), ("KQPKBB", 0x9e241ee5c86be64c), ("KQPKBN", 0xfdcf39ad15f210aa),
+    ("KQPKBP", 0x5072acb554e62472), ("KQPKNN", 0x4f3cfd97b69f90b4), ("KQPKNP", 0x5560b62b64dd1fab),
+    ("KQPKPP", 0x0ab8674f5d178526), ("KQPKQP", 0x31b003971b7431ca), ("KQPKRB", 0x74c9006212ae423f),
+    ("KQPKRN", 0x301b4c63cfbcb8f6), ("KQPKRP", 0x6a5252243b95e35d), ("KQPKRR", 0x2f284399b480db3c),
+    ("KQPPKB", 0xa3be5266f43102cc), ("KQPPKN", 0x9debfa3f38937db5), ("KQPPKP", 0xa54808023a4dbd9a),
+    ("KQPPKQ", 0xb159a284a3829d15), ("KQPPKR", 0xe60db846db454ba1), ("KQPPPK", 0x3881214ee4ebd236),
+    ("KQQBBK", 0xc3a3423ffa5150d4), ("KQQBKB", 0x6d2b7c460ded9a80), ("KQQBKN", 0x1d01d178e5a32dc1),
+    ("KQQBKP", 0xc131b4887ad5dea9), ("KQQBKQ", 0x92dff573f48dc002), ("KQQBKR", 0xbf3ec1d8a469e001),
+    ("KQQBNK", 0x71a3fd03e5a666ab), ("KQQBPK", 0xda51eceee70459ad), ("KQQKBB", 0xb5f79f217c8e9a28),
+    ("KQQKBN", 0x77112107126313ab), ("KQQKBP", 0xa543634a17e749d3), ("KQQKNN", 0x3cb746e654754720),
+    ("KQQKNP", 0x22b014fb3c5c6651), ("KQQKPP", 0x628be33eaeb51fe7), ("KQQKQB", 0xa103fca55cf45a7b),
+    ("KQQKQN", 0x333a90cd46fdbddb), ("KQQKQP", 0x0bf028a14e883764), ("KQQKQQ", 0xa96fd132a3ad55f0),
+    ("KQQKQR", 0x1e7c9f27aff0af9b), ("KQQKRB", 0x8789823ff38dee8c), ("KQQKRN", 0xf82b461f70322a09),
+    ("KQQKRP", 0x1eab6281cfdab2bf), ("KQQKRR", 0x985e751958ae88d6), ("KQQNKB", 0xb34c2d233cff1af0),
+    ("KQQNKN", 0xb6b1fe682f0e1236), ("KQQNKP", 0x11c2351263d42add), ("KQQNKQ", 0x7a0c0cb80ccb594a),
+    ("KQQNKR", 0xb48f2a457e4cd746), ("KQQNNK", 0xb87c803f3ab004dc), ("KQQNPK", 0x125ffbd95ede0182),
+    ("KQQPKB", 0x0ac45ebdf6f1d4a6), ("KQQPKN", 0xe997d697ebb1db08), ("KQQPKP", 0x8801bcd200921699),
+    ("KQQPKQ", 0xf0e12585ea601fe9), ("KQQPKR", 0x3fac1a9fe46aec85), ("KQQPPK", 0x03dfccb3fb7397c6),
+    ("KQQQBK", 0xcfb45d4f2d5f164a), ("KQQQKB", 0x5c246763f66ebfb2), ("KQQQKN", 0x6a5f4179f4d05119),
+    ("KQQQKP", 0xbb1c13b4b0045495), ("KQQQKQ", 0x4efb8b8bbf3d3b21), ("KQQQKR", 0xb48e27e174bbe312),
+    ("KQQQNK", 0x7f9b62b7ccd05e1b), ("KQQQPK", 0xba0244c28563c033), ("KQQQQK", 0x934c398ed4b66243),
+    ("KQQQRK", 0xac2a02bab91369a4), ("KQQRBK", 0x7e25749828f4cf91), ("KQQRKB", 0xf844627a8f28fe6f),
+    ("KQQRKN", 0x2e8778bbaae76897), ("KQQRKP", 0xcb65a1acd5454093), ("KQQRKQ", 0x930a97261e05f1ca),
+    ("KQQRKR", 0x3ee4362c2c387727), ("KQQRNK", 0x7b79578ef897e073), ("KQQRPK", 0xad9b946fd1fe259a),
+    ("KQQRRK", 0x794cf11ca731ffd5), ("KQRBBK", 0x60d3d88c4578765c), ("KQRBKB", 0x55d84e2d22921a93),
+    ("KQRBKN", 0x8809c271f36ef7e1), ("KQRBKP", 0x85644ae0cca9f635), ("KQRBKQ", 0x051d8a74c4ada750),
+    ("KQRBKR", 0xb455df43f694f0c2), ("KQRBNK", 0x98aa923916a67746), ("KQRBPK", 0x87ed3bce96e8352a),
+    ("KQRKBB", 0xa8772ca01b9444c9), ("KQRKBN", 0x6eed0f5dfe2e727e), ("KQRKBP", 0x4501f5566f91c53b),
+    ("KQRKNN", 0x73610009dffaa6f3), ("KQRKNP", 0x9c530ce4ead0776a), ("KQRKPP", 0x755cbc2589602407),
+    ("KQRKQB", 0xd718bfb1f11034b5), ("KQRKQN", 0xbd4f9cfb70651ab2), ("KQRKQP", 0x966a4041444220b1),
+    ("KQRKQR", 0x7d339ef61c5ade39), ("KQRKRB", 0x46c817cd1c0caf4c), ("KQRKRN", 0x5bcbf6a8bf6bed32),
+    ("KQRKRP", 0x6d44c712db7a2129), ("KQRKRR", 0x0942daf00a823235), ("KQRNKB", 0x0b817e0b27828f3c),
+    ("KQRNKN", 0xdc50234b70b21beb), ("KQRNKP", 0x93430f85fd0dc429), ("KQRNKQ", 0xeee72e7c202d6add),
+    ("KQRNKR", 0xca8005519bc3a74f), ("KQRNNK", 0xf4a4a4d105590aad), ("KQRNPK", 0xc7b0bb00883b69ac),
+    ("KQRPKB", 0x7c3bae9c476ac9a3), ("KQRPKN", 0x1ec4bf4a461bc687), ("KQRPKP", 0x58097d309a637cbf),
+    ("KQRPKQ", 0xe1456abda3509afa), ("KQRPKR", 0x96893c9348a56a6a), ("KQRPPK", 0x0f59677a1f9bd134),
+    ("KQRRBK", 0xfe5cfb02dff24b00), ("KQRRKB", 0xb96a0b002232936a), ("KQRRKN", 0x2af05815d88338fe),
+    ("KQRRKP", 0xca7aff6290a495ea), ("KQRRKQ", 0x5a9222bdd0ac06d5), ("KQRRKR", 0xd98e7914c761fa6b),
+    ("KQRRNK", 0xd2e5b51be9a8fa1a), ("KQRRPK", 0xf197e78f9cb529f7), ("KQRRRK", 0x5bdc41cec08da505),
+    ("KRBBBK", 0x4580dab56bd53270), ("KRBBKB", 0x439e542340e92389), ("KRBBKN", 0xdbf89da4a415f00d),
+    ("KRBBKP", 0x1070f5d92baea060), ("KRBBKQ", 0xc7cae2225f316b79), ("KRBBKR", 0x94e3d638acbf2b25),
+    ("KRBBNK", 0x397fd0f05dca0422), ("KRBBPK", 0x681cf00a46dea77b), ("KRBKBB", 0x52f79f7274cef0fb),
+    ("KRBKBN", 0x2c440951d39af650), ("KRBKBP", 0x6c17aaf1d77798d2), ("KRBKNN", 0x164cc4545acfc26b),
+    ("KRBKNP", 0x4e583785ae8bd226), ("KRBKPP", 0x763288738155a34c), ("KRBKRB", 0x753371abeaab9a99),
+    ("KRBKRN", 0x8a53ff6cb84a30dc), ("KRBKRP", 0x097f66cb2afeba32), ("KRBNKB", 0x2141245fbf5a15e5),
+    ("KRBNKN", 0x7f3878407c4098f3), ("KRBNKP", 0x58c37028e8371bb3), ("KRBNKQ", 0x7f3585bb8b0bc108),
+    ("KRBNKR", 0xb32097a78041cff7), ("KRBNNK", 0xb014f9a4785c9c5f), ("KRBNPK", 0x2eee809cdef834e1),
+    ("KRBPKB", 0x74807ae63f914ff7), ("KRBPKN", 0xa05a31379bf96b7f), ("KRBPKP", 0x623b7a071acf432d),
+    ("KRBPKQ", 0xce1fd64d1593c7c3), ("KRBPKR", 0xba75e4637776a273), ("KRBPPK", 0x91558f465cc597d5),
+    ("KRNKBB", 0xc357c55db7870e3f), ("KRNKBN", 0x8289e323a97f48b7), ("KRNKBP", 0x1628265cb2c919dc),
+    ("KRNKNN", 0xdc0692824e6cf25f), ("KRNKNP", 0xe130bcc1571aad6c), ("KRNKPP", 0x605c3040c01ef6e2),
+    ("KRNKRN", 0x268b92aeb54bca56), ("KRNKRP", 0x608c9d37c28b8e69), ("KRNNKB", 0x87576ba836622897),
+    ("KRNNKN", 0xb3befdde5d64695c), ("KRNNKP", 0xce09a6740418b32d), ("KRNNKQ", 0x9e9ee5422e8beff6),
+    ("KRNNKR", 0xb0c97abc402554d1), ("KRNNNK", 0xe47cacdda0f6f495), ("KRNNPK", 0x5ffedc78c0313cde),
+    ("KRNPKB", 0x8cda04c5b7dc9d64), ("KRNPKN", 0xbe74ec6625a5e259), ("KRNPKP", 0x8fef7c8b87dadd96),
+    ("KRNPKQ", 0xdd5bff7b8be8bc60), ("KRNPKR", 0xcadee1cb0b5752a8), ("KRNPPK", 0x28cf0f1daa769d2a),
+    ("KRPKBB", 0xaf01de07b4fab2cb), ("KRPKBN", 0x625fa27ab3a11f21), ("KRPKBP", 0x3909bdbd74e96106),
+    ("KRPKNN", 0xd143f87ff99fdf4b), ("KRPKNP", 0xe2bc8eeb6516854c), ("KRPKPP", 0x7f181a40dce84e41),
+    ("KRPKRP", 0x8e4a07cc6fad7e98), ("KRPPKB", 0xe7b6e7f50fe20092), ("KRPPKN", 0x0303636cc7cac426),
+    ("KRPPKP", 0x91761f046e7bf3e5), ("KRPPKQ", 0x920f65076a270d77), ("KRPPKR", 0x1d43008274152405),
+    ("KRPPPK", 0x8c6f43140017a3c0), ("KRRBBK", 0xa235b013a87f10c9), ("KRRBKB", 0x15c8a5242b482bb3),
+    ("KRRBKN", 0x4e7e96f05e820ddc), ("KRRBKP", 0x1e67cc75bcb873b4), ("KRRBKQ", 0x9a436ec351aeec1c),
+    ("KRRBKR", 0x14e9d82fb920bba7), ("KRRBNK", 0x2420fdb41cb854d0), ("KRRBPK", 0xf4f041a91fad48f4),
+    ("KRRKBB", 0x4bfd0a919151457d), ("KRRKBP", 0xf5dada4039b40a27), ("KRRKNN", 0x34abb0c5956cf6aa),
+    ("KRRKNP", 0xa9fa1ab626bec5c6), ("KRRKPP", 0xa68b439869ebb0ae), ("KRRKRB", 0x401064d2a767ea37),
+    ("KRRKRN", 0xeea4cb6fe39be3e6), ("KRRKRP", 0x6cac038f90de9287), ("KRRKRR", 0x531129634ec775cf),
+    ("KRRNKB", 0xce8a48afe331bdc0), ("KRRNKN", 0x6fb0950cbdd8f641), ("KRRNKP", 0xe3e780d5ef41c8be),
+    ("KRRNKQ", 0xdf57c050b2e66ba7), ("KRRNKR", 0xb0c9a83e3012ae1e), ("KRRNNK", 0x1bee8ec115030dc0),
+    ("KRRNPK", 0xff671e68f3d3e0ef), ("KRRPKB", 0xcb554faca156e952), ("KRRPKN", 0x80a7624511dd8686),
+    ("KRRPKP", 0x8f64eb021ae8d02c), ("KRRPKQ", 0x69b13b7145901f3f), ("KRRPKR", 0x1ee56d1b4d7e770a),
+    ("KRRPPK", 0x3e249fa8fef014f3), ("KRRRBK", 0x69f8b544b04ff2a5), ("KRRRKB", 0x313dcd112ee8af99),
+    ("KRRRKN", 0x96520d7412b1953e), ("KRRRKP", 0x44ae179504f17ee8), ("KRRRKQ", 0xead9afdf83ca3611),
+    ("KRRRKR", 0x9b1fbdb86766d3b6), ("KRRRNK", 0x6388182b869735e2), ("KRRRPK", 0x42df72f4c882c353),
+    ("KRRRRK", 0x0c1b685be9fa73c6),
 ];
+
+/// The materials whose exact tables needed two bytes per entry (a distance
+/// beyond 254 plies, or KPPKP, which the generator widened at its overflow
+/// check), from the same sweep (measure.log `wide=true`): 1 five-piece and 63
+/// six-piece tables. Their files take twice the memory of the others.
+pub const WIDE_TABLES: &[&str] = &[
+    "KPPKP", "KBBKNP", "KBBPKP", "KBBPKQ", "KBBPKR", "KBNKNP", "KBNPKP", "KBNPKQ", "KBNPKR", "KBPKNN",
+    "KBPKNP", "KBPKPP", "KBPPKP", "KBPPKQ", "KBPPKR", "KNNKNP", "KNNKPP", "KNPKNP", "KNPKPP", "KNPPKP",
+    "KNPPKQ", "KNPPKR", "KPPKPP", "KPPPKP", "KPPPKQ", "KQBKQP", "KQBPKP", "KQBPKQ", "KQNKPP", "KQNKQP",
+    "KQNKRR", "KQNPKP", "KQNPKQ", "KQPKPP", "KQPKQP", "KQPKRB", "KQPKRR", "KQPPKP", "KQPPKQ", "KQRPKQ",
+    "KRBKNN", "KRBKNP", "KRBKPP", "KRBPKP", "KRNKBB", "KRNKBN", "KRNKBP", "KRNKNN", "KRNKNP", "KRNKPP",
+    "KRNPKP", "KRNPKQ", "KRPKBB", "KRPKBN", "KRPKBP", "KRPKNN", "KRPKNP", "KRPKPP", "KRPPKP", "KRPPKQ",
+    "KRRKNP", "KRRKPP", "KRRPKP", "KRRPKQ",
+];
+
+/// Whether a material is recorded as needing two bytes per entry.
+pub fn recorded_wide(name: &str) -> bool {
+    WIDE_TABLES.contains(&name)
+}
 
 /// The recorded checksum of a table, if any.
 pub fn recorded_checksum(name: &str) -> Option<u64> {
@@ -578,10 +724,11 @@ impl Set {
     }
 
     /// Whether the exact file of a table holds two bytes per entry (header
-    /// byte 5), so that loading it takes twice its size; false without a
-    /// file. Reads the header only.
+    /// byte 5), so that loading it takes twice its size; without a file
+    /// whether the material is recorded as wide (`WIDE_TABLES`). Reads the
+    /// header only.
     pub fn raw_is_wide(&self, t: &Table) -> bool {
-        let Ok(f) = std::fs::File::open(self.raw_path(t)) else { return false };
+        let Ok(f) = std::fs::File::open(self.raw_path(t)) else { return recorded_wide(&t.mat.name()) };
         let mut header = [0u8; HEADER_BYTES];
         lz::read_exact_at(&f, &mut header, 0).is_ok() && &header[..4] == MAGIC && header[5] == 2
     }

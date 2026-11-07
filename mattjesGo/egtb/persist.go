@@ -106,7 +106,7 @@ var TableChecksums = map[string]uint64{
 	"KBPKP": 0x75ea61ed8bf95531, "KBPPK": 0xecc3de59fb86dff7, "KNPKP": 0x7c2e668122934016, "KNPPK": 0xba0f257aa2ecc2ed,
 	"KPPKB": 0xcc9a627ad3f55921, "KPPKN": 0x5c456acab2bbab19, "KPPKQ": 0x902875aaa6992709, "KPPKR": 0x4c92580848463cd6,
 	"KQPKP": 0xfeeca92d9b94747d, "KQPPK": 0x0826d0219e8be912, "KRPKP": 0x62929c193fa9a46d, "KRPPK": 0x71e1d1f22a9e53e8,
-	"KPPKP": 0x87cb3b021b3416b0, "KPPPK": 0x9b0c4f0c85c11d02,
+	"KPPKP": 0x89fe302044790610, "KPPPK": 0x9b0c4f0c85c11d02, // KPPKP widened (two bytes per entry), one byte was 0x87cb3b021b3416b0
 	// six pieces (format v3, Rust, home machine): KRRKBN 1294 s, 35 GiB committed
 	"KRRKBN": 0x11049fde56c4b77c,
 }
