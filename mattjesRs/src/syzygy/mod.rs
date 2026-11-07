@@ -39,6 +39,10 @@ pub const DRAW: i32 = 0;
 pub const CURSED_WIN: i32 = 1;
 pub const WIN: i32 = 2;
 
+/// A decoded stream of a Syzygy table (`Tables::streams`): its values, the
+/// bytes it takes in the file and its piece order.
+pub type DecodedStream = (Vec<u8>, usize, Vec<u8>);
+
 /// The mapped and parsed part of a table.
 struct Loaded {
     mapping: Mapping,
@@ -275,12 +279,18 @@ impl Tables {
         let (mut best_cap, mut best_ep) = (-3, -3);
         for &m in &buf[..n] {
             let ep = is_en_passant(b, m);
-            if m.capture == Piece::NONE && !ep {
+            // promotions are resolved like captures: our own tables may leave
+            // positions free whose best move is one (write::PROMOTION_BOUND)
+            if m.capture == Piece::NONE && !ep && m.promo == Piece::NONE {
                 continue;
             }
             let mut c = *b;
             c.do_move(m);
-            let v = -self.probe_ab(&c, -2, -best_cap, base)?;
+            let v = match self.probe_ab(&c, -2, -best_cap, base) {
+                Some(v) => -v,
+                None if m.capture == Piece::NONE && !ep => continue, // a promotion without a table: only a hint
+                None => return None,
+            };
             if v > best_cap {
                 if v == WIN {
                     self.hits.fetch_add(1, Ordering::Relaxed);
@@ -320,12 +330,16 @@ impl Tables {
         let mut buf = new_buffer();
         let n = b.gen_moves(&mut buf);
         for &m in &buf[..n] {
-            if m.capture == Piece::NONE {
+            if m.capture == Piece::NONE && m.promo == Piece::NONE {
                 continue;
             }
             let mut c = *b;
             c.do_move(m);
-            let v = -self.probe_ab(&c, -beta, -alpha, base)?;
+            let v = match self.probe_ab(&c, -beta, -alpha, base) {
+                Some(v) => -v,
+                None if m.capture == Piece::NONE => continue, // a promotion without a table: only a hint
+                None => return None,
+            };
             if v > alpha {
                 if v >= beta {
                     return Some(v);
@@ -372,6 +386,96 @@ impl Tables {
         let (ei, idx) = be.locate(loaded, l.flip, b);
         let (own, off, len) = ei.own.as_ref()?;
         Some((own.value(&d[*off..*off + *len], idx as usize) as usize, be.step.load(Ordering::Relaxed)))
+    }
+
+    /// Decodes every stream of a Syzygy table completely (one per side to
+    /// move and pawn file, the five values 0..4 in the file's own index
+    /// order) with the bytes it takes in the file and its piece order; None
+    /// without the table. The yardstick for our packer on identical data
+    /// (Go's `Tables.Streams`).
+    pub fn streams(&self, name: &str) -> Option<Vec<DecodedStream>> {
+        let be = self.list.iter().find(|be| be.name == name && !be.own)?;
+        let loaded = be.loaded.get_or_init(|| be.init().ok()).as_ref()?;
+        let d = loaded.mapping.bytes();
+        let num = if be.has_pawns { 4 } else { 1 };
+        let mut out = Vec::new();
+        for (i, ei) in loaded.ei.iter().enumerate() {
+            let Some(p) = ei.precomp.as_ref() else { continue };
+            if i >= num && loaded.ei[i - num].precomp.as_ref().map(|q| q.index_table) == Some(p.index_table) {
+                continue; // a symmetric table shares its streams
+            }
+            let values: Vec<u8> = (0..p.size).map(|j| p.decompress(d, j)).collect();
+            let bytes = if p.idx_bits == 0 { 2 } else { 3 * p.sym_len.len() + (p.data - p.index_table) + (p.real_blocks << p.block_size) };
+            out.push((values, bytes, ei.pieces[..be.shape.num].to_vec()));
+        }
+        Some(out)
+    }
+
+    /// Whether the material of a position has an own DTM table, and whether
+    /// its side to move is stored there (a one-sided file stores one).
+    fn dtm_stored(&self, b: &Board) -> Option<bool> {
+        let (w, bl) = counts(b);
+        let l = *self.dtm.get(&material_key(&w, &bl))?;
+        let be = &self.dtm_list[l.entry];
+        let loaded = be.loaded.get_or_init(|| be.init_own().ok()).as_ref()?;
+        let (ei, _) = be.locate(loaded, l.flip, b);
+        Some(ei.own.is_some())
+    }
+
+    /// The WDL (-1, 0, 1 for the side to move; cursed results count as
+    /// results) and the interval of the distance to mate in plies [lo, hi] of
+    /// a position: exact from `base` when it holds the material, from the own
+    /// DTM bucket of a stored side, else a ply deeper from the children (the
+    /// side a one-sided file does not store, and en passant positions). None
+    /// when a table is missing. Draws give (0, 0, 0).
+    pub fn probe_dtm_bounds(&self, b: &Board, base: Option<&Set>) -> Option<(i32, u32, u32)> {
+        let wdl = self.probe_wdl_with(b, base)?.signum();
+        if wdl == 0 {
+            return Some((0, 0, 0));
+        }
+        if !b.en_passant.valid() {
+            if let Some((_, lo, hi)) = base.and_then(|s| s.lookup_bounds(b)) {
+                if lo == hi {
+                    return Some((wdl, lo, hi)); // an exact table (the base)
+                }
+            }
+            if self.dtm_stored(b)? {
+                let (bucket, step) = self.probe_dtm(b)?;
+                let (bucket, step) = (bucket as u32, step.max(1));
+                if wdl < 0 && bucket == 0 {
+                    return Some((wdl, 0, 0)); // mated
+                }
+                let (lo_m, hi_m) = ((bucket.max(1) - 1) * step + 1, bucket.max(1) * step);
+                return Some(if wdl > 0 { (wdl, 2 * lo_m - 1, 2 * hi_m - 1) } else { (wdl, 2 * lo_m, 2 * hi_m) });
+            }
+        }
+        // a ply deeper: a win takes its fastest lost child, a loss its slowest won one
+        let mut buf = new_buffer();
+        let n = b.gen_moves(&mut buf);
+        if n == 0 {
+            return Some((wdl, 0, 0)); // mated (a stalemate is a draw)
+        }
+        let (mut lo, mut hi) = if wdl > 0 { (u32::MAX, u32::MAX) } else { (0, 0) };
+        for &m in &buf[..n] {
+            let mut c = *b;
+            c.do_move(m);
+            let cw = self.probe_wdl_with(&c, base)?.signum();
+            if cw == 0 || (wdl > 0) == (cw > 0) {
+                continue; // a win needs only the lost children, a loss has only won ones
+            }
+            let (_, clo, chi) = self.probe_dtm_bounds(&c, base)?;
+            if wdl > 0 {
+                lo = lo.min(clo + 1);
+                hi = hi.min(chi + 1);
+            } else {
+                lo = lo.max(clo + 1);
+                hi = hi.max(chi + 1);
+            }
+        }
+        if lo == u32::MAX {
+            return None; // a win without a lost child: the tables disagree
+        }
+        Some((wdl, lo, hi))
     }
 
     /// The number of own DTM tables registered.
@@ -598,14 +702,19 @@ impl BaseEntry {
         }
         let (sides, files) = (d[6] as usize, d[7] as usize);
         let (num, enc) = if self.has_pawns { (4, ENC_FILE) } else { (1, ENC_PIECE) };
-        if files != num || sides != 2 - self.symmetric as usize || d.len() < write::OWN_HEADER + write::OWN_DESCRIPTOR * sides * files {
+        // a one-sided DTM file stores one side to move of a material that is not symmetric
+        let one_side = self.dtm && d[21] & write::DTM_ONE_SIDE != 0;
+        let stored = (d[21] & write::DTM_SECOND_SIDE != 0) as usize;
+        let want_sides = if one_side { 1 } else { 2 - self.symmetric as usize };
+        if files != num || sides != want_sides || d.len() < write::OWN_HEADER + write::OWN_DESCRIPTOR * sides * files {
             return Err(bad(format!("syzygy: {} does not match its material", self.name)));
         }
         let mut ei = vec![EncInfo::default(); 2 * num];
         for side in 0..sides {
             for f in 0..files {
                 let desc = &d[write::OWN_HEADER + write::OWN_DESCRIPTOR * (side * files + f)..];
-                let e = &mut ei[side * num + f];
+                let slot = if one_side { stored } else { side };
+                let e = &mut ei[slot * num + f];
                 e.pieces[..7].copy_from_slice(&desc[..7]);
                 encode::setup(e, &self.shape, desc[7] as usize, desc[8] as usize, f, enc);
                 let off = u64::from_le_bytes(desc[16..24].try_into().unwrap()) as usize;
@@ -617,9 +726,19 @@ impl BaseEntry {
                 e.own = Some((std::sync::Arc::new(t), off, len));
             }
         }
-        if sides == 1 {
+        if sides == 1 && !one_side {
             for f in 0..num {
                 ei[num + f] = ei[f].clone();
+            }
+        }
+        if one_side {
+            // the other side's encodings (the piece order of the stored one) locate
+            // positions without a stream: probe_dtm reports them as not stored
+            for f in 0..num {
+                let mut e = ei[stored * num + f].clone();
+                e.own = None;
+                e.precomp = None;
+                ei[(1 - stored) * num + f] = e;
             }
         }
         Ok(Loaded { mapping, ei })

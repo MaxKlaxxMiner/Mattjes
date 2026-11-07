@@ -91,6 +91,8 @@ pub struct Source<'a> {
     pub table: &'a Table,
     /// The tables the captures lead into (the sampling looks positions up here).
     pub set: &'a Set,
+    /// WDL tables for the children `set` lacks (`new_with`).
+    pub wdl: Option<&'a super::Tables>,
     pub symbols: Vec<u8>,
     /// Symbols the stream uses.
     pub alphabet: usize,
@@ -104,6 +106,19 @@ pub struct Source<'a> {
     pub step: u32,
     pub signed: bool,
     pub draw_free: bool,
+    /// DTM: the longest distance in moves the buckets cover (127 for a
+    /// one-byte table).
+    pub top: u32,
+}
+
+/// The longest distance of a table in moves.
+fn longest_moves(t: &Table, workers: usize) -> u32 {
+    let n = t.size;
+    let chunk = n.div_ceil(workers.max(1));
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (0..workers.max(1)).map(|w| s.spawn(move || (w * chunk..n.min((w + 1) * chunk)).map(|i| t.value(i).moves()).max().unwrap_or(0))).collect();
+        handles.into_iter().map(|h| h.join().unwrap()).max().unwrap_or(0)
+    })
 }
 
 fn symbol_of(v: Value) -> u8 {
@@ -120,20 +135,20 @@ impl Source<'_> {
     /// The stream symbol of a legal position with the table value v.
     fn symbol_at(&self, b: &Board, buf: &mut crate::chess::MoveBuffer, v: Value) -> u8 {
         if !self.dtm {
-            return capture_bound(self.set, b, buf, symbol_of(v));
+            return capture_bound(self.set, self.wdl, b, buf, symbol_of(v));
         }
-        let q = v.quantize(self.step);
+        let q = v.quantize_to(self.step, self.top);
         let step = self.step as usize;
         if q.0 == 0 {
             return if self.draw_free { DONT_CARE } else { 0 };
         }
         if q.is_win() {
-            return (q.moves() as usize).div_ceil(step) as u8; // 1 .. ceil(127/step)
+            return (q.moves() as usize).div_ceil(step) as u8; // 1 .. ceil(top/step)
         }
         let m = q.moves() as usize; // loss: bucket 0 = mated now
         let bucket = m.div_ceil(step) as u8;
         if self.signed {
-            127usize.div_ceil(step) as u8 + 1 + bucket
+            (self.top as usize).div_ceil(step) as u8 + 1 + bucket
         } else {
             bucket
         }
@@ -155,21 +170,33 @@ fn distinct_squares(sq: &[Pos]) -> bool {
 impl<'a> Source<'a> {
     /// Derives the WDL symbols from a table with exact values in memory, in parallel.
     pub fn new(set: &'a Set, t: &'a Table, workers: usize) -> Source<'a> {
-        Source { table: t, set, symbols: Vec::new(), alphabet: 3, legal: 0, decided: 0, dtm: false, step: 1, signed: false, draw_free: false }.derive(workers)
+        Source::new_with(set, t, None, workers)
+    }
+
+    /// `new` with WDL tables that answer the children `set` has no table for
+    /// (the promotions of a material keep its piece count: their targets are
+    /// looked up in our own WDL files written before, PROMOTION_BOUND).
+    pub fn new_with(set: &'a Set, t: &'a Table, wdl: Option<&'a super::Tables>, workers: usize) -> Source<'a> {
+        Source { table: t, set, wdl, symbols: Vec::new(), alphabet: 3, legal: 0, decided: 0, dtm: false, step: 1, signed: false, draw_free: false, top: 0 }.derive(workers)
     }
 
     /// Derives the quantised distance symbols (buckets of step moves; signed
     /// = wins and losses apart, else the bucket alone; draw_free = draws as
     /// don't care) from a table with exact values in memory.
     pub fn new_dtm(set: &'a Set, t: &'a Table, step: u32, signed: bool, draw_free: bool, workers: usize) -> Source<'a> {
-        let buckets = 127usize.div_ceil(step as usize) + 1; // 0 .. ceil(127/step)
+        // a one-byte table reaches 127 moves; a widened one (WIDE_TABLES) up to its own longest
+        // distance, which the buckets must cover instead of capping it at 127
+        let top = if t.is_wide() { longest_moves(t, workers).max(127) } else { 127 };
+        let buckets = top.div_ceil(step) as usize + 1; // 0 .. ceil(top/step)
         let alphabet = if signed { 2 * buckets + 1 } else { buckets };
-        Source { table: t, set, symbols: Vec::new(), alphabet, legal: 0, decided: 0, dtm: true, step, signed, draw_free }.derive(workers)
+        // symbols from 0x80 on mean "bounded" to the filling
+        assert!(alphabet < BOUNDED_FLAG as usize, "syzygy: {} DTM buckets of {} moves do not fit a symbol", alphabet, step);
+        Source { table: t, set, wdl: None, symbols: Vec::new(), alphabet, legal: 0, decided: 0, dtm: true, step, signed, draw_free, top }.derive(workers)
     }
 
     fn derive(mut self, workers: usize) -> Source<'a> {
         let (set, t) = (self.set, self.table);
-        assert!(!t.values.is_empty() && t.is_exact(), "syzygy: Source needs an exact table in memory");
+        assert!((!t.values.is_empty() || t.is_wide()) && t.is_exact(), "syzygy: Source needs an exact table in memory");
         let pieces = pieces_of(&t.mat);
         let n = t.size;
         let symbols: Vec<std::sync::atomic::AtomicU8> = (0..n).map(|_| std::sync::atomic::AtomicU8::new(DONT_CARE)).collect();
@@ -214,20 +241,34 @@ impl<'a> Source<'a> {
     }
 }
 
+/// Whether promotions count like captures for the bound (an experiment
+/// switch, card MT-8): the reader resolves promotions as well, which is
+/// correct for every table (it only adds true values of legal moves).
+pub static PROMOTION_BOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The symbol as the stream stores it: own, or BOUNDED+own when the best
 /// capture already achieves it.
-fn capture_bound(set: &Set, b: &Board, buf: &mut crate::chess::MoveBuffer, own: u8) -> u8 {
+fn capture_bound(set: &Set, wdl: Option<&super::Tables>, b: &Board, buf: &mut crate::chess::MoveBuffer, own: u8) -> u8 {
     let (mut best, mut has_capture) = (0u8, false);
     let nm = b.gen_moves(buf);
+    let promotions = PROMOTION_BOUND.load(Ordering::Relaxed);
     for &m in &buf[..nm] {
-        if m.capture == Piece::NONE {
+        if m.capture == Piece::NONE && !(promotions && m.promo != Piece::NONE) {
             continue;
         }
         let mut c = *b;
         c.do_move(m);
-        let v = set.lookup(&c).expect("syzygy: no table after a capture");
+        // the child's symbol from its side to move: the exact table, else the WDL files
+        let child = match set.lookup(&c) {
+            Some(v) => symbol_of(v),
+            None => match wdl.and_then(|w| w.probe_wdl_with(&c, Some(set))) {
+                Some(v) => (v.signum() + 1) as u8, // cursed results count as results
+                None if m.capture == Piece::NONE => continue, // a promotion without a table: no bound
+                None => panic!("syzygy: no table after a capture {}", c.fen()),
+            },
+        };
         has_capture = true;
-        best = best.max(2 - symbol_of(v));
+        best = best.max(2 - child);
     }
     if has_capture && best == own {
         own | BOUNDED_FLAG
@@ -236,10 +277,184 @@ fn capture_bound(set: &Set, b: &Board, buf: &mut crate::chess::MoveBuffer, own: 
     }
 }
 
-/// Replaces the don't-care symbols by their predecessor (bounded ones by
-/// the predecessor when it fits, else the bound).
+/// How the don't-care symbols are filled (an experiment switch of the packing
+/// bench, card MT-8): 0 = the predecessor (bounded ones the bound when the
+/// predecessor does not fit), 1 = per run of free symbols the left neighbour
+/// as far as it fits, then the right neighbour from the other end, the rest
+/// as in 0.
+pub static FILL_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Whether the plain symbol v may stand at a position holding s (a plain
+/// symbol only itself, a bounded one anything up to its bound, don't care
+/// anything).
+fn fits(s: u8, v: u8) -> bool {
+    s == DONT_CARE || (s & BOUNDED_FLAG != 0 && v <= s & !BOUNDED_FLAG) || s == v
+}
+
 fn fill_dont_care(values: &mut [u8]) {
+    fill_mode(values, FILL_MODE.load(Ordering::Relaxed));
+}
+
+/// Fills the free symbols by the rule `mode` (see FILL_MODE).
+pub fn fill_mode(values: &mut [u8], mode: u8) {
+    match mode {
+        1 => fill_neighbours(values),
+        3 => fill_runs(values, false),
+        4 => fill_runs(values, true),
+        2 => {
+            let p = best_period(values);
+            fill_period(values, p);
+        }
+        _ => fill_predecessor(values),
+    }
+}
+
+/// The period (2..=4096) at which plain symbols repeat most often: the
+/// stream walks the last piece over its squares, so the same constellation
+/// with the last piece one square back lies one period earlier. Measured on
+/// a sample of plain positions.
+pub fn best_period(values: &[u8]) -> usize {
+    let plain = |s: u8| s != DONT_CARE && s & BOUNDED_FLAG == 0;
+    let n = values.len();
+    if n < 8192 {
+        return 64.min(n.max(2) - 1).max(1);
+    }
+    let samples = 1 << 16;
+    let stride = (n - 4096) / samples;
+    let mut best = (0usize, 64usize);
+    for p in 2..=4096usize {
+        let mut hits = 0;
+        let mut i = 4096;
+        while i < n {
+            let (a, b) = (values[i], values[i - p]);
+            if plain(a) && plain(b) && a == b {
+                hits += 1;
+            }
+            i += stride.max(1);
+        }
+        if hits > best.0 {
+            best = (hits, p);
+        }
+    }
+    best.1
+}
+
+/// Fill mode 2: a free position takes the symbol one period earlier when it
+/// fits (the same constellation with the last piece one square back), else
+/// the predecessor rule.
+pub fn fill_period(values: &mut [u8], period: usize) {
     let mut prev = 1u8;
+    for i in 0..values.len() {
+        let s = values[i];
+        if s != DONT_CARE && s & BOUNDED_FLAG == 0 {
+            prev = s;
+            continue;
+        }
+        let v = if i >= period && fits(s, values[i - period]) {
+            values[i - period]
+        } else if fits(s, prev) {
+            prev
+        } else {
+            s & !BOUNDED_FLAG
+        };
+        values[i] = v;
+        prev = v;
+    }
+}
+
+/// Fill mode 1: every maximal run of free positions (don't care or bounded)
+/// takes the plain symbol on its left as far as it fits, the plain symbol
+/// on its right from the other end as far as it fits, and the middle that
+/// neither fits the predecessor rule.
+fn fill_neighbours(values: &mut [u8]) {
+    let n = values.len();
+    let free = |s: u8| s == DONT_CARE || s & BOUNDED_FLAG != 0;
+    let mut prev: Option<u8> = None;
+    let mut i = 0;
+    while i < n {
+        if !free(values[i]) {
+            prev = Some(values[i]);
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < n && free(values[j]) {
+            j += 1;
+        }
+        let next = if j < n { Some(values[j]) } else { None };
+        let mut a = i;
+        if let Some(l) = prev {
+            while a < j && fits(values[a], l) {
+                values[a] = l;
+                a += 1;
+            }
+        }
+        let mut b = j;
+        if let Some(r) = next {
+            while b > a && fits(values[b - 1], r) {
+                values[b - 1] = r;
+                b -= 1;
+            }
+        }
+        if a < b {
+            fill_predecessor_from(&mut values[a..b], next.or(prev).unwrap_or(1));
+        }
+        i = j;
+    }
+}
+
+/// Fill modes 3 and 4: every maximal run of free positions takes one
+/// neighbour as a whole when it fits the whole run: mode 3 the right one
+/// first, mode 4 the left one when the two plain symbols before the run are
+/// equal (a run continues), else the right one; when neither fits, the
+/// neighbour rule of mode 1.
+fn fill_runs(values: &mut [u8], pin_left: bool) {
+    let n = values.len();
+    let free = |s: u8| s == DONT_CARE || s & BOUNDED_FLAG != 0;
+    let mut i = 0;
+    while i < n {
+        if !free(values[i]) {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < n && free(values[j]) {
+            j += 1;
+        }
+        let left = if i > 0 { Some(values[i - 1]) } else { None };
+        let right = if j < n { Some(values[j]) } else { None };
+        let all = |v: u8| values[i..j].iter().all(|&s| fits(s, v));
+        let pinned = pin_left && i >= 2 && values[i - 2] == values[i - 1];
+        let choice = if pinned && left.is_some_and(all) {
+            left
+        } else if right.is_some_and(all) {
+            right
+        } else if left.is_some_and(all) {
+            left
+        } else {
+            None
+        };
+        match choice {
+            Some(v) => values[i..j].iter_mut().for_each(|s| *s = v),
+            None => {
+                // neither neighbour fits the whole run: mode 1 on this run alone
+                let lo = i.saturating_sub(1);
+                let hi = (j + 1).min(n);
+                fill_neighbours(&mut values[lo..hi]);
+            }
+        }
+        i = j;
+    }
+}
+
+/// Fill mode 0: the predecessor.
+fn fill_predecessor(values: &mut [u8]) {
+    fill_predecessor_from(values, 1);
+}
+
+/// Replaces the don't-care symbols by their predecessor (bounded ones by
+/// the predecessor when it fits, else the bound), starting with `prev`.
+fn fill_predecessor_from(values: &mut [u8], mut prev: u8) {
     for v in values.iter_mut() {
         if *v == DONT_CARE {
             *v = prev;
@@ -444,9 +659,26 @@ pub struct Built {
     pub signed: bool,
     pub draw_free: bool,
     pub alphabet: usize,
+    /// DTM: only this side to move is stored (`keep_side`).
+    pub stored_side: Option<usize>,
 }
 
 impl Built {
+    /// DTM of a material that is not symmetric: drops the streams of the
+    /// side that packs larger (the reader values that side from its
+    /// children, a ply deeper). Returns the side kept.
+    pub fn keep_smaller_side(&mut self) -> Option<usize> {
+        if !self.dtm || self.sides != 2 {
+            return None;
+        }
+        let bytes = |s: usize| -> usize { self.streams[s * self.files..(s + 1) * self.files].iter().map(|st| st.packed.len()).sum() };
+        let keep = if bytes(1) < bytes(0) { 1 } else { 0 };
+        let drop = 1 - keep;
+        self.streams.drain(drop * self.files..(drop + 1) * self.files);
+        self.sides = 1;
+        self.stored_side = Some(keep);
+        Some(keep)
+    }
     /// Per side the distinct orders of its streams (one for a pawnless
     /// material, up to four with pawns): `BuildOptions::orders` for a second
     /// stream of the same material.
@@ -492,6 +724,9 @@ impl Built {
             head[..4].copy_from_slice(DTM_MAGIC);
             head[20] = self.step as u8;
             head[21] = if self.signed { DTM_SIGNED } else { 0 } | if self.draw_free { DTM_DRAW_FREE } else { 0 };
+            if let Some(s) = self.stored_side {
+                head[21] |= DTM_ONE_SIDE | if s == 1 { DTM_SECOND_SIDE } else { 0 };
+            }
             head[22] = self.alphabet as u8;
         }
         let mut offset = head.len();
@@ -525,6 +760,11 @@ pub(super) const OWN_MAGIC: &[u8; 4] = b"MWDL";
 pub(super) const DTM_MAGIC: &[u8; 4] = b"MDTM";
 pub(super) const DTM_SIGNED: u8 = 1;
 pub(super) const DTM_DRAW_FREE: u8 = 2;
+/// Only one side to move is stored (`Built::keep_side`); the reader values
+/// the other side from its children (`Tables::probe_dtm_bounds`).
+pub(super) const DTM_ONE_SIDE: u8 = 4;
+/// With DTM_ONE_SIDE: the stored side is the table's second one.
+pub(super) const DTM_SECOND_SIDE: u8 = 8;
 
 /// Derives, builds and writes the own DTM table of an exact egtb table: the
 /// distance buckets of egtb::FILE_STEP moves, wins and losses as one bucket
@@ -659,7 +899,7 @@ pub fn build(src: &Source, opt: pairs::Options, bo: BuildOptions, workers: usize
             }
         }
     }
-    Built { name: be.name.clone(), first, second, sides, files, streams: streams.into_iter().map(|s| s.unwrap()).collect(), candidates: cands.len(), dtm: src.dtm, step: src.step, signed: src.signed, draw_free: src.draw_free, alphabet: src.alphabet }
+    Built { name: be.name.clone(), first, second, sides, files, streams: streams.into_iter().map(|s| s.unwrap()).collect(), candidates: cands.len(), dtm: src.dtm, step: src.step, signed: src.signed, draw_free: src.draw_free, alphabet: src.alphabet, stored_side: None }
 }
 
 /// Lays the symbols of one side to move out in the index order of a
@@ -729,10 +969,28 @@ fn build_side(src: &Source, be: &BaseEntry, side: usize, o: &Order, files: usize
         }
     });
     let mut out: Vec<Vec<u8>> = values.into_iter().map(|v| v.into_iter().map(|a| a.into_inner()).collect()).collect();
-    for stream in &mut out {
-        fill_dont_care(stream);
+    if !RAW_STREAMS.load(Ordering::Relaxed) {
+        for stream in &mut out {
+            fill_dont_care(stream);
+        }
     }
     (out, sizes)
+}
+
+/// Diagnostics (card MT-8): `side_streams` leaves the free symbols unfilled.
+static RAW_STREAMS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The streams of one side in a given order (one per pawn file), unfilled
+/// (DONT_CARE, BOUNDED_FLAG + bound) or filled: a diagnostic of the packing
+/// bench against Syzygy's decoded streams.
+pub fn side_streams(src: &Source, side: usize, o: &Order, filled: bool, workers: usize) -> Vec<Vec<u8>> {
+    let (first, second) = counts_of(&src.table.mat);
+    let be = BaseEntry::describe(name_of(&first, &second), &first, &second).expect("syzygy: too many pieces");
+    let files = if be.has_pawns { 4 } else { 1 };
+    RAW_STREAMS.store(!filled, Ordering::Relaxed);
+    let (out, _) = build_side(src, &be, side, o, files, workers);
+    RAW_STREAMS.store(false, Ordering::Relaxed);
+    out
 }
 
 /// Judges a candidate order of one side: windows spread over every file's

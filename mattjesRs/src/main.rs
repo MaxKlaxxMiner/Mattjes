@@ -30,6 +30,7 @@ mod tests_hash;
 mod nnue;
 mod pairs;
 mod rollout;
+mod tests_pack;
 mod tests_pairs;
 mod tests_mate;
 mod tests_nnue;
@@ -56,6 +57,8 @@ fn main() {
     //   egtb-widen <name> <level> <dir> [--workers N]     the two-byte tables against the one-byte ones
     //   egtb-packed <name>... [--workers N] <cache dir>   tables held packed in memory against their arrays (reads only)
     //   egtb-verify <name>... [--workers N] <cache dir>   existing exact files recomputed from their children (reads only)
+    //   egtb-pack <names> <raw dir> <out dir> [k=v ...]   own WDL/DTM files from the exact files (tests_pack)
+    //   egtb-speed <names> <own dir> <syzygy dir> [n]     WDL/DTM probe times, own files against Syzygy
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     if args.is_empty() {
@@ -72,6 +75,19 @@ fn main() {
             "egtb-packed" => {
                 let names: Vec<&str> = args[1..args.len() - 1].iter().filter(|a| !a.starts_with("--") && a.parse::<usize>().is_err()).map(|s| s.as_str()).collect();
                 tests_egtb::egtb_packed(&names, workers, &args[args.len() - 1]);
+            }
+            "egtb-pack" if args.len() >= 4 => {
+                let spec = tests_pack::Spec::parse(&args[4..], workers);
+                tests_pack::egtb_pack(&args[1], workers, &args[2], &args[3], &spec);
+            }
+            "egtb-speed" if args.len() >= 4 => {
+                tests_pack::egtb_speed(&args[1], &args[2], &args[3], args.get(4).and_then(|s| s.parse().ok()).unwrap_or(1_000_000));
+            }
+            "egtb-syzstream" if args.len() >= 4 => {
+                tests_pack::egtb_syzstream(&args[1], &args[2], &args[3], tests_pack::Spec::parse(&args[4..], workers).opt);
+            }
+            "egtb-cmpstream" if args.len() >= 6 => {
+                tests_pack::egtb_cmpstream(&args[1], &args[2], &args[3], &args[4], args[5].parse().unwrap_or(0), workers);
             }
             "egtb-verify" => {
                 let names: Vec<&str> = args[1..args.len() - 1].iter().filter(|a| !a.starts_with("--") && a.parse::<usize>().is_err()).map(|s| s.as_str()).collect();
