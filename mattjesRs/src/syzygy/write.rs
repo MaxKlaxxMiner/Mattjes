@@ -948,7 +948,21 @@ fn build_side(src: &Source, be: &BaseEntry, side: usize, o: &Order, files: usize
                     let f = if be.has_pawns { encode::leading_pawn(&mut p, &be.shape, ENC_FILE) } else { 0 };
                     let mut q = p;
                     values[f][encode::encode(&mut q, &eis[f], &be.shape, enc) as usize].store(sym, Ordering::Relaxed);
-                    if !be.has_pawns {
+                    if be.has_pawns {
+                        // the table holds one of a position and its mirror
+                        // image; with the leading pawns symmetric (b6 + g6)
+                        // the reader indexes both, so store the mirror too
+                        for v in sq.iter_mut() {
+                            v.0 ^= 7;
+                        }
+                        let mut i = 0;
+                        while i < o.pieces.len() {
+                            i = squares_of(o.pieces[i], pieces, &sq, &mut p, i);
+                        }
+                        let f = encode::leading_pawn(&mut p, &be.shape, ENC_FILE);
+                        let mut q = p;
+                        values[f][encode::encode(&mut q, &eis[f], &be.shape, enc) as usize].store(sym, Ordering::Relaxed);
+                    } else {
                         // the squares as encode sees them before its diagonal
                         // step: mirrored into the a1-d4 quadrant by the first piece
                         q = p;

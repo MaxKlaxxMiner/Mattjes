@@ -774,6 +774,20 @@ func buildSide(src *Source, be *baseEntry, side int, o Order, files int, workers
 				}
 				q := p
 				values[f][encode(q[:], &eis[f], be, enc)] = s
+				if be.hasPawns {
+					// the table holds one of a position and its mirror image;
+					// with the leading pawns symmetric (b6 + g6) the reader
+					// indexes both, so store the mirror too
+					for k := range sq {
+						sq[k] ^= 7
+					}
+					for i := 0; i < len(o.Pieces); {
+						i = squaresOf(o.Pieces[i], pieces, sq, p[:], i)
+					}
+					f = leadingPawn(p[:], be, encFile)
+					q = p
+					values[f][encode(q[:], &eis[f], be, enc)] = s
+				}
 				// our index folds the diagonal transposition always, Syzygy's
 				// only by the first off-diagonal piece of the leading group:
 				// with the whole group on the diagonal the transposed twin is
