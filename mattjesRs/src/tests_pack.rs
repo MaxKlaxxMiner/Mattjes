@@ -40,6 +40,8 @@ pub struct Spec {
     pub promo: bool,
     /// DTM: keep only the side to move that packs smaller.
     pub one_side: bool,
+    /// DTM: syzygy::write::DTM_CAPTURE_BOUND.
+    pub dtm_captures: bool,
     /// DTM: the folder of our WDL files, for checking the distance bounds as
     /// the reader derives them (`probe_dtm_bounds`).
     pub wdl_dir: String,
@@ -48,7 +50,7 @@ pub struct Spec {
 impl Spec {
     /// Reads key=value settings (unknown keys are reported and ignored).
     pub fn parse(args: &[String], workers: usize) -> Spec {
-        let mut s = Spec { mode: "wdl".into(), step: 8, signed: false, draws_stored: false, opt: pairs::Options { workers, ..Default::default() }, bo: BuildOptions::default(), verify: 200_000, fill: 0, promo: false, one_side: false, wdl_dir: String::new() };
+        let mut s = Spec { mode: "wdl".into(), step: 8, signed: false, draws_stored: false, opt: pairs::Options { workers, ..Default::default() }, bo: BuildOptions::default(), verify: 200_000, fill: 0, promo: false, one_side: false, dtm_captures: false, wdl_dir: String::new() };
         for a in args {
             let Some((k, v)) = a.split_once('=') else { continue };
             let n = || v.parse::<usize>().unwrap_or(0);
@@ -72,6 +74,10 @@ impl Spec {
                 "verify" => s.verify = n(),
                 "orders" => s.bo.orders = parse_orders(v),
                 "oneside" => s.one_side = n() != 0,
+                "dtmcap" => {
+                    s.dtm_captures = n() != 0;
+                    syzygy::write::DTM_CAPTURE_BOUND.store(s.dtm_captures, std::sync::atomic::Ordering::Relaxed);
+                }
                 "wdldir" => s.wdl_dir = v.to_string(),
                 "promo" => {
                     s.promo = n() != 0;
@@ -92,7 +98,7 @@ impl Spec {
         let b = &self.bo;
         let mut d = format!("mode={} fill={} promo={}", self.mode, self.fill, self.promo as u8);
         if self.mode == "dtm" {
-            d += &format!(" step={} signed={} draws={} oneside={} wdldir={}", self.step, self.signed as u8, if self.draws_stored { "stored" } else { "free" }, self.one_side as u8, self.wdl_dir);
+            d += &format!(" step={} signed={} draws={} oneside={} dtmcap={} wdldir={}", self.step, self.signed as u8, if self.draws_stored { "stored" } else { "free" }, self.one_side as u8, self.dtm_captures as u8, self.wdl_dir);
         }
         d + &format!(
             " block={} indexbits={} symbols={} symlen={} mincount={} pairs={} dictsample={} dictabove={} target={} finalists={} window={} samplesymbols={}",

@@ -81,6 +81,15 @@ fn pieces_of(m: &Material) -> Vec<Piece> {
 /// symbol below the flag.
 pub const DONT_CARE: u8 = 0xff;
 const BOUNDED_FLAG: u8 = 0x80;
+/// A symbol with the FLOOR_FLAG may be anything from the symbol below the
+/// flag on (a DTM win whose best move is a capture: the reader takes the
+/// shorter of the capture and the stored bucket, DTM_CAPTURE_BOUND).
+const FLOOR_FLAG: u8 = 0x40;
+
+/// Whether DTM positions whose distance a capture achieves are free (wins:
+/// any bucket from the true one on, losses: any up to it) and the reader
+/// resolves captures (an experiment switch, card MT-8).
+pub static DTM_CAPTURE_BOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The WDL of a material taken from an exact egtb table: per index the
 /// symbol (0 loss, 1 draw, 2 win for the side to move), DONT_CARE for dead
@@ -142,17 +151,42 @@ impl Source<'_> {
         if q.0 == 0 {
             return if self.draw_free { DONT_CARE } else { 0 };
         }
+        let free = !self.signed && DTM_CAPTURE_BOUND.load(Ordering::Relaxed) && capture_achieves(self.set, b, buf, v);
         if q.is_win() {
-            return (q.moves() as usize).div_ceil(step) as u8; // 1 .. ceil(top/step)
+            let bucket = (q.moves() as usize).div_ceil(step) as u8; // 1 .. ceil(top/step)
+            return if free { FLOOR_FLAG | bucket } else { bucket }; // the reader takes the shorter
         }
         let m = q.moves() as usize; // loss: bucket 0 = mated now
         let bucket = m.div_ceil(step) as u8;
+        if free {
+            return BOUNDED_FLAG | bucket; // the reader takes the longer
+        }
         if self.signed {
             (self.top as usize).div_ceil(step) as u8 + 1 + bucket
         } else {
             bucket
         }
     }
+}
+
+/// Whether a capture of the position already achieves its exact distance v
+/// (a win: a capture into a loss one move shorter; a loss: a capture into
+/// the opponent's longest win), the children looked up exactly in `set`.
+fn capture_achieves(set: &Set, b: &Board, buf: &mut crate::chess::MoveBuffer, v: Value) -> bool {
+    let nm = b.gen_moves(buf);
+    for &m in &buf[..nm] {
+        if m.capture == Piece::NONE {
+            continue;
+        }
+        let mut c = *b;
+        c.do_move(m);
+        let Some(cv) = set.lookup(&c) else { continue };
+        // a child loss in k moves makes a win in k + 1; a child win in k moves a loss in k
+        if (v.is_win() && cv.is_loss() && cv.moves() + 1 == v.moves()) || (v.is_loss() && cv.is_win() && cv.moves() == v.moves()) {
+            return true;
+        }
+    }
+    false
 }
 
 fn distinct_squares(sq: &[Pos]) -> bool {
@@ -190,7 +224,7 @@ impl<'a> Source<'a> {
         let buckets = top.div_ceil(step) as usize + 1; // 0 .. ceil(top/step)
         let alphabet = if signed { 2 * buckets + 1 } else { buckets };
         // symbols from 0x80 on mean "bounded" to the filling
-        assert!(alphabet < BOUNDED_FLAG as usize, "syzygy: {} DTM buckets of {} moves do not fit a symbol", alphabet, step);
+        assert!(alphabet < FLOOR_FLAG as usize, "syzygy: {} DTM buckets of {} moves do not fit a symbol", alphabet, step);
         Source { table: t, set, wdl: None, symbols: Vec::new(), alphabet, legal: 0, decided: 0, dtm: true, step, signed, draw_free, top }.derive(workers)
     }
 
@@ -223,8 +257,8 @@ impl<'a> Source<'a> {
                         }
                         nl += 1;
                         let own = src.symbol_at(&b, &mut buf, t.value(idx));
-                        if own & BOUNDED_FLAG != 0 {
-                            nd += 1; // bounded, or DONT_CARE (a free draw)
+                        if is_free(own) {
+                            nd += 1; // bounded, floored, or DONT_CARE (a free draw)
                         }
                         slot.store(own, Ordering::Relaxed);
                     }
@@ -285,10 +319,33 @@ fn capture_bound(set: &Set, wdl: Option<&super::Tables>, b: &Board, buf: &mut cr
 pub static FILL_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// Whether the plain symbol v may stand at a position holding s (a plain
-/// symbol only itself, a bounded one anything up to its bound, don't care
-/// anything).
+/// symbol only itself, a bounded one anything up to its bound, a floored one
+/// anything from its floor on, don't care anything).
 fn fits(s: u8, v: u8) -> bool {
-    s == DONT_CARE || (s & BOUNDED_FLAG != 0 && v <= s & !BOUNDED_FLAG) || s == v
+    if s == DONT_CARE {
+        true
+    } else if s & BOUNDED_FLAG != 0 {
+        v <= s & !BOUNDED_FLAG
+    } else if s & FLOOR_FLAG != 0 {
+        v >= s & !FLOOR_FLAG
+    } else {
+        s == v
+    }
+}
+
+/// Whether a position's symbol is free to choose (don't care, bounded or floored).
+fn is_free(s: u8) -> bool {
+    s == DONT_CARE || s & (BOUNDED_FLAG | FLOOR_FLAG) != 0
+}
+
+/// The plain symbol a free position takes when nothing else fits: its bound
+/// or floor (1 for don't care).
+fn own_of(s: u8) -> u8 {
+    if s == DONT_CARE {
+        1
+    } else {
+        s & !(BOUNDED_FLAG | FLOOR_FLAG)
+    }
 }
 
 fn fill_dont_care(values: &mut [u8]) {
@@ -301,64 +358,7 @@ pub fn fill_mode(values: &mut [u8], mode: u8) {
         1 => fill_neighbours(values),
         3 => fill_runs(values, false),
         4 => fill_runs(values, true),
-        2 => {
-            let p = best_period(values);
-            fill_period(values, p);
-        }
         _ => fill_predecessor(values),
-    }
-}
-
-/// The period (2..=4096) at which plain symbols repeat most often: the
-/// stream walks the last piece over its squares, so the same constellation
-/// with the last piece one square back lies one period earlier. Measured on
-/// a sample of plain positions.
-pub fn best_period(values: &[u8]) -> usize {
-    let plain = |s: u8| s != DONT_CARE && s & BOUNDED_FLAG == 0;
-    let n = values.len();
-    if n < 8192 {
-        return 64.min(n.max(2) - 1).max(1);
-    }
-    let samples = 1 << 16;
-    let stride = (n - 4096) / samples;
-    let mut best = (0usize, 64usize);
-    for p in 2..=4096usize {
-        let mut hits = 0;
-        let mut i = 4096;
-        while i < n {
-            let (a, b) = (values[i], values[i - p]);
-            if plain(a) && plain(b) && a == b {
-                hits += 1;
-            }
-            i += stride.max(1);
-        }
-        if hits > best.0 {
-            best = (hits, p);
-        }
-    }
-    best.1
-}
-
-/// Fill mode 2: a free position takes the symbol one period earlier when it
-/// fits (the same constellation with the last piece one square back), else
-/// the predecessor rule.
-pub fn fill_period(values: &mut [u8], period: usize) {
-    let mut prev = 1u8;
-    for i in 0..values.len() {
-        let s = values[i];
-        if s != DONT_CARE && s & BOUNDED_FLAG == 0 {
-            prev = s;
-            continue;
-        }
-        let v = if i >= period && fits(s, values[i - period]) {
-            values[i - period]
-        } else if fits(s, prev) {
-            prev
-        } else {
-            s & !BOUNDED_FLAG
-        };
-        values[i] = v;
-        prev = v;
     }
 }
 
@@ -368,7 +368,7 @@ pub fn fill_period(values: &mut [u8], period: usize) {
 /// neither fits the predecessor rule.
 fn fill_neighbours(values: &mut [u8]) {
     let n = values.len();
-    let free = |s: u8| s == DONT_CARE || s & BOUNDED_FLAG != 0;
+    let free = is_free;
     let mut prev: Option<u8> = None;
     let mut i = 0;
     while i < n {
@@ -410,7 +410,7 @@ fn fill_neighbours(values: &mut [u8]) {
 /// neighbour rule of mode 1.
 fn fill_runs(values: &mut [u8], pin_left: bool) {
     let n = values.len();
-    let free = |s: u8| s == DONT_CARE || s & BOUNDED_FLAG != 0;
+    let free = is_free;
     let mut i = 0;
     while i < n {
         if !free(values[i]) {
@@ -456,17 +456,14 @@ fn fill_predecessor(values: &mut [u8]) {
 /// the predecessor when it fits, else the bound), starting with `prev`.
 fn fill_predecessor_from(values: &mut [u8], mut prev: u8) {
     for v in values.iter_mut() {
-        if *v == DONT_CARE {
-            *v = prev;
-        } else if *v & BOUNDED_FLAG != 0 {
-            let bound = *v & !BOUNDED_FLAG;
-            if prev > bound {
-                prev = bound;
-            }
-            *v = prev;
-        } else {
+        if !is_free(*v) {
             prev = *v;
+            continue;
         }
+        if !fits(*v, prev) {
+            prev = own_of(*v); // the bound or the floor
+        }
+        *v = prev;
     }
 }
 
@@ -661,6 +658,9 @@ pub struct Built {
     pub alphabet: usize,
     /// DTM: only this side to move is stored (`keep_side`).
     pub stored_side: Option<usize>,
+    /// DTM: positions whose distance a capture achieves are free
+    /// (DTM_CAPTURE_BOUND), the reader resolves captures.
+    pub captures: bool,
 }
 
 impl Built {
@@ -724,6 +724,9 @@ impl Built {
             head[..4].copy_from_slice(DTM_MAGIC);
             head[20] = self.step as u8;
             head[21] = if self.signed { DTM_SIGNED } else { 0 } | if self.draw_free { DTM_DRAW_FREE } else { 0 };
+            if self.captures {
+                head[21] |= DTM_CAPTURES;
+            }
             if let Some(s) = self.stored_side {
                 head[21] |= DTM_ONE_SIDE | if s == 1 { DTM_SECOND_SIDE } else { 0 };
             }
@@ -765,6 +768,9 @@ pub(super) const DTM_DRAW_FREE: u8 = 2;
 pub(super) const DTM_ONE_SIDE: u8 = 4;
 /// With DTM_ONE_SIDE: the stored side is the table's second one.
 pub(super) const DTM_SECOND_SIDE: u8 = 8;
+/// Positions whose distance a capture achieves are free: the reader combines
+/// the stored bucket with the captures.
+pub(super) const DTM_CAPTURES: u8 = 16;
 
 /// Derives, builds and writes the own DTM table of an exact egtb table: the
 /// distance buckets of egtb::FILE_STEP moves, wins and losses as one bucket
@@ -899,7 +905,7 @@ pub fn build(src: &Source, opt: pairs::Options, bo: BuildOptions, workers: usize
             }
         }
     }
-    Built { name: be.name.clone(), first, second, sides, files, streams: streams.into_iter().map(|s| s.unwrap()).collect(), candidates: cands.len(), dtm: src.dtm, step: src.step, signed: src.signed, draw_free: src.draw_free, alphabet: src.alphabet, stored_side: None }
+    Built { name: be.name.clone(), first, second, sides, files, streams: streams.into_iter().map(|s| s.unwrap()).collect(), candidates: cands.len(), dtm: src.dtm, step: src.step, signed: src.signed, draw_free: src.draw_free, alphabet: src.alphabet, stored_side: None, captures: src.dtm && !src.signed && DTM_CAPTURE_BOUND.load(Ordering::Relaxed) }
 }
 
 /// Lays the symbols of one side to move out in the index order of a

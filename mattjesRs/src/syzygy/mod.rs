@@ -385,7 +385,7 @@ impl Tables {
         let d = loaded.mapping.bytes();
         let (ei, idx) = be.locate(loaded, l.flip, b);
         let (own, off, len) = ei.own.as_ref()?;
-        Some((own.value(&d[*off..*off + *len], idx as usize) as usize, be.step.load(Ordering::Relaxed)))
+        Some((own.value(&d[*off..*off + *len], idx as usize) as usize, be.step.load(Ordering::Relaxed) & 0xff))
     }
 
     /// Decodes every stream of a Syzygy table completely (one per side to
@@ -413,13 +413,16 @@ impl Tables {
 
     /// Whether the material of a position has an own DTM table, and whether
     /// its side to move is stored there (a one-sided file stores one).
-    fn dtm_stored(&self, b: &Board) -> Option<bool> {
+    /// Also whether the file leaves positions free whose distance a capture
+    /// achieves (write::DTM_CAPTURES).
+    fn dtm_stored(&self, b: &Board) -> Option<(bool, bool)> {
         let (w, bl) = counts(b);
         let l = *self.dtm.get(&material_key(&w, &bl))?;
         let be = &self.dtm_list[l.entry];
         let loaded = be.loaded.get_or_init(|| be.init_own().ok()).as_ref()?;
         let (ei, _) = be.locate(loaded, l.flip, b);
-        Some(ei.own.is_some())
+        let captures = (be.step.load(Ordering::Relaxed) >> 8) as u8 & write::DTM_CAPTURES != 0;
+        Some((ei.own.is_some(), captures))
     }
 
     /// The WDL (-1, 0, 1 for the side to move; cursed results count as
@@ -439,14 +442,46 @@ impl Tables {
                     return Some((wdl, lo, hi)); // an exact table (the base)
                 }
             }
-            if self.dtm_stored(b)? {
+            let (stored, captures) = self.dtm_stored(b)?;
+            if stored {
                 let (bucket, step) = self.probe_dtm(b)?;
                 let (bucket, step) = (bucket as u32, step.max(1));
-                if wdl < 0 && bucket == 0 {
-                    return Some((wdl, 0, 0)); // mated
+                let (mut lo, mut hi) = if wdl < 0 && bucket == 0 {
+                    (0, 0) // mated (or a free loss: the captures below are longer)
+                } else {
+                    let (lo_m, hi_m) = ((bucket.max(1) - 1) * step + 1, bucket.max(1) * step);
+                    if wdl > 0 {
+                        (2 * lo_m - 1, 2 * hi_m - 1)
+                    } else {
+                        (2 * lo_m, 2 * hi_m)
+                    }
+                };
+                if captures {
+                    // a capture may be the best move: the stored bucket of such a
+                    // position is only an upper (win) or lower (loss) bound
+                    let mut buf = new_buffer();
+                    let n = b.gen_moves(&mut buf);
+                    for &m in &buf[..n] {
+                        if m.capture == Piece::NONE {
+                            continue;
+                        }
+                        let mut c = *b;
+                        c.do_move(m);
+                        let cw = self.probe_wdl_with(&c, base)?.signum();
+                        if cw == 0 || (wdl > 0) == (cw > 0) {
+                            continue;
+                        }
+                        let (_, clo, chi) = self.probe_dtm_bounds(&c, base)?;
+                        if wdl > 0 {
+                            lo = lo.min(clo + 1);
+                            hi = hi.min(chi + 1);
+                        } else {
+                            lo = lo.max(clo + 1);
+                            hi = hi.max(chi + 1);
+                        }
+                    }
                 }
-                let (lo_m, hi_m) = ((bucket.max(1) - 1) * step + 1, bucket.max(1) * step);
-                return Some(if wdl > 0 { (wdl, 2 * lo_m - 1, 2 * hi_m - 1) } else { (wdl, 2 * lo_m, 2 * hi_m) });
+                return Some((wdl, lo, hi));
             }
         }
         // a ply deeper: a win takes its fastest lost child, a loss its slowest won one
@@ -698,7 +733,8 @@ impl BaseEntry {
             return Err(bad(format!("syzygy: {} is not an own {} table", self.name, if self.dtm { "DTM" } else { "WDL" })));
         }
         if self.dtm {
-            self.step.store(d[20] as u32, Ordering::Relaxed);
+            // the step, and the flags above it (write::DTM_CAPTURES and the others)
+            self.step.store(d[20] as u32 | (d[21] as u32) << 8, Ordering::Relaxed);
         }
         let (sides, files) = (d[6] as usize, d[7] as usize);
         let (num, enc) = if self.has_pawns { (4, ENC_FILE) } else { (1, ENC_PIECE) };
